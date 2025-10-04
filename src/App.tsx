@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import AdminUsers from './pages/AdminUsers'
 import AcceptInvite from './pages/AcceptInvite'
 import ImportLeads from './pages/ImportLeads'
+import LeadsPage from './pages/Leads'
 
 type User = {
   email: string
@@ -115,7 +116,7 @@ if (inviteMode) {
 
       <div>
         {page === 'dashboard' && <Dashboard />}
-        {page === 'leads' && <Placeholder title="Leads" />}
+        {page === 'leads' && <LeadsPage />}
         {page === 'calendar' && <Placeholder title="Calendario" />}
         {page === 'reports' && <Placeholder title="Report" />}
         {page === 'goals' && <Placeholder title="Obiettivi" />}
