@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient'
 import Dashboard from './pages/Dashboard'
 import AdminUsers from './pages/AdminUsers'
 import AcceptInvite from './pages/AcceptInvite'
+import ImportLeads from './pages/ImportLeads'
 
 type User = {
   email: string
@@ -118,7 +119,7 @@ if (inviteMode) {
         {page === 'calendar' && <Placeholder title="Calendario" />}
         {page === 'reports' && <Placeholder title="Report" />}
         {page === 'goals' && <Placeholder title="Obiettivi" />}
-        {page === 'import' && <Placeholder title="Import" />}
+        {page === 'import' && <ImportLeads />}
         {page === 'admin' && <AdminUsers />}
       </div>
     </div>
