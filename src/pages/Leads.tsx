@@ -20,6 +20,7 @@ const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', b
 const ipt: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', width:'100%' }
 const cta: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }
 const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
+const lbl: React.CSSProperties = { fontSize:12, color:'#666', marginBottom:4 }
 
 export default function LeadsPage() {
   // me/advisor corrente
@@ -41,6 +42,12 @@ export default function LeadsPage() {
   const [appointments, setAppointments] = useState<any[]>([])
   const [proposals, setProposals] = useState<any[]>([])
   const [contracts, setContracts] = useState<any[]>([])
+
+  // inline forms per inserimento rapido
+  const [newContact, setNewContact] = useState<{ts:string; channel:string; notes:string}>({ ts:'', channel:'', notes:'' })
+  const [newAppointment, setNewAppointment] = useState<{ts:string; method:string; notes:string}>({ ts:'', method:'', notes:'' })
+  const [newProposal, setNewProposal] = useState<{ts:string; notes:string}>({ ts:'', notes:'' })
+  const [newContract, setNewContract] = useState<{ts:string; kind:string; amount:string; notes:string}>({ ts:'', kind:'', amount:'', notes:'' })
 
   useEffect(()=>{(async()=>{
     setLoading(true); setError('')
@@ -81,6 +88,11 @@ export default function LeadsPage() {
     setSelectedId(null)
     setForm(emptyLead())
     setContacts([]); setAppointments([]); setProposals([]); setContracts([])
+    // reset dei form inline
+    setNewContact({ ts:'', channel:'', notes:'' })
+    setNewAppointment({ ts:'', method:'', notes:'' })
+    setNewProposal({ ts:'', notes:'' })
+    setNewContract({ ts:'', kind:'', amount:'', notes:'' })
   }
 
   const validate = (l: Lead): string | null => {
@@ -258,23 +270,147 @@ export default function LeadsPage() {
             {tabBtn('contratti','Contratti')}
           </div>
 
-          {!selectedId && <div style={{ color:'#666' }}>Seleziona un lead per vedere le attività.</div>}
+          {!selectedId && <div style={{ color:'#666' }}>Seleziona un lead per vedere e inserire le attività.</div>}
 
-          {selectedId && tab==='contatti' && <SimpleTable rows={contacts} cols={[
-            {k:'ts',l:'Quando'}, {k:'channel',l:'Come'}, {k:'notes',l:'Note'}
-          ]}/>}
+          {selectedId && tab==='contatti' && (
+            <>
+              <InlineNewRow title="Nuovo contatto" onSave={async()=>{
+                if (!newContact.ts || !newContact.channel){ setError('Per il contatto indica data/ora e canale.'); return }
+                const { error } = await supabase.from('activities').insert({
+                  lead_id: selectedId,
+                  ts: newContact.ts,
+                  channel: newContact.channel,
+                  notes: newContact.notes||null
+                })
+                if (error){ setError(error.message); return }
+                setNewContact({ ts:'', channel:'', notes:'' })
+                await loadTabs(selectedId)
+              }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                  <div>
+                    <div style={lbl}>Quando</div>
+                    <input type="datetime-local" value={newContact.ts} onChange={e=>setNewContact({ ...newContact, ts:e.target.value })} style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Canale</div>
+                    <input value={newContact.channel} onChange={e=>setNewContact({ ...newContact, channel:e.target.value })} placeholder="Telefono / Email / WhatsApp / Altro" style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Note</div>
+                    <input value={newContact.notes} onChange={e=>setNewContact({ ...newContact, notes:e.target.value })} style={ipt} />
+                  </div>
+                </div>
+              </InlineNewRow>
+              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Come'},{k:'notes',l:'Note'}]} />
+            </>
+          )}
 
-          {selectedId && tab==='appuntamenti' && <SimpleTable rows={appointments} cols={[
-            {k:'ts',l:'Quando'}, {k:'method',l:'Come'}, {k:'notes',l:'Note'}
-          ]}/>}
+          {selectedId && tab==='appuntamenti' && (
+            <>
+              <InlineNewRow title="Nuovo appuntamento" onSave={async()=>{
+                if (!newAppointment.ts || !newAppointment.method){ setError('Per l\'appuntamento indica data/ora e modalità.'); return }
+                const { error } = await supabase.from('appointments').insert({
+                  lead_id: selectedId,
+                  ts: newAppointment.ts,
+                  method: newAppointment.method,
+                  notes: newAppointment.notes||null
+                })
+                if (error){ setError(error.message); return }
+                setNewAppointment({ ts:'', method:'', notes:'' })
+                await loadTabs(selectedId)
+              }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                  <div>
+                    <div style={lbl}>Quando</div>
+                    <input type="datetime-local" value={newAppointment.ts} onChange={e=>setNewAppointment({ ...newAppointment, ts:e.target.value })} style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Modalità</div>
+                    <input value={newAppointment.method} onChange={e=>setNewAppointment({ ...newAppointment, method:e.target.value })} placeholder="In presenza / Video / Telefono" style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Note</div>
+                    <input value={newAppointment.notes} onChange={e=>setNewAppointment({ ...newAppointment, notes:e.target.value })} style={ipt} />
+                  </div>
+                </div>
+              </InlineNewRow>
+              <SimpleTable rows={appointments} cols={[{k:'ts',l:'Quando'},{k:'method',l:'Come'},{k:'notes',l:'Note'}]} />
+            </>
+          )}
 
-          {selectedId && tab==='proposte' && <SimpleTable rows={proposals} cols={[
-            {k:'ts',l:'Data'}, {k:'notes',l:'Note'}
-          ]}/>}
+          {selectedId && tab==='proposte' && (
+            <>
+              <InlineNewRow title="Nuova proposta" onSave={async()=>{
+                if (!newProposal.ts){ setError('Indica la data della proposta.'); return }
+                const { error } = await supabase.from('proposals').insert({
+                  lead_id: selectedId,
+                  ts: newProposal.ts,
+                  notes: newProposal.notes||null
+                })
+                if (error){ setError(error.message); return }
+                setNewProposal({ ts:'', notes:'' })
+                await loadTabs(selectedId)
+              }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:8 }}>
+                  <div>
+                    <div style={lbl}>Data</div>
+                    <input type="date" value={newProposal.ts} onChange={e=>setNewProposal({ ...newProposal, ts:e.target.value })} style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Note</div>
+                    <input value={newProposal.notes} onChange={e=>setNewProposal({ ...newProposal, notes:e.target.value })} style={ipt} />
+                  </div>
+                </div>
+              </InlineNewRow>
+              <SimpleTable rows={proposals} cols={[{k:'ts',l:'Data'},{k:'notes',l:'Note'}]} />
+            </>
+          )}
 
-          {selectedId && tab==='contratti' && <SimpleTable rows={contracts} cols={[
-            {k:'ts',l:'Data'}, {k:'kind',l:'Tipo'}, {k:'amount',l:'Premio'}, {k:'notes',l:'Note'}
-          ]}/>}
+          {selectedId && tab==='contratti' && (
+            <>
+              <InlineNewRow title="Nuovo contratto" onSave={async()=>{
+                if (!newContract.ts || !newContract.kind){ setError('Indica data e tipo contratto.'); return }
+                const amountNum = newContract.amount ? Number(newContract.amount) : null
+                if (newContract.amount && isNaN(Number(newContract.amount))){ setError('Importo non valido'); return }
+                const { error } = await supabase.from('contracts').insert({
+                  lead_id: selectedId,
+                  ts: newContract.ts,
+                  kind: newContract.kind,
+                  amount: amountNum,
+                  notes: newContract.notes||null
+                })
+                if (error){ setError(error.message); return }
+                setNewContract({ ts:'', kind:'', amount:'', notes:'' })
+                await loadTabs(selectedId)
+              }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:8 }}>
+                  <div>
+                    <div style={lbl}>Data</div>
+                    <input type="date" value={newContract.ts} onChange={e=>setNewContract({ ...newContract, ts:e.target.value })} style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Tipo</div>
+                    <select value={newContract.kind} onChange={e=>setNewContract({ ...newContract, kind:e.target.value })} style={ipt}>
+                      <option value="">—</option>
+                      <option value="Danni Non Auto">Danni Non Auto</option>
+                      <option value="Vita Protection">Vita Protection</option>
+                      <option value="Vita Premi Ricorrenti">Vita Premi Ricorrenti</option>
+                      <option value="Vita Premi Unici">Vita Premi Unici</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={lbl}>Premio</div>
+                    <input type="number" step="0.01" value={newContract.amount} onChange={e=>setNewContract({ ...newContract, amount:e.target.value })} style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Note</div>
+                    <input value={newContract.notes} onChange={e=>setNewContract({ ...newContract, notes:e.target.value })} style={ipt} />
+                  </div>
+                </div>
+              </InlineNewRow>
+              <SimpleTable rows={contracts} cols={[{k:'ts',l:'Data'},{k:'kind',l:'Tipo'},{k:'amount',l:'Premio'},{k:'notes',l:'Note'}]} />
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -291,6 +427,18 @@ export default function LeadsPage() {
       }}>{label}</button>
     )
   }
+}
+
+function InlineNewRow({ title, onSave, children }:{ title:string; onSave:()=>void; children:React.ReactNode }){
+  return (
+    <div style={{ marginBottom:12 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+        <div style={{ fontWeight:600 }}>{title}</div>
+        <button onClick={onSave} style={{ padding:'8px 10px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }}>Salva</button>
+      </div>
+      {children}
+    </div>
+  )
 }
 
 function emptyLead(): Lead {
@@ -334,7 +482,6 @@ function cleanLeadForDb(l: Lead){
     source: l.source || 'Provided'
   }
 }
-const lbl: React.CSSProperties = { fontSize:12, color:'#666', marginBottom:4 }
 function trimOrNull(s?: string | null){ const v = (s||'').trim(); return v ? v : null }
 
 function SimpleTable({ rows, cols }:{ rows:any[], cols:{k:string,l:string}[] }){
