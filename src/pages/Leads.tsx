@@ -1,6 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
+/**
+ * Leads.tsx — versione completa (Opzione A)
+ * - Elenco lead a sinistra, form a destra
+ * - +Nuovo azzera il form
+ * - Validazioni: is_agency_client obbl., email OR phone, (first+last) OR company_name
+ * - Tab Contatti/Appuntamenti/Proposte/Contratti con inserimento inline
+ * - Rispetta colonne legacy NOT NULL: outcome (activities), mode (appointments), line (proposals, contracts)
+ * - UI: griglie responsive per evitare sovrapposizioni orizzontali, select con z-index
+ */
+
 type Lead = {
   id?: string
   owner_id?: string
@@ -16,14 +26,20 @@ type Lead = {
   created_at?: string
 }
 
-const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16, overflow:'visible' }
-const ipt: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', width:'100%' }
+const box: React.CSSProperties = {
+  background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16,
+  overflow:'visible', position:'relative', zIndex:0
+}
+const ipt: React.CSSProperties = {
+  padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', width:'100%',
+  minWidth:0, boxSizing:'border-box'
+}
 const cta: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }
 const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
 const lbl: React.CSSProperties = { fontSize:12, color:'#666', marginBottom:4 }
 
 export default function LeadsPage() {
-  // me/advisor corrente
+  // utente corrente
   const [me, setMe] = useState<{ id: string; email: string; full_name?: string } | null>(null)
 
   // elenco leads
@@ -46,15 +62,16 @@ export default function LeadsPage() {
   // inline forms per inserimento rapido
   const [newContact, setNewContact] = useState<{ts:string; channel:string; notes:string}>({ ts:'', channel:'', notes:'' })
   const [newAppointment, setNewAppointment] = useState<{ts:string; method:string; notes:string}>({ ts:'', method:'', notes:'' })
-  const [newProposal, setNewProposal] = useState<{ts:string; notes:string}>({ ts:'', notes:'' })
+  const [newProposal, setNewProposal] = useState<{ts:string; line:string; notes:string}>({ ts:'', line:'', notes:'' })
   const [newContract, setNewContract] = useState<{ts:string; kind:string; amount:string; notes:string}>({ ts:'', kind:'', amount:'', notes:'' })
 
+  // bootstrap
   useEffect(()=>{(async()=>{
     setLoading(true); setError('')
     const u = await supabase.auth.getUser()
     const email = u.data.user?.email
     if (!email){ setError('Utente non autenticato'); setLoading(false); return }
-    // trova advisor corrente
+    // advisor corrente
     const { data: myRow, error: meErr } = await supabase.from('advisors').select('id,email,full_name').eq('email', email).maybeSingle()
     if (meErr || !myRow){ setError(meErr?.message || 'Advisor non trovato'); setLoading(false); return }
     setMe({ id: myRow.id, email: myRow.email, full_name: myRow.full_name })
@@ -70,7 +87,6 @@ export default function LeadsPage() {
       .order('created_at', { ascending:false })
     if (error) { setError(error.message); return }
     setLeads(data || [])
-    // se ho una selezione, riallineo il form con i dati aggiornati
     if (selectedId) {
       const found = (data||[]).find(l => l.id === selectedId)
       if (found) setForm(normalizeLead(found))
@@ -80,7 +96,6 @@ export default function LeadsPage() {
   const onSelectLead = (l: Lead) => {
     setSelectedId(l.id || null)
     setForm(normalizeLead(l))
-    // ricarica tab per il lead selezionato
     loadTabs(l.id!)
   }
 
@@ -88,19 +103,15 @@ export default function LeadsPage() {
     setSelectedId(null)
     setForm(emptyLead())
     setContacts([]); setAppointments([]); setProposals([]); setContracts([])
-    // reset dei form inline
     setNewContact({ ts:'', channel:'', notes:'' })
     setNewAppointment({ ts:'', method:'', notes:'' })
-    setNewProposal({ ts:'', notes:'' })
+    setNewProposal({ ts:'', line:'', notes:'' })
     setNewContract({ ts:'', kind:'', amount:'', notes:'' })
   }
 
-  const validate = (l: Lead): string | null => {
-    // obbligatorio is_agency_client
+  const validateLead = (l: Lead): string | null => {
     if (l.is_agency_client === null) return 'Seleziona se è già cliente di agenzia.'
-    // email OR phone
     if (!(l.email && l.email.trim()) && !(l.phone && l.phone.trim())) return 'Inserisci almeno Email o Telefono.'
-    // (first+last) OR company
     const hasPerson = !!(l.first_name && l.first_name.trim()) && !!(l.last_name && l.last_name.trim())
     const hasCompany = !!(l.company_name && l.company_name.trim())
     if (!hasPerson && !hasCompany) return 'Compila Nome+Cognome oppure Ragione Sociale.'
@@ -111,17 +122,15 @@ export default function LeadsPage() {
     e.preventDefault()
     setError('')
     if (!me) { setError('Advisor corrente non trovato'); return }
-    const msg = validate(form)
+    const msg = validateLead(form)
     if (msg) { setError(msg); return }
 
     setSaving(true)
     try {
       if (selectedId) {
-        // update
         const { error } = await supabase.from('leads').update(cleanLeadForDb(form)).eq('id', selectedId)
         if (error) throw error
       } else {
-        // insert (owner = me)
         const payload = { ...cleanLeadForDb(form), owner_id: me.id }
         const { data, error } = await supabase.from('leads').insert(payload).select('id').single()
         if (error) throw error
@@ -137,12 +146,11 @@ export default function LeadsPage() {
   }
 
   const loadTabs = async (leadId: string) => {
-    // carica SOLO i dati del lead selezionato
     const [c1, c2, c3, c4] = await Promise.all([
-      supabase.from('activities').select('id,ts,channel,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
-      supabase.from('appointments').select('id,ts,method,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
-      supabase.from('proposals').select('id,ts,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
-      supabase.from('contracts').select('id,ts,amount,kind,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
+      supabase.from('activities').select('id,ts,channel,outcome,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
+      supabase.from('appointments').select('id,ts,method,mode,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
+      supabase.from('proposals').select('id,ts,line,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
+      supabase.from('contracts').select('id,ts,amount,kind,line,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
     ])
     if (!c1.error) setContacts(c1.data || [])
     if (!c2.error) setAppointments(c2.data || [])
@@ -160,7 +168,7 @@ export default function LeadsPage() {
 
   return (
     <div style={{ display:'grid', gridTemplateColumns:'320px 1fr', gap:16 }}>
-      {/* COLONNA SINISTRA: elenco leads + nuovo */}
+      {/* SINISTRA: elenco lead */}
       <div style={{ display:'grid', gap:12 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div style={{ fontWeight:700 }}>Leads</div>
@@ -173,9 +181,7 @@ export default function LeadsPage() {
                 key={l.id}
                 onClick={()=>onSelectLead(l)}
                 style={{
-                  padding:'10px 12px',
-                  borderBottom:'1px solid #f2f2f2',
-                  cursor:'pointer',
+                  padding:'10px 12px', borderBottom:'1px solid #f2f2f2', cursor:'pointer',
                   background: selectedId===l.id ? '#f7f7f7' : '#fff'
                 }}
               >
@@ -192,17 +198,17 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {/* COLONNA DESTRA: form + tabs */}
+      {/* DESTRA: form + tabs */}
       <div style={{ display:'grid', gap:12 }}>
         <div style={box}>
           <div style={{ fontWeight:700, marginBottom:8 }}>{selectedId ? 'Modifica Lead' : 'Nuovo Lead'}</div>
-          <form onSubmit={save} style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <form onSubmit={save} style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12 }}>
             <div>
               <div style={lbl}>Già cliente di agenzia?</div>
               <select
                 value={form.is_agency_client===null ? '' : String(form.is_agency_client)}
                 onChange={e=>setForm({ ...form, is_agency_client: e.target.value==='' ? null : e.target.value==='true' })}
-                style={ipt}
+                style={{ ...ipt, position:'relative', zIndex:2 }}
               >
                 <option value="">—</option>
                 <option value="true">Sì</option>
@@ -211,39 +217,39 @@ export default function LeadsPage() {
             </div>
             <div>
               <div style={lbl}>Owner (Junior)</div>
-              <input value={ownerName} readOnly style={{ ...ipt, position:'relative', zIndex:2, background:'#f9f9f9' }} />
+              <input value={ownerName} readOnly style={{ ...ipt, background:'#f9f9f9' }} />
             </div>
 
             <div>
               <div style={lbl}>Nome</div>
-              <input value={form.first_name||''} onChange={e=>setForm({ ...form, first_name:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.first_name||''} onChange={e=>setForm({ ...form, first_name:e.target.value })} style={ipt} />
             </div>
             <div>
               <div style={lbl}>Cognome</div>
-              <input value={form.last_name||''} onChange={e=>setForm({ ...form, last_name:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.last_name||''} onChange={e=>setForm({ ...form, last_name:e.target.value })} style={ipt} />
             </div>
 
             <div>
               <div style={lbl}>Ragione Sociale</div>
-              <input value={form.company_name||''} onChange={e=>setForm({ ...form, company_name:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.company_name||''} onChange={e=>setForm({ ...form, company_name:e.target.value })} style={ipt} />
             </div>
             <div>
               <div style={lbl}>Email</div>
-              <input value={form.email||''} onChange={e=>setForm({ ...form, email:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.email||''} onChange={e=>setForm({ ...form, email:e.target.value })} style={ipt} />
             </div>
 
             <div>
               <div style={lbl}>Telefono</div>
-              <input value={form.phone||''} onChange={e=>setForm({ ...form, phone:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.phone||''} onChange={e=>setForm({ ...form, phone:e.target.value })} style={ipt} />
             </div>
             <div>
               <div style={lbl}>Città</div>
-              <input value={form.city||''} onChange={e=>setForm({ ...form, city:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.city||''} onChange={e=>setForm({ ...form, city:e.target.value })} style={ipt} />
             </div>
 
             <div>
               <div style={lbl}>Indirizzo</div>
-              <input value={form.address||''} onChange={e=>setForm({ ...form, address:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
+              <input value={form.address||''} onChange={e=>setForm({ ...form, address:e.target.value })} style={ipt} />
             </div>
             <div>
               <div style={lbl}>Fonte</div>
@@ -263,7 +269,7 @@ export default function LeadsPage() {
 
         {/* Tabs */}
         <div style={box}>
-          <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
             {tabBtn('contatti','Contatti')}
             {tabBtn('appuntamenti','Appuntamenti')}
             {tabBtn('proposte','Proposte')}
@@ -280,13 +286,14 @@ export default function LeadsPage() {
                   lead_id: selectedId,
                   ts: newContact.ts,
                   channel: newContact.channel,
+                  outcome: newContact.channel || 'contatto',
                   notes: newContact.notes||null
                 })
                 if (error){ setError(error.message); return }
                 setNewContact({ ts:'', channel:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
                   <div>
                     <div style={lbl}>Quando</div>
                     <input type="datetime-local" value={newContact.ts} onChange={e=>setNewContact({ ...newContact, ts:e.target.value })} style={ipt} />
@@ -301,7 +308,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Come'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Canale'},{k:'outcome',l:'Esito'},{k:'notes',l:'Note'}]} />
             </>
           )}
 
@@ -313,13 +320,14 @@ export default function LeadsPage() {
                   lead_id: selectedId,
                   ts: newAppointment.ts,
                   method: newAppointment.method,
+                  mode: newAppointment.method,
                   notes: newAppointment.notes||null
                 })
                 if (error){ setError(error.message); return }
                 setNewAppointment({ ts:'', method:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
                   <div>
                     <div style={lbl}>Quando</div>
                     <input type="datetime-local" value={newAppointment.ts} onChange={e=>setNewAppointment({ ...newAppointment, ts:e.target.value })} style={ipt} />
@@ -334,27 +342,38 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={appointments} cols={[{k:'ts',l:'Quando'},{k:'method',l:'Come'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={appointments} cols={[{k:'ts',l:'Quando'},{k:'method',l:'Metodo'},{k:'mode',l:'Mode'},{k:'notes',l:'Note'}]} />
             </>
           )}
 
           {selectedId && tab==='proposte' && (
             <>
               <InlineNewRow title="Nuova proposta" onSave={async()=>{
-                if (!newProposal.ts){ setError('Indica la data della proposta.'); return }
+                if (!newProposal.ts || !newProposal.line){ setError('Indica data e linea di prodotto.'); return }
                 const { error } = await supabase.from('proposals').insert({
                   lead_id: selectedId,
                   ts: newProposal.ts,
+                  line: newProposal.line,
                   notes: newProposal.notes||null
                 })
                 if (error){ setError(error.message); return }
-                setNewProposal({ ts:'', notes:'' })
+                setNewProposal({ ts:'', line:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:8 }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
                   <div>
                     <div style={lbl}>Data</div>
                     <input type="date" value={newProposal.ts} onChange={e=>setNewProposal({ ...newProposal, ts:e.target.value })} style={ipt} />
+                  </div>
+                  <div>
+                    <div style={lbl}>Linea</div>
+                    <select value={newProposal.line} onChange={e=>setNewProposal({ ...newProposal, line:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
+                      <option value="">—</option>
+                      <option value="Danni Non Auto">Danni Non Auto</option>
+                      <option value="Vita Protection">Vita Protection</option>
+                      <option value="Vita Premi Ricorrenti">Vita Premi Ricorrenti</option>
+                      <option value="Vita Premi Unici">Vita Premi Unici</option>
+                    </select>
                   </div>
                   <div>
                     <div style={lbl}>Note</div>
@@ -362,7 +381,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={proposals} cols={[{k:'ts',l:'Data'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={proposals} cols={[{k:'ts',l:'Data'},{k:'line',l:'Linea'},{k:'notes',l:'Note'}]} />
             </>
           )}
 
@@ -376,6 +395,7 @@ export default function LeadsPage() {
                   lead_id: selectedId,
                   ts: newContract.ts,
                   kind: newContract.kind,
+                  line: newContract.kind,
                   amount: amountNum,
                   notes: newContract.notes||null
                 })
@@ -383,14 +403,14 @@ export default function LeadsPage() {
                 setNewContract({ ts:'', kind:'', amount:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:8 }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
                   <div>
                     <div style={lbl}>Data</div>
                     <input type="date" value={newContract.ts} onChange={e=>setNewContract({ ...newContract, ts:e.target.value })} style={ipt} />
                   </div>
                   <div>
                     <div style={lbl}>Tipo</div>
-                    <select value={newContract.kind} onChange={e=>setNewContract({ ...newContract, kind:e.target.value })} style={ipt}>
+                    <select value={newContract.kind} onChange={e=>setNewContract({ ...newContract, kind:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
                       <option value="">—</option>
                       <option value="Danni Non Auto">Danni Non Auto</option>
                       <option value="Vita Protection">Vita Protection</option>
@@ -408,7 +428,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={contracts} cols={[{k:'ts',l:'Data'},{k:'kind',l:'Tipo'},{k:'amount',l:'Premio'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={contracts} cols={[{k:'ts',l:'Data'},{k:'kind',l:'Tipo'},{k:'line',l:'Linea'},{k:'amount',l:'Premio'},{k:'notes',l:'Note'}]} />
             </>
           )}
         </div>
@@ -432,7 +452,7 @@ export default function LeadsPage() {
 function InlineNewRow({ title, onSave, children }:{ title:string; onSave:()=>void; children:React.ReactNode }){
   return (
     <div style={{ marginBottom:12 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:12, flexWrap:'wrap' }}>
         <div style={{ fontWeight:600 }}>{title}</div>
         <button onClick={onSave} style={{ padding:'8px 10px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }}>Salva</button>
       </div>
