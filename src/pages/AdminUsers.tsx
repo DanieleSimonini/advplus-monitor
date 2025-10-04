@@ -71,35 +71,44 @@ export default function AdminUsers() {
   }
 
   // 👉 FUNZIONE INVITE (usa Edge Function admin_create_user)
-  const invite = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
+const invite = async (e: React.FormEvent) => {
+  e.preventDefault()
+  setError('')
 
-    const email = (form.email||'').trim()
-    const full_name = (form.full_name||'').trim()
-    const role = form.role
-    const reports_to = form.reports_to || null
-    const region = form.region || null
+  const email = (form.email||'').trim()
+  const full_name = (form.full_name||'').trim()
+  const role = form.role
+  const reports_to = form.reports_to || null
+  const region = form.region || null
 
-    if (!email || !full_name || !role) { setError('Compila email, nome completo e ruolo.'); return }
+  if (!email || !full_name || !role) { setError('Compila email, nome completo e ruolo.'); return }
 
-    if (role === 'Advisor') {
-      const tl = list.find(x => x.id === reports_to)
-      if (!tl || tl.role !== 'TeamLead') { setError('Per un Advisor seleziona un Team Lead in "Riporta a".'); return }
-    }
-    if (role === 'TeamLead') {
-      const adm = list.find(x => x.id === reports_to)
-      if (!adm || adm.role !== 'Admin') { setError('Per un Team Lead seleziona un Admin in "Riporta a".'); return }
-    }
-
-    const { data, error } = await supabase.functions.invoke('admin_create_user', {
-      body: { email, full_name, role, reports_to, region }
-    })
-    if (error) { setError(error.message || 'Errore invito'); return }
-
-    await load()
-    alert('Utente creato e invitato. Riceverà l’email per impostare l’accesso.')
+  if (role === 'Advisor') {
+    const tl = list.find(x => x.id === reports_to)
+    if (!tl || tl.role !== 'TeamLead') { setError('Per un Advisor seleziona un Team Lead in "Riporta a".'); return }
   }
+  if (role === 'TeamLead') {
+    const adm = list.find(x => x.id === reports_to)
+    if (!adm || adm.role !== 'Admin') { setError('Per un Team Lead seleziona un Admin in "Riporta a".'); return }
+  }
+
+  const { data, error } = await supabase.functions.invoke('admin_create_user', {
+    body: { email, full_name, role, reports_to, region }
+  })
+  if (error) { setError(error.message || 'Errore invito'); return }
+
+  await load()
+
+  // Se la function ha restituito un link di fallback, mostralo
+  const link = (data as any)?.invite_link
+  if (link) {
+    // Mostra un prompt per copiare il link e spedirlo via Outlook
+    window.prompt('Invio email automatico non disponibile. Copia e invia questo link al nuovo utente:', link)
+  } else {
+    alert('Invito inviato via email.')
+  }
+}
+
 
   if (role !== 'Admin') return <div style={box}>Accesso negato: solo Admin.</div>
 
