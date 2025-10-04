@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabaseClient'
 import Dashboard from './pages/Dashboard'
 import AdminUsers from './pages/AdminUsers'
+import AcceptInvite from './pages/AcceptInvite'
 
 type User = {
   email: string
@@ -70,6 +71,15 @@ export default function App() {
   const [page, setPage] = useState('dashboard')
   const [user, setUser] = useState<User | null>(null)
 
+  const [inviteMode, setInviteMode] = useState(false)
+useEffect(() => {
+  const h = window.location.hash.toLowerCase()
+  const q = window.location.search.toLowerCase()
+  if (h.includes('type=invite') || h.includes('type=recovery') || q.includes('type=invite') || q.includes('type=recovery')) {
+    setInviteMode(true)
+  }
+}, [])
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (data.user?.email) setUser({ email: data.user.email })
@@ -80,6 +90,11 @@ export default function App() {
     await supabase.auth.signOut()
     setUser(null)
   }
+
+  // Se è un link di invito o recovery, mostra la pagina di set password
+if (inviteMode) {
+  return <AcceptInvite onDone={()=>{ setInviteMode(false); window.location.replace(window.location.origin) }} />
+}
 
   if (!user) return <LoginView onLogged={setUser} />
 
