@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
 const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
@@ -15,7 +15,7 @@ export default function AdminUsers() {
   const [form, setForm] = useState<any>({ email:'', full_name:'', role:'Advisor', reports_to:'', region:'' })
   const [saving, setSaving] = useState(false)
 
-  // Carica ruolo utente corrente (serve per bloccare accesso ai non-Admin)
+  // Carica ruolo utente corrente (blocca accesso ai non-Admin)
   useEffect(() => {
     (async () => {
       const u = await supabase.auth.getUser()
@@ -42,7 +42,6 @@ export default function AdminUsers() {
     e.preventDefault()
     setError('')
 
-    // Validazioni base
     const email = (form.email||'').trim()
     const full_name = (form.full_name||'').trim()
     const role = form.role
@@ -68,12 +67,41 @@ export default function AdminUsers() {
 
     setForm({ email:'', full_name:'', role:'Advisor', reports_to:'', region:'' })
     await load()
-    alert('Utente salvato in advisors. Ricorda: per permettere il login, crea anche l’utente in Auth → Add User con la stessa email.')
+    alert('Utente salvato in advisors. Per permettere il login, crea (solo per ora) l’utente anche in Auth → Add User con la stessa email, oppure usa il pulsante Invita qui sotto se hai pubblicato la Function.')
   }
 
-  if (role !== 'Admin') {
-    return <div style={box}>Accesso negato: solo Admin.</div>
+  // 👉 FUNZIONE INVITE (usa Edge Function admin_create_user)
+  const invite = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+
+    const email = (form.email||'').trim()
+    const full_name = (form.full_name||'').trim()
+    const role = form.role
+    const reports_to = form.reports_to || null
+    const region = form.region || null
+
+    if (!email || !full_name || !role) { setError('Compila email, nome completo e ruolo.'); return }
+
+    if (role === 'Advisor') {
+      const tl = list.find(x => x.id === reports_to)
+      if (!tl || tl.role !== 'TeamLead') { setError('Per un Advisor seleziona un Team Lead in "Riporta a".'); return }
+    }
+    if (role === 'TeamLead') {
+      const adm = list.find(x => x.id === reports_to)
+      if (!adm || adm.role !== 'Admin') { setError('Per un Team Lead seleziona un Admin in "Riporta a".'); return }
+    }
+
+    const { data, error } = await supabase.functions.invoke('admin_create_user', {
+      body: { email, full_name, role, reports_to, region }
+    })
+    if (error) { setError(error.message || 'Errore invito'); return }
+
+    await load()
+    alert('Utente creato e invitato. Riceverà l’email per impostare l’accesso.')
   }
+
+  if (role !== 'Admin') return <div style={box}>Accesso negato: solo Admin.</div>
 
   return (
     <div style={{ display:'grid', gap:16 }}>
@@ -113,7 +141,8 @@ export default function AdminUsers() {
           </div>
           <div style={{ alignSelf:'end', display:'flex', gap:8 }}>
             <button type="button" onClick={()=>setForm({ email:'', full_name:'', role:'Advisor', reports_to:'', region:'' })} style={{ ...cta, background:'#fff', color:'#111' }}>Reset</button>
-            <button type="submit" disabled={saving} style={cta}>{saving? 'Salvataggio…':'Salva'}</button>
+            <button type="submit" disabled={saving} style={cta}>{saving? 'Salvataggio…':'Salva (solo DB)'}</button>
+            <button type="button" onClick={invite} style={{ ...cta, background:'#0a7', borderColor:'#0a7' }}>Crea utente (invita)</button>
           </div>
         </form>
         {error && <div style={{ marginTop:8, color:'#c00' }}>{error}</div>}
