@@ -16,7 +16,7 @@ type Lead = {
   created_at?: string
 }
 
-const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
+const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16, overflow:'visible' }
 const ipt: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', width:'100%' }
 const cta: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }
 const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
@@ -211,43 +211,43 @@ export default function LeadsPage() {
             </div>
             <div>
               <div style={lbl}>Owner (Junior)</div>
-              <input value={ownerName} readOnly style={{ ...ipt, background:'#f9f9f9' }} />
+              <input value={ownerName} readOnly style={{ ...ipt, position:'relative', zIndex:2, background:'#f9f9f9' }} />
             </div>
 
             <div>
               <div style={lbl}>Nome</div>
-              <input value={form.first_name||''} onChange={e=>setForm({ ...form, first_name:e.target.value })} style={ipt} />
+              <input value={form.first_name||''} onChange={e=>setForm({ ...form, first_name:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
             <div>
               <div style={lbl}>Cognome</div>
-              <input value={form.last_name||''} onChange={e=>setForm({ ...form, last_name:e.target.value })} style={ipt} />
+              <input value={form.last_name||''} onChange={e=>setForm({ ...form, last_name:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
 
             <div>
               <div style={lbl}>Ragione Sociale</div>
-              <input value={form.company_name||''} onChange={e=>setForm({ ...form, company_name:e.target.value })} style={ipt} />
+              <input value={form.company_name||''} onChange={e=>setForm({ ...form, company_name:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
             <div>
               <div style={lbl}>Email</div>
-              <input value={form.email||''} onChange={e=>setForm({ ...form, email:e.target.value })} style={ipt} />
+              <input value={form.email||''} onChange={e=>setForm({ ...form, email:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
 
             <div>
               <div style={lbl}>Telefono</div>
-              <input value={form.phone||''} onChange={e=>setForm({ ...form, phone:e.target.value })} style={ipt} />
+              <input value={form.phone||''} onChange={e=>setForm({ ...form, phone:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
             <div>
               <div style={lbl}>Città</div>
-              <input value={form.city||''} onChange={e=>setForm({ ...form, city:e.target.value })} style={ipt} />
+              <input value={form.city||''} onChange={e=>setForm({ ...form, city:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
 
             <div>
               <div style={lbl}>Indirizzo</div>
-              <input value={form.address||''} onChange={e=>setForm({ ...form, address:e.target.value })} style={ipt} />
+              <input value={form.address||''} onChange={e=>setForm({ ...form, address:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }} />
             </div>
             <div>
               <div style={lbl}>Fonte</div>
-              <select value={form.source||'Provided'} onChange={e=>setForm({ ...form, source:e.target.value as any })} style={ipt}>
+              <select value={form.source||'Provided'} onChange={e=>setForm({ ...form, source:e.target.value as any })} style={{ ...ipt, position:'relative', zIndex:2 }}>
                 <option value="Provided">Provided</option>
                 <option value="Self">Self</option>
               </select>
