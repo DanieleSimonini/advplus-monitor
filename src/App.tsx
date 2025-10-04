@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabaseClient'
 import Dashboard from './pages/Dashboard'
+import AdminUsers from './pages/AdminUsers'
 
 type User = {
   email: string
@@ -103,7 +104,7 @@ export default function App() {
         {page === 'reports' && <Placeholder title="Report" />}
         {page === 'goals' && <Placeholder title="Obiettivi" />}
         {page === 'import' && <Placeholder title="Import" />}
-        {page === 'admin' && <Placeholder title="Admin (Utenti)" subtitle="Qui inseriremo la creazione utenze senza codice" />}
+        {page === 'admin' && <Placeholder title="AdminUsers /" subtitle="Qui inseriremo la creazione utenze senza codice" />}
       </div>
     </div>
   )
