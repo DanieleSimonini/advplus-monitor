@@ -33,14 +33,46 @@ export default function RootApp(){
   const [loading, setLoading] = useState(true)
 
   // Bootstrap auth soft: non blocca il menu
-  useEffect(()=>{ const sub = supabase.auth.onAuthStateChange(async (_evt, s)=>{
-    if (!s){ setMe(null); setLoading(false); return }
-    await loadMe(s.user.id)
-  }); (async()=>{
-    const { data:s } = await supabase.auth.getSession()
-    if (s?.session) await loadMe(s.session.user.id)
-    else setLoading(false)
-  })(); return ()=>sub.data.subscription.unsubscribe() },[])
+useEffect(() => {
+  let unsub: { unsubscribe: () => void } | null = null
+
+  ;(async () => {
+    // 1) Prova a leggere la sessione già persistita
+    const { data: s } = await supabase.auth.getSession()
+    if (s?.session) {
+      await loadMe(s.session.user.id)
+    } else {
+      // 1a) Se il token è in localStorage ma getSession è momentaneamente vuoto, forziamo il refresh
+      try {
+        const storageKey = (supabase as any)?.auth?.storageKey || 'advplus-auth'
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
+        if (raw) {
+          await supabase.auth.refreshSession()
+          const { data: s2 } = await supabase.auth.getSession()
+          if (s2?.session) {
+            await loadMe(s2.session.user.id)
+          } else {
+            setLoading(false)
+          }
+        } else {
+          setLoading(false)
+        }
+      } catch {
+        setLoading(false)
+      }
+    }
+
+    // 2) Sottoscrizione agli eventi di auth (login/logout/refresh)
+    const sub = supabase.auth.onAuthStateChange(async (_evt, session) => {
+      if (!session) { setMe(null); setLoading(false); return }
+      await loadMe(session.user.id)
+    })
+    unsub = sub.data.subscription
+  })()
+
+  return () => { if (unsub) unsub.unsubscribe() }
+}, [])
+
 
   async function loadMe(uid:string){
     setLoading(true)
