@@ -68,8 +68,13 @@ export default function RootApp(){
     } finally { setLoading(false) }
   }
 
+  // Se sono su login e la sessione è attiva → torna in dashboard automaticamente
+  useEffect(()=>{
+    if (screen==='login' && me){ setScreen('dashboard') }
+  }, [screen, me])
+
   // Schermata Login dedicata
-  if (screen==='login'){
+  if (screen==='login' && !me){
     return <LoginPage />
   }
 
@@ -77,7 +82,7 @@ export default function RootApp(){
     <div style={{ maxWidth:1200, margin:'0 auto', padding:16, display:'grid', gap:16 }}>
       {/* ========== APP MARKER (deve apparire SEMPRE) ========== */}
       <div style={{ padding:8, border:'2px dashed #f00', borderRadius:8, background:'#fff0f0', textAlign:'center' }}>
-        <b>APP MARKER</b> · RootApp.tsx v2
+        <b>APP MARKER</b> · RootApp.tsx v3
       </div>
 
       {/* Header / Nav */}
