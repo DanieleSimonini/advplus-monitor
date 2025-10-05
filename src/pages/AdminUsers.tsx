@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
-// AdminUsers Step C: campi editabili + azioni (Salva / Annulla / Reinvio invito)
+// AdminUsers Step C+Invite: campi editabili + azioni + INVITA NUOVO UTENTE
 // Requisito SQL gia' fatto: ALTER TABLE public.advisors ADD COLUMN IF NOT EXISTS disabled boolean NOT NULL DEFAULT false;
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -16,10 +16,18 @@ type Advisor = {
   disabled: boolean
 }
 
+type InviteDraft = {
+  email: string
+  full_name: string
+  role: Role
+  team_lead_user_id: string | null
+}
+
 const box: React.CSSProperties = { background: '#fff', border: '1px solid #eee', borderRadius: 16, padding: 16 }
 const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid #eee', background: '#fafafa' }
 const td: React.CSSProperties = { padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }
 const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid #ddd', borderRadius: 8 }
+const row: React.CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }
 
 export default function AdminUsersPage(){
   const [advisors, setAdvisors] = useState<Advisor[]>([])
@@ -27,8 +35,12 @@ export default function AdminUsersPage(){
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
 
-  // drafts locali per le modifiche
+  // drafts locali per le modifiche riga
   const [drafts, setDrafts] = useState<Record<string, Partial<Advisor>>>({})
+
+  // draft per INVITO
+  const [invite, setInvite] = useState<InviteDraft>({ email: '', full_name: '', role: 'Junior', team_lead_user_id: '' as any })
+  const [inviting, setInviting] = useState(false)
 
   useEffect(() => { void loadAdvisors() }, [])
 
@@ -106,17 +118,96 @@ export default function AdminUsersPage(){
     } catch(ex:any){ setErr(ex.message || 'Errore invio invito') }
   }
 
+  async function doInvite(){
+    setErr(''); setOk(''); setInviting(true)
+    try{
+      const email = invite.email.trim().toLowerCase()
+      if (!email){ setErr('Email obbligatoria'); return }
+      // cerca advisor esistente per email
+      const { data: exists, error: e1 } = await supabase
+        .from('advisors')
+        .select('id,user_id')
+        .eq('email', email)
+        .maybeSingle()
+      if (e1 && e1.code !== 'PGRST116') throw e1
+
+      if (exists && exists.id){
+        // aggiorna dati base
+        const { error: uerr } = await supabase
+          .from('advisors')
+          .update({ full_name: invite.full_name || null, role: invite.role, team_lead_user_id: invite.team_lead_user_id || null, disabled: false })
+          .eq('id', exists.id)
+        if (uerr) throw uerr
+      } else {
+        // crea advisor
+        const { error: ierr } = await supabase
+          .from('advisors')
+          .insert({ email, full_name: invite.full_name || null, role: invite.role, team_lead_user_id: invite.team_lead_user_id || null, disabled: false })
+        if (ierr) throw ierr
+      }
+
+      // invia magic link
+      const { error: merr } = await supabase.auth.signInWithOtp({
+        email: email,
+        options: { emailRedirectTo: window.location.origin }
+      })
+      if (merr) throw merr
+
+      setOk('Utente creato/aggiornato e invito inviato')
+      setInvite({ email: '', full_name: '', role: 'Junior', team_lead_user_id: '' as any })
+      await loadAdvisors()
+    } catch(ex:any){ setErr(ex.message || 'Errore durante invito') }
+    finally{ setInviting(false) }
+  }
+
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ fontSize: 20, fontWeight: 800 }}>Utenti e Ruoli</div>
 
+      {/* BOX INVITO NUOVO UTENTE */}
       <div style={{ ...box }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>Invita nuovo utente</div>
         {(err || ok) && (
           <div style={{ marginBottom: 8 }}>
             {err && <div style={{ color: '#c00' }}>{err}</div>}
             {ok && <div style={{ color: '#080' }}>{ok}</div>}
           </div>
         )}
+        <div style={row}>
+          <div>
+            <div style={{ fontSize: 12, marginBottom: 4 }}>Email</div>
+            <input value={invite.email} onChange={e=>setInvite(v=>({ ...v, email: e.target.value }))} style={ipt} placeholder="nome@azienda.it" />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, marginBottom: 4 }}>Nome</div>
+            <input value={invite.full_name} onChange={e=>setInvite(v=>({ ...v, full_name: e.target.value }))} style={ipt} placeholder="Nome Cognome" />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, marginBottom: 4 }}>Ruolo</div>
+            <select value={invite.role} onChange={e=>setInvite(v=>({ ...v, role: e.target.value as Role }))} style={ipt}>
+              <option value="Admin">Admin</option>
+              <option value="Team Lead">Team Lead</option>
+              <option value="Junior">Junior</option>
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, marginBottom: 4 }}>Team Lead</div>
+            <select value={invite.team_lead_user_id || ''} onChange={e=>setInvite(v=>({ ...v, team_lead_user_id: e.target.value || null }))} style={ipt}>
+              <option value="">-</option>
+              {teamLeads.map(tl => (
+                <option key={tl.user_id || tl.email} value={tl.user_id || ''}>{tl.full_name || tl.email} ({tl.role})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div style={{ height: 18 }} />
+            <button onClick={doInvite} disabled={inviting} style={{ ...ipt, cursor: 'pointer' }}>Invia invito</button>
+          </div>
+        </div>
+      </div>
+
+      {/* BOX ELENCO UTENTI */}
+      <div style={{ ...box }}>
         {loading ? (
           'Caricamento...'
         ) : (
@@ -178,9 +269,9 @@ export default function AdminUsersPage(){
       </div>
 
       <div style={{ ...box, background: '#fffbdd', borderColor: '#ffe58f' }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Nota</div>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Note</div>
         <div style={{ fontSize: 13, lineHeight: 1.5 }}>
-          Ora puoi modificare i campi e premere Salva per persistere. Reinvio invito invia un magic-link all'indirizzo della riga.
+          L'invito crea o aggiorna la riga su advisors e invia un magic-link all'indirizzo indicato. Al primo login, l'auto-link user_id avviene in RootApp.
         </div>
       </div>
     </div>
