@@ -5,7 +5,7 @@ import DashboardPage from './pages/Dashboard'
 import LeadsPage from './pages/Leads'
 import GoalsTLPage from './pages/GoalsTL'
 import LoginPage from './pages/Login'
-import AdminPage from './pages/Admin'
+import AdminPage from './pages/AdminUsers'
 import ImportLeadsPage from './pages/ImportLeads'
 
 // Placeholder opzionali
