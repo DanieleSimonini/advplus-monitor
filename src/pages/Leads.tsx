@@ -2,13 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
 /**
- * Leads.tsx — Opzione A (rev3 con CHECK mappati)
- * - Elenco lead + form + tab con inserimenti inline
- * - Allineato a NOT NULL legacy e CHECK:
- *   activities.channel ∈ {'phone','email','inperson','video'} (UI offre anche WhatsApp/SMS/Altro → mappati su 'phone')
- *   appointments.mode ∈ {'inperson','phone','video'} (UI: In presenza/Video/Telefono)
+ * Leads.tsx — Opzione A (rev4 user_id + CHECK allineati)
+ * - Elenco lead + form + tab con inserimenti inline sul SOLO lead selezionato
+ * - RLS/PK: owner_id = advisors.user_id (== auth.uid())
+ * - CHECK DB rispettati:
+ *   activities.channel ∈ {'phone','email','inperson','video'}
+ *   activities.outcome ∈ {'spoke','noanswer','refused'}
+ *   appointments.mode ∈ {'inperson','phone','video'}
  *   contracts.contract_type ∈ { 'Danni Non Auto','Vita Protection','Vita Premi Ricorrenti','Vita Premi Unici' }
- * - UI: griglie responsive (niente sovrapposizioni), select con z-index
+ * - UI: griglie responsive, select con z-index, note facoltative
  */
 
 // === OPZIONI UI (label) E VALORI DB CONFORMI AI CHECK ===
@@ -43,13 +45,10 @@ const OUTCOME_OPTIONS_UI = [
   { label: 'Rifiutato', db: 'refused' },
 ] as const
 
-// Mappa un label UI Canale → valore DB conforme al CHECK
+// Mappa label UI → literal DB (CHECK)
 const channelDbFromLabel = (label: string) => CHANNEL_OPTIONS_UI.find(o=>o.label===label)?.db || 'phone'
-// Mappa un label UI Modalità → valore DB conforme al CHECK
-const modeDbFromLabel = (label: string) => MODE_OPTIONS_UI.find(o=>o.label===label)?.db || 'inperson'
-// Mappa un label UI Esito → valore DB conforme al CHECK
+const modeDbFromLabel    = (label: string) => MODE_OPTIONS_UI.find(o=>o.label===label)?.db || 'inperson'
 const outcomeDbFromLabel = (label: string) => OUTCOME_OPTIONS_UI.find(o=>o.label===label)?.db || 'spoke'
-// Per i contratti usiamo direttamente i literal ammessi.
 
 // =====================================================
 
@@ -81,8 +80,8 @@ const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'
 const lbl: React.CSSProperties = { fontSize:12, color:'#666', marginBottom:4 }
 
 export default function LeadsPage() {
-  // utente corrente
-  const [me, setMe] = useState<{ id: string; email: string; full_name?: string } | null>(null)
+  // utente corrente (include user_id per RLS/FK)
+  const [me, setMe] = useState<{ id: string; user_id: string; email: string; full_name?: string } | null>(null)
 
   // elenco leads
   const [leads, setLeads] = useState<Lead[]>([])
@@ -113,10 +112,14 @@ export default function LeadsPage() {
     const u = await supabase.auth.getUser()
     const email = u.data.user?.email
     if (!email){ setError('Utente non autenticato'); setLoading(false); return }
-    // advisor corrente
-    const { data: myRow, error: meErr } = await supabase.from('advisors').select('id,email,full_name').eq('email', email).maybeSingle()
+    // advisor corrente (con user_id)
+    const { data: myRow, error: meErr } = await supabase
+      .from('advisors')
+      .select('id,user_id,email,full_name')
+      .eq('email', email)
+      .maybeSingle()
     if (meErr || !myRow){ setError(meErr?.message || 'Advisor non trovato'); setLoading(false); return }
-    setMe({ id: myRow.id, email: myRow.email, full_name: myRow.full_name })
+    setMe({ id: myRow.id, user_id: myRow.user_id, email: myRow.email, full_name: myRow.full_name })
 
     await reloadLeads()
     setLoading(false)
@@ -173,7 +176,7 @@ export default function LeadsPage() {
         const { error } = await supabase.from('leads').update(cleanLeadForDb(form)).eq('id', selectedId)
         if (error) throw error
       } else {
-        const payload = { ...cleanLeadForDb(form), owner_id: me.id }
+        const payload = { ...cleanLeadForDb(form), owner_id: me.user_id }
         const { data, error } = await supabase.from('leads').insert(payload).select('id').single()
         if (error) throw error
         setSelectedId(data?.id || null)
@@ -205,7 +208,7 @@ export default function LeadsPage() {
   const ownerName = useMemo(()=>{
     if (!me) return ''
     if (!form.owner_id) return me.full_name || me.email
-    return form.owner_id === me.id ? (me.full_name || me.email) : '—'
+    return form.owner_id === me.user_id ? (me.full_name || me.email) : '—'
   }, [me, form.owner_id])
 
   return (
@@ -329,7 +332,7 @@ export default function LeadsPage() {
                   lead_id: selectedId,
                   ts: newContact.ts,
                   channel: channelDb,          // conforme al CHECK
-                  outcome: outcomeDbFromLabel(newContact.outcome_label), // conforme al CHECK su outcome
+                  outcome: outcomeDbFromLabel(newContact.outcome_label), // conforme al CHECK
                   notes: newContact.notes||null
                 })
                 if (error){ setError(error.message); return }
@@ -361,7 +364,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Canale (db)'},{k:'outcome',l:'Esito'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Canale (db)'},{k:'outcome',l:'Esito (db)'},{k:'notes',l:'Note'}]} />
             </>
           )}
 
