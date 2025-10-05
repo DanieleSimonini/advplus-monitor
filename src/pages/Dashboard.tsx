@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../supabaseClient'
+import { supabase } from '/src/supabaseClient'
 
 /**
  * Dashboard.tsx — Step 2 (fix TS, user_id based)
