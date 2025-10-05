@@ -328,3 +328,4 @@ function seriesFromKpi(k: Kpi|null, key: keyof MonthAgg){
 function formatCurrency(n:number){
   try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }catch{ return `€ ${n.toFixed(0)}` }
 }
+
