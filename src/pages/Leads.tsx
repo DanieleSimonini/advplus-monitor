@@ -36,10 +36,19 @@ const CONTRACT_TYPE_OPTIONS = [
   { label: 'Vita Premi Unici', value: 'Vita Premi Unici' },
 ] as const
 
+// Esito contatto (outcome) conforme al CHECK: {'spoke','noanswer','refused'}
+const OUTCOME_OPTIONS_UI = [
+  { label: 'Parlato', db: 'spoke' },
+  { label: 'Nessuna risposta', db: 'noanswer' },
+  { label: 'Rifiutato', db: 'refused' },
+] as const
+
 // Mappa un label UI Canale → valore DB conforme al CHECK
 const channelDbFromLabel = (label: string) => CHANNEL_OPTIONS_UI.find(o=>o.label===label)?.db || 'phone'
 // Mappa un label UI Modalità → valore DB conforme al CHECK
 const modeDbFromLabel = (label: string) => MODE_OPTIONS_UI.find(o=>o.label===label)?.db || 'inperson'
+// Mappa un label UI Esito → valore DB conforme al CHECK
+const outcomeDbFromLabel = (label: string) => OUTCOME_OPTIONS_UI.find(o=>o.label===label)?.db || 'spoke'
 // Per i contratti usiamo direttamente i literal ammessi.
 
 // =====================================================
@@ -93,7 +102,7 @@ export default function LeadsPage() {
   const [contracts, setContracts] = useState<any[]>([])
 
   // inline forms per inserimento rapido
-  const [newContact, setNewContact] = useState<{ts:string; channel_label:string; notes:string}>({ ts:'', channel_label:'', notes:'' })
+  const [newContact, setNewContact] = useState<{ts:string; channel_label:string; outcome_label:string; notes:string}>({ ts:'', channel_label:'', outcome_label:'', notes:'' })
   const [newAppointment, setNewAppointment] = useState<{ts:string; mode_label:string; notes:string}>({ ts:'', mode_label:'', notes:'' })
   const [newProposal, setNewProposal] = useState<{ts:string; line:string; notes:string}>({ ts:'', line:'', notes:'' })
   const [newContract, setNewContract] = useState<{ts:string; contract_type:string; amount:string; notes:string}>({ ts:'', contract_type:'', amount:'', notes:'' })
@@ -136,7 +145,7 @@ export default function LeadsPage() {
     setSelectedId(null)
     setForm(emptyLead())
     setContacts([]); setAppointments([]); setProposals([]); setContracts([])
-    setNewContact({ ts:'', channel_label:'', notes:'' })
+    setNewContact({ ts:'', channel_label:'', outcome_label:'', notes:'' })
     setNewAppointment({ ts:'', mode_label:'', notes:'' })
     setNewProposal({ ts:'', line:'', notes:'' })
     setNewContract({ ts:'', contract_type:'', amount:'', notes:'' })
@@ -314,13 +323,13 @@ export default function LeadsPage() {
           {selectedId && tab==='contatti' && (
             <>
               <InlineNewRow title="Nuovo contatto" onSave={async()=>{
-                if (!newContact.ts || !newContact.channel_label){ setError('Per il contatto indica data/ora e canale.'); return }
+                if (!newContact.ts || !newContact.channel_label || !newContact.outcome_label){ setError('Per il contatto indica data/ora, canale ed esito.'); return }
                 const channelDb = channelDbFromLabel(newContact.channel_label)
                 const { error } = await supabase.from('activities').insert({
                   lead_id: selectedId,
                   ts: newContact.ts,
                   channel: channelDb,          // conforme al CHECK
-                  outcome: channelDb,          // legacy obbligatorio, allineato
+                  outcome: outcomeDbFromLabel(newContact.outcome_label), // conforme al CHECK su outcome
                   notes: newContact.notes||null
                 })
                 if (error){ setError(error.message); return }
@@ -337,6 +346,13 @@ export default function LeadsPage() {
                     <select value={newContact.channel_label} onChange={e=>setNewContact({ ...newContact, channel_label:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
                       <option value="">—</option>
                       {CHANNEL_OPTIONS_UI.map(opt => <option key={opt.label} value={opt.label}>{opt.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={lbl}>Esito</div>
+                    <select value={newContact.outcome_label} onChange={e=>setNewContact({ ...newContact, outcome_label:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
+                      <option value="">—</option>
+                      {OUTCOME_OPTIONS_UI.map(opt => <option key={opt.label} value={opt.label}>{opt.label}</option>)}
                     </select>
                   </div>
                   <div>
