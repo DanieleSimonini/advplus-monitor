@@ -77,10 +77,6 @@ export default function RootApp(){
 
   return (
     <div style={{ maxWidth:1200, margin:'0 auto', padding:16, display:'grid', gap:16 }}>
-      {/* ========== APP MARKER (deve apparire SEMPRE) ========== */}
-      <div style={{ padding:8, border:'2px dashed #f00', borderRadius:8, background:'#fff0f0', textAlign:'center' }}>
-        <b>APP MARKER</b> · RootApp.tsx v3
-      </div>
 
       {/* Header / Nav */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}>
