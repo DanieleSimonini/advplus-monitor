@@ -96,6 +96,11 @@ useEffect(() => {
       else setMe(null)
     } finally { setLoading(false) }
   }
+// dopo aver ottenuto 'data' cercando per email:
+if (data && !data.user_id) {
+  await supabase.from('advisors').update({ user_id: uid }).eq('id', data.id)
+  data.user_id = uid
+}
 
   // Se sono su login e la sessione è attiva → torna in dashboard automaticamente
   useEffect(()=>{
