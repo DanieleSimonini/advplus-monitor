@@ -7,10 +7,10 @@ import GoalsTLPage from './pages/GoalsTL'
 import LoginPage from './pages/Login'
 import AdminPage from './pages/AdminUsers'
 import ImportLeadsPage from './pages/ImportLeads'
+import ReportPage from './pages/Report'
 
 // Placeholder opzionali
 const CalendarPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Calendar</b> in preparazione.</div>
-const ReportPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Report</b> in preparazione.</div>
 
 // Stile bottoni nav
 const navBtn: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
