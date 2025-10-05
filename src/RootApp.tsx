@@ -118,6 +118,25 @@ useEffect(() => {
         </button>
       </div>
 
+<div style={{ padding:8, border:'1px dashed #0aa', borderRadius:8, background:'#e8fffb' }}>
+  <b>LOCALSTORAGE</b>{' '}
+  <button
+    onClick={() => {
+      try {
+        const keys = Object.keys(localStorage)
+        const entries = keys.map(k => `${k}: ${localStorage.getItem(k)?.slice(0, 40)}…`).join('\n')
+        alert(entries || 'LocalStorage vuoto')
+      } catch(e) {
+        alert('Errore lettura localStorage')
+      }
+    }}
+    style={{ marginLeft:8, padding:'4px 8px' }}
+  >
+    ispeziona
+  </button>
+</div>
+
+      
       {/* Header / Nav */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}>
         <LogoAPlus />
