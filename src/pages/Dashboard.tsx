@@ -110,7 +110,11 @@ export default function DashboardPage(){
   const canSeeTeam = me?.role === 'Admin' || me?.role === 'Team Lead'
 
   return (
-    <div style={{ display:'grid', gap:16 }}>
+    <div {/* DEBUG ribbon */}
+<div style={{ padding:8, border:'1px dashed #aaa', borderRadius:8, background:'#fffbdd' }}>
+  <b>DEBUG</b> · Questo è il banner diagnostic
+</div>
+style={{ display:'grid', gap:16 }}>
       <div style={title}>Dashboard</div>
 
       {/* FILTRI */}
