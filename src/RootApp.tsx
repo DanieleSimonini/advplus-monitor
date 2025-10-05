@@ -38,20 +38,41 @@ export default function RootApp(){
   const [loading, setLoading] = useState(true)
   const [hasSession, setHasSession] = useState<boolean>(false)
 
-  useEffect(()=>{ 
-    const sub = supabase.auth.onAuthStateChange(async (_evt, s)=>{
-      setHasSession(!!s)
-      if (!s){ setMe(null); setLoading(false); return }
-      await loadMe(s.user.id)
+useEffect(() => {
+  let unsub: { unsubscribe: () => void } | null = null
+
+  ;(async () => {
+    // 1) Recupero sessione da localStorage in modo sincrono/affidabile
+    const { data: s } = await supabase.auth.getSession()
+    const has = !!s?.session
+    setHasSession(has)
+    if (has) {
+      await loadMe(s!.session!.user!.id)
+    } else {
+      setLoading(false)
+    }
+
+    // 2) Mi iscrivo agli eventi di auth (login/logout/refresh)
+    const sub = supabase.auth.onAuthStateChange(async (_evt, session) => {
+      const ok = !!session
+      setHasSession(ok)
+      if (!ok) {
+        setMe(null)
+        setLoading(false)
+        return
+      }
+      await loadMe(session.user.id)
     })
-    ;(async()=>{
-      const { data:s } = await supabase.auth.getSession()
-      setHasSession(!!s?.session)
-      if (s?.session) await loadMe(s.session.user.id)
-      else setLoading(false)
-    })()
-    return ()=>sub.data.subscription.unsubscribe()
-  },[])
+
+    // memorizzo unsubscribe
+    unsub = sub.data.subscription
+  })()
+
+  return () => {
+    if (unsub) unsub.unsubscribe()
+  }
+}, [])
+
 
   async function loadMe(uid:string){
     setLoading(true)
