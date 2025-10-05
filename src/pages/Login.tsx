@@ -1,51 +1,66 @@
 import React, { useState } from 'react'
 import { supabase } from '../supabaseClient'
 
-// Login semplice: email+password oppure magic link
 export default function LoginPage(){
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [info, setInfo] = useState('')
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const signin = async ()=>{
-    setError(''); setInfo(''); setLoading(true)
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) setError(error.message)
-    setLoading(false)
+  async function doSignIn(e:React.FormEvent){
+    e.preventDefault()
+    setErr(''); setOk(''); setLoading(true)
+    try{
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw error
+      setOk('Accesso riuscito. Reindirizzo…')
+      // RootApp ascolta onAuthStateChange e tornerà in dashboard; forziamo anche un refresh per sicurezza
+      setTimeout(()=>{ window.location.href = '/' }, 300)
+    }catch(ex:any){ setErr(ex.message || 'Login fallito') }
+    finally{ setLoading(false) }
   }
 
-  const magic = async ()=>{
-    setError(''); setInfo(''); setLoading(true)
-    const { error } = await supabase.auth.signInWithOtp({ email, options:{ emailRedirectTo: window.location.origin } })
-    if (error) setError(error.message); else setInfo('Email inviata. Controlla anche la SPAM.')
-    setLoading(false)
+  async function doMagicLink(){
+    setErr(''); setOk(''); setLoading(true)
+    try{
+      const { error } = await supabase.auth.signInWithOtp({ email, options:{ emailRedirectTo: window.location.origin } })
+      if (error) throw error
+      setOk('Email inviata. Controlla la posta (anche spam) e apri il link.')
+    }catch(ex:any){ setErr(ex.message || 'Invio link fallito') }
+    finally{ setLoading(false) }
   }
 
   return (
-    <div style={{ minHeight:'100vh', display:'grid', placeItems:'center', background:'#f7f7f8' }}>
-      <div style={{ width:360, background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
-        <div style={{ fontWeight:800, fontSize:18, marginBottom:12 }}>Adv+ Monitor — Login</div>
-        <div style={{ display:'grid', gap:12 }}>
-          <div>
-            <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Email</div>
-            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} style={{ width:'100%', padding:'10px 12px', border:'1px solid #ddd', borderRadius:10 }} />
-          </div>
-          <div>
-            <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Password</div>
-            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} style={{ width:'100%', padding:'10px 12px', border:'1px solid #ddd', borderRadius:10 }} />
-          </div>
-          <button onClick={signin} disabled={loading} style={{ padding:'10px 12px', borderRadius:10, background:'#111', color:'#fff', border:'1px solid #111', cursor:'pointer' }}>
-            {loading ? 'Accesso…' : 'Accedi'}
-          </button>
-          <button onClick={magic} disabled={loading || !email} style={{ padding:'10px 12px', borderRadius:10, background:'#fff', color:'#111', border:'1px solid #ddd', cursor:'pointer' }}>
-            Link via email
-          </button>
-          {error && <div style={{ color:'#c00', fontSize:12 }}>{error}</div>}
-          {info && <div style={{ color:'#090', fontSize:12 }}>{info}</div>}
-        </div>
+    <div style={{ maxWidth:420, margin:'40px auto', padding:24, border:'1px solid #eee', borderRadius:16, background:'#fff' }}>
+      <div style={{ fontSize:22, fontWeight:800, marginBottom:12 }}>Accedi a Adv+ Monitor</div>
+
+      <form onSubmit={doSignIn} style={{ display:'grid', gap:10 }}>
+        <label style={{ display:'grid', gap:6 }}>
+          <span style={{ fontSize:12, color:'#555' }}>Email</span>
+          <input type="email" required value={email} onChange={e=>setEmail(e.target.value)} style={{ padding:'10px 12px', border:'1px solid #ddd', borderRadius:8 }} />
+        </label>
+        <label style={{ display:'grid', gap:6 }}>
+          <span style={{ fontSize:12, color:'#555' }}>Password</span>
+          <input type="password" required value={password} onChange={e=>setPassword(e.target.value)} style={{ padding:'10px 12px', border:'1px solid #ddd', borderRadius:8 }} />
+        </label>
+        <button type="submit" disabled={loading} style={{ padding:'10px 12px', borderRadius:8, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }}>
+          {loading ? 'Accesso…' : 'Entra'}
+        </button>
+      </form>
+
+      <div style={{ marginTop:12, display:'flex', gap:8, alignItems:'center' }}>
+        <div style={{ height:1, background:'#eee', flex:1 }} />
+        <div style={{ fontSize:12, color:'#999' }}>oppure</div>
+        <div style={{ height:1, background:'#eee', flex:1 }} />
       </div>
+
+      <div style={{ marginTop:12, display:'grid', gap:10 }}>
+        <button onClick={doMagicLink} disabled={loading || !email} style={{ padding:'10px 12px', borderRadius:8, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }}>Link via email</button>
+      </div>
+
+      {err && <div style={{ marginTop:12, color:'#c00' }}>{err}</div>}
+      {ok && <div style={{ marginTop:12, color:'#0a0' }}>{ok}</div>}
     </div>
   )
 }
