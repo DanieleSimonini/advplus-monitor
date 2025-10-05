@@ -110,11 +110,7 @@ export default function DashboardPage(){
   const canSeeTeam = me?.role === 'Admin' || me?.role === 'Team Lead'
 
   return (
-    <div {/* DEBUG ribbon */}
-<div style={{ padding:8, border:'1px dashed #aaa', borderRadius:8, background:'#fffbdd' }}>
-  <b>DEBUG</b> · Questo è il banner diagnostic
-</div>
-style={{ display:'grid', gap:16 }}>
+    <div style={{ display:'grid', gap:16 }}>
       <div style={title}>Dashboard</div>
 
       {/* FILTRI */}
@@ -332,4 +328,3 @@ function seriesFromKpi(k: Kpi|null, key: keyof MonthAgg){
 function formatCurrency(n:number){
   try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }catch{ return `€ ${n.toFixed(0)}` }
 }
-
