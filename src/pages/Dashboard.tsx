@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '/src/supabaseClient'
-
+import { supabase } from '@/supabaseClient'
 /**
  * Dashboard.tsx — Step 2 (fix TS, user_id based)
  * Filtri: Advisor / Periodo (mese da - mese a, default ultimi 6 mesi)
