@@ -333,7 +333,7 @@ export default function LeadsPage() {
                   notes: newContact.notes||null
                 })
                 if (error){ setError(error.message); return }
-                setNewContact({ ts:'', channel_label:'', notes:'' })
+                setNewContact({ ts:'', channel_label:'', outcome_label:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
