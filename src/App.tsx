@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient'
 import DashboardPage from './pages/Dashboard'
 import LeadsPage from './pages/Leads'
 import GoalsTLPage from './pages/GoalsTL'
+import LoginPage from './pages/Login'
 
 /**
  * App.tsx — Navigazione a schede (senza React Router)
@@ -24,21 +25,45 @@ export default function App(){
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [sessionReady, setSessionReady] = useState(false)
 
   useEffect(()=>{ (async()=>{
-    setLoading(true); setError('')
+    setError('')
+    // 1) sessione
+    const { data: sess } = await supabase.auth.getSession()
+    if (!sess.session){ setSessionReady(true); setLoading(false); setMe(null); return }
+    // 2) utente corrente -> advisor
     const u = await supabase.auth.getUser()
     const email = u.data.user?.email
-    if (!email){ setError('Utente non autenticato'); setLoading(false); return }
+    if (!email){ setError('Utente non autenticato'); setLoading(false); setMe(null); return }
     const { data, error } = await supabase
       .from('advisors')
       .select('id,user_id,email,full_name,role')
       .eq('email', email)
       .maybeSingle()
-    if (error || !data){ setError(error?.message || 'Advisor non trovato'); setLoading(false); return }
+    if (error || !data){ setError(error?.message || 'Advisor non trovato'); setLoading(false); setMe(null); return }
     setMe({ id:data.id, user_id:data.user_id, email:data.email, full_name:data.full_name, role:data.role as Role })
-    setLoading(false)
-  })() },[])
+    setLoading(false); setSessionReady(true)
+  })()
+  // subscribe a cambiamenti auth
+  const { data: sub } = supabase.auth.onAuthStateChange(async (_evt, sess)=>{
+    if (!sess){ setMe(null); setSessionReady(true); return }
+    const email = sess.user.email
+    if (!email){ setMe(null); setSessionReady(true); return }
+    const { data, error } = await supabase
+      .from('advisors')
+      .select('id,user_id,email,full_name,role')
+      .eq('email', email)
+      .maybeSingle()
+    if (!error && data){ setMe({ id:data.id, user_id:data.user_id, email:data.email, full_name:data.full_name, role:data.role as Role }) }
+  })
+  return ()=>{ sub.subscription.unsubscribe() }
+  },[])
+
+  // GATE: se non autenticato, mostra LoginPage
+  if (sessionReady && !me){
+    return <LoginPage />
+  }
 
   return (
     <div style={{ maxWidth:1200, margin:'0 auto', padding:16, display:'grid', gap:16 }}>
