@@ -11,7 +11,7 @@ import { supabase } from '../supabaseClient'
  * Nota RLS: i Junior vedono solo i propri dati; TL vede il suo team; Admin vede tutto.
  */
 
-type Advisor = { id: string; full_name: string | null; email: string; role: 'Admin'|'Team Lead'|'Junior'; team_lead_id?: string | null }
+type Advisor = { id: string; user_id: string; full_name: string | null; email: string; role: 'Admin'|'Team Lead'|'Junior'; team_lead_user_id?: string | null }
 
 type Period = { fromMonthKey: string; toMonthKey: string }
 
@@ -54,20 +54,20 @@ export default function DashboardPage(){
     const u = await supabase.auth.getUser()
     const email = u.data.user?.email
     if (!email){ setError('Utente non autenticato'); setLoading(false); return }
-    const { data: arow, error: aerr } = await supabase.from('advisors').select('id,full_name,email,role,team_lead_id').eq('email', email).maybeSingle()
+    const { data: arow, error: aerr } = await supabase.from('advisors').select('id,user_id,full_name,email,role,team_lead_user_id').eq('email', email).maybeSingle()
     if (aerr || !arow){ setError(aerr?.message || 'Advisor non trovato'); setLoading(false); return }
-    const meAdv: Advisor = { id: arow.id, full_name: arow.full_name, email: arow.email, role: arow.role as any, team_lead_id: arow.team_lead_id }
+    const meAdv: Advisor = { id: arow.id, user_id: arow.user_id, full_name: arow.full_name, email: arow.email, role: arow.role as any, team_lead_user_id: arow.team_lead_user_id }
     setMe(meAdv)
 
     // elenco advisors per filtro
     let advList: Advisor[] = []
     if (meAdv.role === 'Admin'){
-      const { data, error } = await supabase.from('advisors').select('id,full_name,email,role,team_lead_id').order('full_name', { ascending:true })
+      const { data, error } = await supabase.from('advisors').select('id,user_id,full_name,email,role,team_lead_user_id').order('full_name', { ascending:true })
       if (error){ setError(error.message); setLoading(false); return }
       advList = (data||[]) as any
     } else if (meAdv.role === 'Team Lead'){
       // me + i miei junior
-      const { data, error } = await supabase.from('advisors').select('id,full_name,email,role,team_lead_id').or(`id.eq.${meAdv.id},team_lead_id.eq.${meAdv.id}`).order('full_name', { ascending:true })
+      const { data, error } = await supabase.from('advisors').select('id,user_id,full_name,email,role,team_lead_user_id').or(`user_id.eq.${meAdv.user_id},team_lead_user_id.eq.${meAdv.user_id}`).order('full_name', { ascending:true })
       if (error){ setError(error.message); setLoading(false); return }
       advList = (data||[]) as any
       setOwnerFilter('team') // default TL: team
@@ -118,7 +118,7 @@ export default function DashboardPage(){
               {me?.role==='Admin' && <option value={'all'}>Tutti (azienda)</option>}
               {/* elenco singoli */}
               {advisors.map(a=> (
-                <option key={a.id} value={a.id}>{a.full_name || a.email}</option>
+                <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
               ))}
             </select>
           </div>
@@ -163,14 +163,15 @@ export default function DashboardPage(){
 }
 
 function ownersToQuery(filter: string, me: Advisor, advisors: Advisor[]): string[] {
-  if (filter==='me') return [me.id]
-  if (filter==='all') return advisors.map(a=>a.id)
+  if (filter==='me') return [me.user_id]
+  if (filter==='all') return advisors.map(a=>a.user_id)
   if (filter==='team'){
-    if (me.role==='Admin') return advisors.map(a=>a.id)
-    // TL: se stesso + junior del suo team
-    if (me.role==='Team Lead') return advisors.filter(a=>a.id===me.id || a.team_lead_id===me.id).map(a=>a.id)
-    return [me.id]
+    if (me.role==='Admin') return advisors.map(a=>a.user_id)
+    if (me.role==='Team Lead') return advisors.filter(a=>a.user_id===me.user_id || a.team_lead_user_id===me.user_id).map(a=>a.user_id)
+    return [me.user_id]
   }
+  return [filter]
+}
   // singolo advisor
   return [filter]
 }
