@@ -2,20 +2,19 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
 /**
- * Dashboard.tsx — Step 2
+ * Dashboard.tsx — Step 2 (fix TS, user_id based)
  * Filtri: Advisor / Periodo (mese da - mese a, default ultimi 6 mesi)
- * KPI: contatti, appuntamenti (consulenze), proposte, contratti,
- *      produzione per linee: Danni Non Auto, Vita Protection, Vita PR, Vita PU
- * Sparkline mensili (mini-chart) sui KPI principali.
- *
- * Nota RLS: i Junior vedono solo i propri dati; TL vede il suo team; Admin vede tutto.
+ * KPI: contatti, appuntamenti, proposte, contratti, produzione per linee
+ * Sparkline mensili sui KPI principali.
  */
 
 type Advisor = { id: string; user_id: string; full_name: string | null; email: string; role: 'Admin'|'Team Lead'|'Junior'; team_lead_user_id?: string | null }
 
 type Period = { fromMonthKey: string; toMonthKey: string }
 
-type Buckets = string[] // es. ['2025-05','2025-06',...]
+type Buckets = string[]
+
+type MonthAgg = { contacts:number; appointments:number; proposals:number; contracts:number; prod:number }
 
 type Kpi = {
   contacts: number
@@ -26,7 +25,7 @@ type Kpi = {
   prod_vprot: number
   prod_vpr: number
   prod_vpu: number
-  byMonth: Record<string, { contacts:number; appointments:number; proposals:number; contracts:number; prod:number }>
+  byMonth: Record<string, MonthAgg>
 }
 
 const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
@@ -38,7 +37,7 @@ const grid: React.CSSProperties = { display:'grid', gridTemplateColumns:'repeat(
 export default function DashboardPage(){
   const [me, setMe] = useState<Advisor | null>(null)
   const [advisors, setAdvisors] = useState<Advisor[]>([])
-  const [ownerFilter, setOwnerFilter] = useState<string>('me') // 'me' | 'team' | 'all' | advisorId
+  const [ownerFilter, setOwnerFilter] = useState<string>('me') // 'me' | 'team' | 'all' | user_id
 
   const defaultPeriod = useMemo(()=>makeDefaultPeriod(6), [])
   const [period, setPeriod] = useState<Period>(defaultPeriod)
@@ -54,7 +53,11 @@ export default function DashboardPage(){
     const u = await supabase.auth.getUser()
     const email = u.data.user?.email
     if (!email){ setError('Utente non autenticato'); setLoading(false); return }
-    const { data: arow, error: aerr } = await supabase.from('advisors').select('id,user_id,full_name,email,role,team_lead_user_id').eq('email', email).maybeSingle()
+    const { data: arow, error: aerr } = await supabase
+      .from('advisors')
+      .select('id,user_id,full_name,email,role,team_lead_user_id')
+      .eq('email', email)
+      .maybeSingle()
     if (aerr || !arow){ setError(aerr?.message || 'Advisor non trovato'); setLoading(false); return }
     const meAdv: Advisor = { id: arow.id, user_id: arow.user_id, full_name: arow.full_name, email: arow.email, role: arow.role as any, team_lead_user_id: arow.team_lead_user_id }
     setMe(meAdv)
@@ -66,11 +69,15 @@ export default function DashboardPage(){
       if (error){ setError(error.message); setLoading(false); return }
       advList = (data||[]) as any
     } else if (meAdv.role === 'Team Lead'){
-      // me + i miei junior
-      const { data, error } = await supabase.from('advisors').select('id,user_id,full_name,email,role,team_lead_user_id').or(`user_id.eq.${meAdv.user_id},team_lead_user_id.eq.${meAdv.user_id}`).order('full_name', { ascending:true })
+      // me + i miei junior (user-based)
+      const { data, error } = await supabase
+        .from('advisors')
+        .select('id,user_id,full_name,email,role,team_lead_user_id')
+        .or(`user_id.eq.${meAdv.user_id},team_lead_user_id.eq.${meAdv.user_id}`)
+        .order('full_name', { ascending:true })
       if (error){ setError(error.message); setLoading(false); return }
       advList = (data||[]) as any
-      setOwnerFilter('team') // default TL: team
+      setOwnerFilter('team')
     } else {
       // Junior -> solo se stesso
       advList = [meAdv]
@@ -98,7 +105,7 @@ export default function DashboardPage(){
       setKpi(k)
     } catch(e:any){ setError(e.message || String(e)) }
     setLoading(false)
-  })() }, [ownerFilter, period.fromMonthKey, period.toMonthKey, me?.id])
+  })() }, [ownerFilter, period.fromMonthKey, period.toMonthKey, me?.user_id, advisors.length])
 
   const canSeeTeam = me?.role === 'Admin' || me?.role === 'Team Lead'
 
@@ -170,9 +177,7 @@ function ownersToQuery(filter: string, me: Advisor, advisors: Advisor[]): string
     if (me.role==='Team Lead') return advisors.filter(a=>a.user_id===me.user_id || a.team_lead_user_id===me.user_id).map(a=>a.user_id)
     return [me.user_id]
   }
-  return [filter]
-}
-  // singolo advisor
+  // singolo advisor (value è già un user_id)
   return [filter]
 }
 
@@ -191,7 +196,6 @@ function toMonthKey(d: Date){
 }
 
 function monthKeyRange(fromKey: string, toKey: string): { fromDateISO: string; toDateExclusiveISO: string }{
-  // fromKey: YYYY-MM, toKey: YYYY-MM inclusivo fino a fine mese
   const [fy,fm] = fromKey.split('-').map(Number)
   const [ty,tm] = toKey.split('-').map(Number)
   const from = new Date(fy, fm-1, 1)
@@ -286,6 +290,7 @@ function computeKpi(acts:any[], apps:any[], props:any[], ctrs:any[], buckets:Buc
       case 'Vita Protection': k.prod_vprot += amt; break;
       case 'Vita Premi Ricorrenti': k.prod_vpr += amt; break;
       case 'Vita Premi Unici': k.prod_vpu += amt; break;
+      default: break;
     }
     if (k.byMonth[m]) k.byMonth[m].prod += amt
   })
@@ -303,18 +308,19 @@ function KpiCard({ label, value, fmt, series }:{ label:string; value:number; fmt
 }
 
 function Sparkline({ data }:{ data:number[] }){
+  if (!data || data.length===0) return null
   const max = Math.max(1, ...data)
-  const points = data.map((v,i)=>({ x: i*(100/(data.length-1||1)), y: 30 - (v/max)*30 }))
-  const path = points.map((p,i)=> (i===0?`M ${p.x},${p.y}`:` L ${p.x},${p.y}`)).join('')
+  const pts = data.map((v,i)=>({ x: i*(100/(data.length-1||1)), y: 30 - (v/max)*30 }))
+  const d = pts.map((p,i)=> (i===0?`M ${p.x},${p.y}`:` L ${p.x},${p.y}`)).join('')
   return (
     <svg viewBox="0 0 100 30" preserveAspectRatio="none" style={{ width:'100%', height:40, marginTop:8 }}>
-      <path d={path} fill="none" stroke="currentColor" strokeWidth={1.5} />
+      <path d={d} fill="none" stroke="currentColor" strokeWidth={1.5} />
     </svg>
   )
 }
 
-function seriesFromKpi(k: Kpi|null, key: keyof Kpi['byMonth'][string]){
-  if (!k) return []
+function seriesFromKpi(k: Kpi|null, key: keyof MonthAgg){
+  if (!k) return [] as number[]
   const months = Object.keys(k.byMonth).sort()
   return months.map(m=> (k.byMonth[m] as any)[key] as number)
 }
