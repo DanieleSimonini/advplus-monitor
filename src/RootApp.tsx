@@ -30,20 +30,28 @@ const LogoAPlus: React.FC = () => (
 type Screen = 'dashboard'|'leads'|'import'|'goals'|'report'|'calendar'|'admin'|'login'
 type Me = { id:string; user_id:string; email:string; full_name?:string|null; role:'Admin'|'Team Lead'|'Junior' }
 
+// ...import e codice esistente invariati...
+
 export default function RootApp(){
   const [screen, setScreen] = useState<Screen>('dashboard')
   const [me, setMe] = useState<Me|null>(null)
   const [loading, setLoading] = useState(true)
+  const [hasSession, setHasSession] = useState<boolean>(false)
 
-  // Bootstrap auth soft: non blocca il menu
-  useEffect(()=>{ const sub = supabase.auth.onAuthStateChange(async (_evt, s)=>{
-    if (!s){ setMe(null); setLoading(false); return }
-    await loadMe(s.user.id)
-  }); (async()=>{
-    const { data:s } = await supabase.auth.getSession()
-    if (s?.session) await loadMe(s.session.user.id)
-    else setLoading(false)
-  })(); return ()=>sub.data.subscription.unsubscribe() },[])
+  useEffect(()=>{ 
+    const sub = supabase.auth.onAuthStateChange(async (_evt, s)=>{
+      setHasSession(!!s)
+      if (!s){ setMe(null); setLoading(false); return }
+      await loadMe(s.user.id)
+    })
+    ;(async()=>{
+      const { data:s } = await supabase.auth.getSession()
+      setHasSession(!!s?.session)
+      if (s?.session) await loadMe(s.session.user.id)
+      else setLoading(false)
+    })()
+    return ()=>sub.data.subscription.unsubscribe()
+  },[])
 
   async function loadMe(uid:string){
     setLoading(true)
@@ -68,21 +76,25 @@ export default function RootApp(){
     } finally { setLoading(false) }
   }
 
-  // Se sono su login e la sessione è attiva → torna in dashboard automaticamente
-  useEffect(()=>{
-    if (screen==='login' && me){ setScreen('dashboard') }
-  }, [screen, me])
+  // Se sono su login e la sessione diventa attiva → torna in dashboard
+  useEffect(()=>{ if (screen==='login' && me) setScreen('dashboard') }, [screen, me])
 
-  // Schermata Login dedicata
   if (screen==='login' && !me){
     return <LoginPage />
   }
 
   return (
     <div style={{ maxWidth:1200, margin:'0 auto', padding:16, display:'grid', gap:16 }}>
-      {/* ========== APP MARKER (deve apparire SEMPRE) ========== */}
       <div style={{ padding:8, border:'2px dashed #f00', borderRadius:8, background:'#fff0f0', textAlign:'center' }}>
-        <b>APP MARKER</b> · RootApp.tsx v3
+        <b>APP MARKER</b> · RootApp.tsx v4
+      </div>
+
+      {/* DEBUG ribbon: stato sessione + utente */}
+      <div style={{ padding:8, border:'1px dashed #aaa', borderRadius:8, background:'#fffbdd' }}>
+        <b>DEBUG</b> hasSession=<code>{String(hasSession)}</code> · loading=<code>{String(loading)}</code> · me.email=<code>{me?.email||'n/a'}</code> · me.role=<code>{me?.role||'n/a'}</code>
+        <button onClick={async()=>{ const { data:s } = await supabase.auth.getSession(); alert(`hasSession=${!!s?.session}\\nuid=${s?.session?.user?.id||'n/a'}`) }} style={{ marginLeft:8, padding:'4px 8px' }}>
+          Rileva sessione
+        </button>
       </div>
 
       {/* Header / Nav */}
