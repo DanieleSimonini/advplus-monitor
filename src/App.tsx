@@ -70,18 +70,22 @@ export default function App(){
       {/* Header / Nav */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}>
         <div style={{ fontWeight:800, fontSize:18 }}>Adv+ Monitor</div>
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-          <button style={screen==='dashboard'?navBtnActive:navBtn} onClick={()=>setScreen('dashboard')}>
-            Dashboard
-          </button>
-          <button style={screen==='leads'?navBtnActive:navBtn} onClick={()=>setScreen('leads')}>
-            Leads
-          </button>
-          {me?.role !== 'Junior' && (
-            <button style={screen==='goals'?navBtnActive:navBtn} onClick={()=>setScreen('goals')}>
-              Obiettivi TL
-            </button>
-          )}
+{/* NAV: SMOKE v1 — forzato sempre visibile */}
+<div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+  {/* MARKER: se vedi [APP MARKER], stai usando proprio questo App.tsx */}
+  <div style={{ padding:'4px 8px', border:'2px dashed #f00', borderRadius:8, background:'#fff0f0' }}>
+    <b>APP MARKER</b>
+  </div>
+
+  <button style={screen==='dashboard'?navBtnActive:navBtn} onClick={()=>setScreen('dashboard')}>Dashboard</button>
+  <button style={screen==='leads'?navBtnActive:navBtn} onClick={()=>setScreen('leads')}>Leads</button>
+  <button style={screen==='import'?navBtnActive:navBtn} onClick={()=>setScreen('import')}>Importa Leads</button>
+  <button style={screen==='goals'?navBtnActive:navBtn} onClick={()=>setScreen('goals')}>Obiettivi TL</button>
+  <button style={screen==='report'?navBtnActive:navBtn} onClick={()=>setScreen('report')}>Report</button>
+  <button style={screen==='calendar'?navBtnActive:navBtn} onClick={()=>setScreen('calendar')}>Calendar</button>
+  <button style={screen==='admin'?navBtnActive:navBtn} onClick={()=>setScreen('admin')}>Admin</button>
+</div>
+        
         </div>
         <div style={{ fontSize:12, color:'#666' }}>
           {loading ? 'Caricamento…' : me ? (me.full_name || me.email) : error || ''}
