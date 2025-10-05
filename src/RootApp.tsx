@@ -1,9 +1,9 @@
-// src/RootApp.tsx
 import React, { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import DashboardPage from './pages/Dashboard'
 import LeadsPage from './pages/Leads'
 import GoalsTLPage from './pages/GoalsTL'
+import LoginPage from './pages/Login'
 
 // Proviamo a importare Admin/Import se esistono; altrimenti placeholder
 let AdminPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Admin</b> in preparazione.</div>
@@ -68,11 +68,16 @@ export default function RootApp(){
     } finally { setLoading(false) }
   }
 
+  // Schermata Login dedicata
+  if (screen==='login'){
+    return <LoginPage />
+  }
+
   return (
     <div style={{ maxWidth:1200, margin:'0 auto', padding:16, display:'grid', gap:16 }}>
       {/* ========== APP MARKER (deve apparire SEMPRE) ========== */}
       <div style={{ padding:8, border:'2px dashed #f00', borderRadius:8, background:'#fff0f0', textAlign:'center' }}>
-        <b>APP MARKER</b> · RootApp.tsx v1
+        <b>APP MARKER</b> · RootApp.tsx v2
       </div>
 
       {/* Header / Nav */}
@@ -93,10 +98,10 @@ export default function RootApp(){
           ) : me ? (
             <>
               <span style={{ fontSize:12, color:'#666' }}>{me.full_name || me.email} — {me.role}</span>
-              <button onClick={async()=>{ await supabase.auth.signOut(); }} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff' }}>Esci</button>
+              <button onClick={async()=>{ await supabase.auth.signOut(); setMe(null); setScreen('login') }} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff' }}>Esci</button>
             </>
           ) : (
-            <span style={{ fontSize:12, color:'#666' }}>Non autenticato</span>
+            <button onClick={()=>setScreen('login')} style={{ padding:'8px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff' }}>Accedi</button>
           )}
         </div>
       </div>
