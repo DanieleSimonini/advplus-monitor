@@ -1,219 +1,323 @@
-import React from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 
-type Role = 'Admin' | 'TeamLead' | 'Advisor'
+/**
+ * Dashboard.tsx — Step 2
+ * Filtri: Advisor / Periodo (mese da - mese a, default ultimi 6 mesi)
+ * KPI: contatti, appuntamenti (consulenze), proposte, contratti,
+ *      produzione per linee: Danni Non Auto, Vita Protection, Vita PR, Vita PU
+ * Sparkline mensili (mini-chart) sui KPI principali.
+ *
+ * Nota RLS: i Junior vedono solo i propri dati; TL vede il suo team; Admin vede tutto.
+ */
 
-export default function Dashboard() {
-  const [me, setMe] = React.useState<{ id: string; email: string; role: Role } | null>(null)
-  const [advisors, setAdvisors] = React.useState<any[]>([])
-  const [advisorFilter, setAdvisorFilter] = React.useState<string>('ALL')
-  const [startYm, setStartYm] = React.useState<string>(defaultStartYm())
-  const [endYm, setEndYm] = React.useState<string>(currentYm())
-  const [loading, setLoading] = React.useState<boolean>(true)
-  const [error, setError] = React.useState<string>('')
-  const [metrics, setMetrics] = React.useState<{leads:number; contacts:number; appointments:number; proposals:number; contracts:number}>({ leads:0, contacts:0, appointments:0, proposals:0, contracts:0 })
+type Advisor = { id: string; full_name: string | null; email: string; role: 'Admin'|'Team Lead'|'Junior'; team_lead_id?: string | null }
 
-  // bootstrap: utente + elenco advisors; default filtro
-  React.useEffect(()=>{ (async()=>{
+type Period = { fromMonthKey: string; toMonthKey: string }
+
+type Buckets = string[] // es. ['2025-05','2025-06',...]
+
+type Kpi = {
+  contacts: number
+  appointments: number
+  proposals: number
+  contracts: number
+  prod_danni: number
+  prod_vprot: number
+  prod_vpr: number
+  prod_vpu: number
+  byMonth: Record<string, { contacts:number; appointments:number; proposals:number; contracts:number; prod:number }>
+}
+
+const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
+const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
+const ipt: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd' }
+const title: React.CSSProperties = { fontWeight:700, marginBottom:12 }
+const grid: React.CSSProperties = { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12 }
+
+export default function DashboardPage(){
+  const [me, setMe] = useState<Advisor | null>(null)
+  const [advisors, setAdvisors] = useState<Advisor[]>([])
+  const [ownerFilter, setOwnerFilter] = useState<string>('me') // 'me' | 'team' | 'all' | advisorId
+
+  const defaultPeriod = useMemo(()=>makeDefaultPeriod(6), [])
+  const [period, setPeriod] = useState<Period>(defaultPeriod)
+
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>('')
+
+  const [kpi, setKpi] = useState<Kpi|null>(null)
+
+  useEffect(()=>{ (async()=>{
     setLoading(true); setError('')
-    const { data: u } = await supabase.auth.getUser()
-    const email = u.user?.email
+    // utente corrente -> advisor
+    const u = await supabase.auth.getUser()
+    const email = u.data.user?.email
     if (!email){ setError('Utente non autenticato'); setLoading(false); return }
-    const { data: meRow, error: meErr } = await supabase.from('advisors').select('id,email,role').eq('email', email).maybeSingle()
-    if (meErr || !meRow){ setError(meErr?.message || 'Advisor non trovato'); setLoading(false); return }
-    setMe(meRow as any)
+    const { data: arow, error: aerr } = await supabase.from('advisors').select('id,full_name,email,role,team_lead_id').eq('email', email).maybeSingle()
+    if (aerr || !arow){ setError(aerr?.message || 'Advisor non trovato'); setLoading(false); return }
+    const meAdv: Advisor = { id: arow.id, full_name: arow.full_name, email: arow.email, role: arow.role as any, team_lead_id: arow.team_lead_id }
+    setMe(meAdv)
 
-    const { data: all } = await supabase.from('advisors').select('id,full_name,role,reports_to')
-    setAdvisors(all || [])
-
-    if ((meRow.role as Role) === 'Advisor') setAdvisorFilter(meRow.id)
-    else setAdvisorFilter('ALL')
-
+    // elenco advisors per filtro
+    let advList: Advisor[] = []
+    if (meAdv.role === 'Admin'){
+      const { data, error } = await supabase.from('advisors').select('id,full_name,email,role,team_lead_id').order('full_name', { ascending:true })
+      if (error){ setError(error.message); setLoading(false); return }
+      advList = (data||[]) as any
+    } else if (meAdv.role === 'Team Lead'){
+      // me + i miei junior
+      const { data, error } = await supabase.from('advisors').select('id,full_name,email,role,team_lead_id').or(`id.eq.${meAdv.id},team_lead_id.eq.${meAdv.id}`).order('full_name', { ascending:true })
+      if (error){ setError(error.message); setLoading(false); return }
+      advList = (data||[]) as any
+      setOwnerFilter('team') // default TL: team
+    } else {
+      // Junior -> solo se stesso
+      advList = [meAdv]
+      setOwnerFilter('me')
+    }
+    setAdvisors(advList)
     setLoading(false)
-  })() }, [])
+  })() },[])
 
-  // IDs selezionabili (in base al ruolo)
-  const teamIds = React.useMemo(()=>{
-    if (!me) return [] as string[]
-    if (me.role === 'Admin') return advisors.map(a=>a.id)
-    if (me.role === 'TeamLead') return [me.id, ...advisors.filter(a=>a.reports_to===me.id).map(a=>a.id)]
-    return [me.id]
-  }, [me, advisors])
-
-  const selectableAdvisors = React.useMemo(()=>{
-    if (!me) return [] as any[]
-    if (me.role === 'Admin') return advisors
-    if (me.role === 'TeamLead') return advisors.filter(a=>a.id===me.id || a.reports_to===me.id)
-    return advisors.filter(a=>a.id===me.id)
-  }, [me, advisors])
-
-  const ymToDate = (ym:string, end:boolean)=>{
-    const [y,m] = ym.split('-').map(n=>parseInt(n,10))
-    if (!end) return new Date(Date.UTC(y, m-1, 1, 0,0,0))
-    return new Date(Date.UTC(y, m, 0, 23,59,59)) // ultimo giorno mese
-  }
-
-  const loadMetrics = React.useCallback(async ()=>{
+  // ricarica KPI quando cambiano filtri
+  useEffect(()=>{ (async()=>{
     if (!me) return
     setLoading(true); setError('')
     try{
-      const ids = advisorFilter==='ALL' ? teamIds : [advisorFilter]
-      if (!ids.length){ setMetrics({leads:0,contacts:0,appointments:0,proposals:0,contracts:0}); setLoading(false); return }
+      const owners = ownersToQuery(ownerFilter, me, advisors)
+      const leadIds = await fetchLeadIds(owners)
+      const [acts, apps, props, ctrs] = await Promise.all([
+        fetchActivities(leadIds, period),
+        fetchAppointments(leadIds, period),
+        fetchProposals(leadIds, period),
+        fetchContracts(leadIds, period),
+      ])
+      const buckets = makeBuckets(period)
+      const k = computeKpi(acts, apps, props, ctrs, buckets)
+      setKpi(k)
+    } catch(e:any){ setError(e.message || String(e)) }
+    setLoading(false)
+  })() }, [ownerFilter, period.fromMonthKey, period.toMonthKey, me?.id])
 
-      const start = ymToDate(startYm,false).toISOString()
-      const end = ymToDate(endYm,true).toISOString()
-
-      // Leads creati
-      const { count: leadsCount, error: e1 } = await supabase
-        .from('leads')
-        .select('id', { count:'exact', head:true })
-        .in('owner_id', ids)
-        .gte('created_at', start)
-        .lte('created_at', end)
-      if (e1) throw e1
-
-      // Recupero lead IDs per il resto dei conteggi
-      const { data: leadsForIds, error: e2b } = await supabase
-        .from('leads')
-        .select('id')
-        .in('owner_id', ids)
-      if (e2b) throw e2b
-      const leadIds = (leadsForIds||[]).map(x=>x.id)
-      const safeLeadIds = leadIds.length ? leadIds : ['00000000-0000-0000-0000-000000000000']
-
-      // Contacts (activities.ts)
-      const { count: contCount, error: e2c } = await supabase
-        .from('activities')
-        .select('id',{ count:'exact', head:true })
-        .in('lead_id', safeLeadIds)
-        .gte('ts', start).lte('ts', end)
-      if (e2c) throw e2c
-
-      // Appointments
-      const { count: appCount, error: e3 } = await supabase
-        .from('appointments')
-        .select('id',{ count:'exact', head:true })
-        .in('lead_id', safeLeadIds)
-        .gte('ts', start).lte('ts', end)
-      if (e3) throw e3
-
-      // Proposals / Contracts con colonne data (YYYY-MM-DD)
-      const startDate = start.slice(0,10)
-      const endDate = end.slice(0,10)
-
-      const { count: propCount, error: e4 } = await supabase
-        .from('proposals')
-        .select('id',{ count:'exact', head:true })
-        .in('lead_id', safeLeadIds)
-        .gte('ts', startDate).lte('ts', endDate)
-      if (e4) throw e4
-
-      const { count: contrCount, error: e5 } = await supabase
-        .from('contracts')
-        .select('id',{ count:'exact', head:true })
-        .in('lead_id', safeLeadIds)
-        .gte('ts', startDate).lte('ts', endDate)
-      if (e5) throw e5
-
-      setMetrics({
-        leads: leadsCount || 0,
-        contacts: contCount || 0,
-        appointments: appCount || 0,
-        proposals: propCount || 0,
-        contracts: contrCount || 0
-      })
-    }catch(e:any){
-      setError(e.message || String(e))
-    }finally{
-      setLoading(false)
-    }
-  }, [me, advisorFilter, startYm, endYm, teamIds])
-
-  React.useEffect(()=>{ loadMetrics() }, [loadMetrics])
-
-  const data = React.useMemo(() => [
-    { name: 'Leads', value: metrics.leads },
-    { name: 'Contatti', value: metrics.contacts },
-    { name: 'Appuntamenti', value: metrics.appointments },
-    { name: 'Proposte', value: metrics.proposals },
-    { name: 'Contratti', value: metrics.contracts }
-  ], [metrics])
+  const canSeeTeam = me?.role === 'Admin' || me?.role === 'Team Lead'
 
   return (
     <div style={{ display:'grid', gap:16 }}>
-      <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
-        <div style={{ fontWeight:700, marginRight:8 }}>Dashboard</div>
+      <div style={title}>Dashboard</div>
 
-        {/* Advisor filter */}
-        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <label style={{ fontSize:12, color:'#666' }}>Advisor</label>
-          <select value={advisorFilter} onChange={e=>setAdvisorFilter(e.target.value)} style={iptMini}>
-            {me?.role !== 'Advisor' && <option value="ALL">{me?.role==='Admin' ? 'Tutti' : 'Tutti (mio team)'}</option>}
-            {selectableAdvisors.map(a => (
-              <option key={a.id} value={a.id}>{a.full_name} — {a.role}</option>
-            ))}
-          </select>
+      {/* FILTRI */}
+      <div style={{ ...box }}>
+        <div style={{ display:'flex', gap:12, flexWrap:'wrap', alignItems:'center' }}>
+          {/* Advisor */}
+          <div>
+            <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Advisor</div>
+            <select value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)} style={ipt}>
+              <option value={'me'}>Solo me</option>
+              {canSeeTeam && <option value={'team'}>Tutto il mio team</option>}
+              {me?.role==='Admin' && <option value={'all'}>Tutti (azienda)</option>}
+              {/* elenco singoli */}
+              {advisors.map(a=> (
+                <option key={a.id} value={a.id}>{a.full_name || a.email}</option>
+              ))}
+            </select>
+          </div>
+          {/* Periodo dal - al (mese) */}
+          <div>
+            <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Dal mese</div>
+            <input type="month" value={period.fromMonthKey} onChange={e=>setPeriod(p=>({...p, fromMonthKey:e.target.value}))} style={ipt} />
+          </div>
+          <div>
+            <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Al mese</div>
+            <input type="month" value={period.toMonthKey} onChange={e=>setPeriod(p=>({...p, toMonthKey:e.target.value}))} style={ipt} />
+          </div>
+          <div style={{ alignSelf:'end' }}>
+            <button style={btn} onClick={()=>setPeriod(makeDefaultPeriod(6))}>Reset ultimi 6 mesi</button>
+          </div>
         </div>
-
-        {/* Period filter */}
-        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <label style={{ fontSize:12, color:'#666' }}>Periodo</label>
-          <input type="month" value={startYm} onChange={e=>setStartYm(e.target.value)} style={iptMini} />
-          <span>→</span>
-          <input type="month" value={endYm} onChange={e=>setEndYm(e.target.value)} style={iptMini} />
-          <button onClick={()=>{ setStartYm(defaultStartYm()); setEndYm(currentYm()) }} style={btnLite}>Ultimi 6 mesi</button>
-        </div>
-
-        <button onClick={loadMetrics} style={btnPrimary} disabled={loading}>{loading? 'Aggiorno…':'Aggiorna'}</button>
+        {me?.role==='Junior' && (
+          <div style={{ marginTop:8, fontSize:12, color:'#888' }}>Nota: come Junior vedi solo i tuoi dati per le policy di sicurezza (RLS).</div>
+        )}
       </div>
 
+      {/* KPI CARDS */}
+      <div style={grid}>
+        <KpiCard label="Contatti" value={kpi?.contacts ?? 0} series={seriesFromKpi(kpi,'contacts')} />
+        <KpiCard label="Appuntamenti (consulenze)" value={kpi?.appointments ?? 0} series={seriesFromKpi(kpi,'appointments')} />
+        <KpiCard label="Proposte" value={kpi?.proposals ?? 0} series={seriesFromKpi(kpi,'proposals')} />
+        <KpiCard label="Contratti" value={kpi?.contracts ?? 0} series={seriesFromKpi(kpi,'contracts')} />
+      </div>
+
+      {/* PRODUZIONE per linee */}
+      <div style={grid}>
+        <KpiCard label="Produzione Danni Non Auto" value={kpi?.prod_danni ?? 0} fmt="€" />
+        <KpiCard label="Produzione Vita Protection" value={kpi?.prod_vprot ?? 0} fmt="€" />
+        <KpiCard label="Produzione Vita Premi Ricorrenti" value={kpi?.prod_vpr ?? 0} fmt="€" />
+        <KpiCard label="Produzione Vita Premi Unici" value={kpi?.prod_vpu ?? 0} fmt="€" />
+      </div>
+
+      {loading && <div>Caricamento…</div>}
       {error && <div style={{ color:'#c00' }}>{error}</div>}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
-        <Stat label="Leads" value={metrics.leads} />
-        <Stat label="Contatti" value={metrics.contacts} />
-        <Stat label="Appuntamenti" value={metrics.appointments} />
-        <Stat label="Proposte" value={metrics.proposals} />
-        <Stat label="Contratti" value={metrics.contracts} />
-      </div>
-
-      <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 16, padding: 16 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Funnel</div>
-        <div style={{ width: '100%', height: 280 }}>
-          <ResponsiveContainer>
-            <BarChart data={data}>
-              <XAxis dataKey="name" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="value" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
     </div>
   )
 }
 
-function defaultStartYm(){
-  const d = new Date(); d.setUTCMonth(d.getUTCMonth()-5)
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`
-}
-function currentYm(){
-  const d = new Date()
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`
+function ownersToQuery(filter: string, me: Advisor, advisors: Advisor[]): string[] {
+  if (filter==='me') return [me.id]
+  if (filter==='all') return advisors.map(a=>a.id)
+  if (filter==='team'){
+    if (me.role==='Admin') return advisors.map(a=>a.id)
+    // TL: se stesso + junior del suo team
+    if (me.role==='Team Lead') return advisors.filter(a=>a.id===me.id || a.team_lead_id===me.id).map(a=>a.id)
+    return [me.id]
+  }
+  // singolo advisor
+  return [filter]
 }
 
-const iptMini: React.CSSProperties = { padding: '8px 10px', borderRadius: 8, border: '1px solid #ddd' }
-const btnPrimary: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }
-const btnLite: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'1px solid #ddd', background:'#fff', color:'#111', cursor:'pointer' }
+function makeDefaultPeriod(monthsBack: number): Period {
+  const end = new Date()
+  const endKey = toMonthKey(end)
+  const start = new Date(end.getFullYear(), end.getMonth() - (monthsBack-1), 1)
+  const startKey = toMonthKey(start)
+  return { fromMonthKey: startKey, toMonthKey: endKey }
+}
 
-function Stat({ label, value }: { label: string; value: number }) {
+function toMonthKey(d: Date){
+  const y = d.getFullYear()
+  const m = (d.getMonth()+1).toString().padStart(2,'0')
+  return `${y}-${m}`
+}
+
+function monthKeyRange(fromKey: string, toKey: string): { fromDateISO: string; toDateExclusiveISO: string }{
+  // fromKey: YYYY-MM, toKey: YYYY-MM inclusivo fino a fine mese
+  const [fy,fm] = fromKey.split('-').map(Number)
+  const [ty,tm] = toKey.split('-').map(Number)
+  const from = new Date(fy, fm-1, 1)
+  const toExclusive = new Date(ty, tm, 1) // primo giorno del mese successivo
+  return { fromDateISO: from.toISOString(), toDateExclusiveISO: toExclusive.toISOString() }
+}
+
+function makeBuckets(p: Period): Buckets {
+  const out: string[] = []
+  const [fy,fm] = p.fromMonthKey.split('-').map(Number)
+  const [ty,tm] = p.toMonthKey.split('-').map(Number)
+  let y = fy, m = fm
+  while (y < ty || (y===ty && m<=tm)){
+    out.push(`${y}-${String(m).padStart(2,'0')}`)
+    m++; if (m>12){ m=1; y++ }
+  }
+  return out
+}
+
+async function fetchLeadIds(ownerIds: string[]): Promise<string[]>{
+  if (ownerIds.length===0) return []
+  const { data, error } = await supabase.from('leads').select('id').in('owner_id', ownerIds)
+  if (error) throw error
+  return (data||[]).map((r:any)=>r.id)
+}
+
+async function fetchActivities(leadIds: string[], period: Period){
+  if (leadIds.length===0) return []
+  const { fromDateISO, toDateExclusiveISO } = monthKeyRange(period.fromMonthKey, period.toMonthKey)
+  const { data, error } = await supabase.from('activities')
+    .select('id,lead_id,ts')
+    .in('lead_id', leadIds)
+    .gte('ts', fromDateISO)
+    .lt('ts', toDateExclusiveISO)
+  if (error) throw error
+  return data||[]
+}
+async function fetchAppointments(leadIds: string[], period: Period){
+  if (leadIds.length===0) return []
+  const { fromDateISO, toDateExclusiveISO } = monthKeyRange(period.fromMonthKey, period.toMonthKey)
+  const { data, error } = await supabase.from('appointments')
+    .select('id,lead_id,ts')
+    .in('lead_id', leadIds)
+    .gte('ts', fromDateISO)
+    .lt('ts', toDateExclusiveISO)
+  if (error) throw error
+  return data||[]
+}
+async function fetchProposals(leadIds: string[], period: Period){
+  if (leadIds.length===0) return []
+  const { fromDateISO, toDateExclusiveISO } = monthKeyRange(period.fromMonthKey, period.toMonthKey)
+  const { data, error } = await supabase.from('proposals')
+    .select('id,lead_id,ts')
+    .in('lead_id', leadIds)
+    .gte('ts', fromDateISO)
+    .lt('ts', toDateExclusiveISO)
+  if (error) throw error
+  return data||[]
+}
+async function fetchContracts(leadIds: string[], period: Period){
+  if (leadIds.length===0) return []
+  const { fromDateISO, toDateExclusiveISO } = monthKeyRange(period.fromMonthKey, period.toMonthKey)
+  const { data, error } = await supabase.from('contracts')
+    .select('id,lead_id,ts,contract_type,amount')
+    .in('lead_id', leadIds)
+    .gte('ts', fromDateISO)
+    .lt('ts', toDateExclusiveISO)
+  if (error) throw error
+  return data||[]
+}
+
+function computeKpi(acts:any[], apps:any[], props:any[], ctrs:any[], buckets:Buckets): Kpi{
+  const k: Kpi = {
+    contacts: acts.length,
+    appointments: apps.length,
+    proposals: props.length,
+    contracts: ctrs.length,
+    prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0,
+    byMonth: {}
+  }
+  for(const b of buckets){ k.byMonth[b] = { contacts:0, appointments:0, proposals:0, contracts:0, prod:0 } }
+  const monthOf = (iso: string)=> iso.slice(0,7)
+
+  acts.forEach(a=>{ const m = monthOf(a.ts); if(k.byMonth[m]) k.byMonth[m].contacts++ })
+  apps.forEach(a=>{ const m = monthOf(a.ts); if(k.byMonth[m]) k.byMonth[m].appointments++ })
+  props.forEach(p=>{ const m = monthOf(p.ts); if(k.byMonth[m]) k.byMonth[m].proposals++ })
+  ctrs.forEach(c=>{
+    const m = monthOf(c.ts); if(k.byMonth[m]) k.byMonth[m].contracts++
+    const amt = Number(c.amount||0)
+    switch(c.contract_type){
+      case 'Danni Non Auto': k.prod_danni += amt; break;
+      case 'Vita Protection': k.prod_vprot += amt; break;
+      case 'Vita Premi Ricorrenti': k.prod_vpr += amt; break;
+      case 'Vita Premi Unici': k.prod_vpu += amt; break;
+    }
+    if (k.byMonth[m]) k.byMonth[m].prod += amt
+  })
+  return k
+}
+
+function KpiCard({ label, value, fmt, series }:{ label:string; value:number; fmt?:'€'; series?: number[] }){
   return (
-    <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 16, padding: 16 }}>
-      <div style={{ fontSize: 12, color: '#666' }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 800 }}>{value}</div>
+    <div style={box}>
+      <div style={{ fontSize:12, color:'#666' }}>{label}</div>
+      <div style={{ fontSize:28, fontWeight:700, marginTop:4 }}>{fmt==='€' ? formatCurrency(value) : value}</div>
+      {series && series.length>0 && <Sparkline data={series} />}
     </div>
   )
+}
+
+function Sparkline({ data }:{ data:number[] }){
+  const max = Math.max(1, ...data)
+  const points = data.map((v,i)=>({ x: i*(100/(data.length-1||1)), y: 30 - (v/max)*30 }))
+  const path = points.map((p,i)=> (i===0?`M ${p.x},${p.y}`:` L ${p.x},${p.y}`)).join('')
+  return (
+    <svg viewBox="0 0 100 30" preserveAspectRatio="none" style={{ width:'100%', height:40, marginTop:8 }}>
+      <path d={path} fill="none" stroke="currentColor" strokeWidth={1.5} />
+    </svg>
+  )
+}
+
+function seriesFromKpi(k: Kpi|null, key: keyof Kpi['byMonth'][string]){
+  if (!k) return []
+  const months = Object.keys(k.byMonth).sort()
+  return months.map(m=> (k.byMonth[m] as any)[key] as number)
+}
+
+function formatCurrency(n:number){
+  try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }catch{ return `€ ${n.toFixed(0)}` }
 }
