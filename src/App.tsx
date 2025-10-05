@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import DashboardPage from './pages/Dashboard'
