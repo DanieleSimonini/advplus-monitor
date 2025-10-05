@@ -1,15 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+
 import DashboardPage from './pages/Dashboard'
 import LeadsPage from './pages/Leads'
 import GoalsTLPage from './pages/GoalsTL'
 import LoginPage from './pages/Login'
-
-// Proviamo a importare Admin/Import se esistono; altrimenti placeholder
-let AdminPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Admin</b> in preparazione.</div>
-let ImportLeadsPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Importa Leads</b> in preparazione.</div>
-try { AdminPage = require('./pages/Admin').default } catch {}
-try { ImportLeadsPage = require('./pages/ImportLeads').default } catch {}
+import AdminPage from './pages/Admin'
+import ImportLeadsPage from './pages/ImportLeads'
 
 // Placeholder opzionali
 const CalendarPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Calendar</b> in preparazione.</div>
