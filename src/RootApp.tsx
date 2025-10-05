@@ -74,32 +74,45 @@ useEffect(() => {
 }, [])
 
 
-  async function loadMe(uid:string){
-    setLoading(true)
-    try{
-      let { data, error } = await supabase
-        .from('advisors')
-        .select('id,user_id,email,full_name,role')
-        .eq('user_id', uid).maybeSingle()
-      if ((!data || error)){
-        const u = await supabase.auth.getUser()
-        const email = u.data.user?.email
-        if (email){
-          const r = await supabase
-            .from('advisors')
-            .select('id,user_id,email,full_name,role')
-            .eq('email', email).maybeSingle()
-          data = r.data as any
+ async function loadMe(uid: string){
+  setLoading(true)
+  try{
+    // 1) prova per user_id
+    let { data, error } = await supabase
+      .from('advisors')
+      .select('id,user_id,email,full_name,role')
+      .eq('user_id', uid)
+      .maybeSingle()
+
+    // 2) fallback per email
+    if ((!data || error)) {
+      const u = await supabase.auth.getUser()
+      const email = u.data.user?.email
+      if (email){
+        const r = await supabase
+          .from('advisors')
+          .select('id,user_id,email,full_name,role')
+          .eq('email', email)
+          .maybeSingle()
+        data = r.data as any
+
+        // 🔗 auto-link: se trovato per email ma manca user_id, collegalo a questo uid
+        if (data && !data.user_id){
+          await supabase.from('advisors').update({ user_id: uid }).eq('id', data.id)
+          data.user_id = uid
         }
       }
-      if (data) setMe({ id:data.id, user_id:data.user_id, email:data.email, full_name:data.full_name, role:data.role })
-      else setMe(null)
-    } finally { setLoading(false) }
+    }
+
+    // 3) set stato utente
+    if (data) {
+      setMe({ id: data.id, user_id: data.user_id, email: data.email, full_name: data.full_name, role: data.role })
+    } else {
+      setMe(null)
+    }
+  } finally {
+    setLoading(false)
   }
-// dopo aver ottenuto 'data' cercando per email:
-if (data && !data.user_id) {
-  await supabase.from('advisors').update({ user_id: uid }).eq('id', data.id)
-  data.user_id = uid
 }
 
   // Se sono su login e la sessione è attiva → torna in dashboard automaticamente
