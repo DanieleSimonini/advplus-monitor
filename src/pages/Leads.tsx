@@ -2,14 +2,47 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
 /**
- * Leads.tsx — versione completa (Opzione A)
- * - Elenco lead a sinistra, form a destra
- * - +Nuovo azzera il form
- * - Validazioni: is_agency_client obbl., email OR phone, (first+last) OR company_name
- * - Tab Contatti/Appuntamenti/Proposte/Contratti con inserimento inline
- * - Rispetta colonne legacy NOT NULL: outcome (activities), mode (appointments), line (proposals, contracts)
- * - UI: griglie responsive per evitare sovrapposizioni orizzontali, select con z-index
+ * Leads.tsx — Opzione A (rev3 con CHECK mappati)
+ * - Elenco lead + form + tab con inserimenti inline
+ * - Allineato a NOT NULL legacy e CHECK:
+ *   activities.channel ∈ {'phone','email','inperson','video'} (UI offre anche WhatsApp/SMS/Altro → mappati su 'phone')
+ *   appointments.mode ∈ {'inperson','phone','video'} (UI: In presenza/Video/Telefono)
+ *   contracts.contract_type ∈ { 'Danni Non Auto','Vita Protection','Vita Premi Ricorrenti','Vita Premi Unici' }
+ * - UI: griglie responsive (niente sovrapposizioni), select con z-index
  */
+
+// === OPZIONI UI (label) E VALORI DB CONFORMI AI CHECK ===
+// Contatti/Canale: mostriamo 5 opzioni, ma mappiamo verso i 4 literal permessi
+const CHANNEL_OPTIONS_UI = [
+  { label: 'Telefono', db: 'phone' },
+  { label: 'Email', db: 'email' },
+  { label: 'WhatsApp', db: 'phone' }, // mappato su 'phone' per rispettare CHECK
+  { label: 'SMS', db: 'phone' },       // mappato su 'phone'
+  { label: 'Altro', db: 'phone' },     // mappato su 'phone'
+] as const
+
+// Appuntamenti/Modalità: 3 opzioni UI → 3 literal permessi dal CHECK
+const MODE_OPTIONS_UI = [
+  { label: 'In presenza', db: 'inperson' },
+  { label: 'Video', db: 'video' },
+  { label: 'Telefono', db: 'phone' },
+] as const
+
+// Contratti/Tipo: literal ammessi dal CHECK su contract_type
+const CONTRACT_TYPE_OPTIONS = [
+  { label: 'Danni Non Auto', value: 'Danni Non Auto' },
+  { label: 'Vita Protection', value: 'Vita Protection' },
+  { label: 'Vita Premi Ricorrenti', value: 'Vita Premi Ricorrenti' },
+  { label: 'Vita Premi Unici', value: 'Vita Premi Unici' },
+] as const
+
+// Mappa un label UI Canale → valore DB conforme al CHECK
+const channelDbFromLabel = (label: string) => CHANNEL_OPTIONS_UI.find(o=>o.label===label)?.db || 'phone'
+// Mappa un label UI Modalità → valore DB conforme al CHECK
+const modeDbFromLabel = (label: string) => MODE_OPTIONS_UI.find(o=>o.label===label)?.db || 'inperson'
+// Per i contratti usiamo direttamente i literal ammessi.
+
+// =====================================================
 
 type Lead = {
   id?: string
@@ -60,10 +93,10 @@ export default function LeadsPage() {
   const [contracts, setContracts] = useState<any[]>([])
 
   // inline forms per inserimento rapido
-  const [newContact, setNewContact] = useState<{ts:string; channel:string; notes:string}>({ ts:'', channel:'', notes:'' })
-  const [newAppointment, setNewAppointment] = useState<{ts:string; method:string; notes:string}>({ ts:'', method:'', notes:'' })
+  const [newContact, setNewContact] = useState<{ts:string; channel_label:string; notes:string}>({ ts:'', channel_label:'', notes:'' })
+  const [newAppointment, setNewAppointment] = useState<{ts:string; mode_label:string; notes:string}>({ ts:'', mode_label:'', notes:'' })
   const [newProposal, setNewProposal] = useState<{ts:string; line:string; notes:string}>({ ts:'', line:'', notes:'' })
-  const [newContract, setNewContract] = useState<{ts:string; kind:string; amount:string; notes:string}>({ ts:'', kind:'', amount:'', notes:'' })
+  const [newContract, setNewContract] = useState<{ts:string; contract_type:string; amount:string; notes:string}>({ ts:'', contract_type:'', amount:'', notes:'' })
 
   // bootstrap
   useEffect(()=>{(async()=>{
@@ -103,10 +136,10 @@ export default function LeadsPage() {
     setSelectedId(null)
     setForm(emptyLead())
     setContacts([]); setAppointments([]); setProposals([]); setContracts([])
-    setNewContact({ ts:'', channel:'', notes:'' })
-    setNewAppointment({ ts:'', method:'', notes:'' })
+    setNewContact({ ts:'', channel_label:'', notes:'' })
+    setNewAppointment({ ts:'', mode_label:'', notes:'' })
     setNewProposal({ ts:'', line:'', notes:'' })
-    setNewContract({ ts:'', kind:'', amount:'', notes:'' })
+    setNewContract({ ts:'', contract_type:'', amount:'', notes:'' })
   }
 
   const validateLead = (l: Lead): string | null => {
@@ -150,7 +183,7 @@ export default function LeadsPage() {
       supabase.from('activities').select('id,ts,channel,outcome,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
       supabase.from('appointments').select('id,ts,method,mode,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
       supabase.from('proposals').select('id,ts,line,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
-      supabase.from('contracts').select('id,ts,amount,kind,line,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
+      supabase.from('contracts').select('id,ts,amount,kind,line,contract_type,notes').eq('lead_id', leadId).order('ts', { ascending:false }),
     ])
     if (!c1.error) setContacts(c1.data || [])
     if (!c2.error) setAppointments(c2.data || [])
@@ -281,16 +314,17 @@ export default function LeadsPage() {
           {selectedId && tab==='contatti' && (
             <>
               <InlineNewRow title="Nuovo contatto" onSave={async()=>{
-                if (!newContact.ts || !newContact.channel){ setError('Per il contatto indica data/ora e canale.'); return }
+                if (!newContact.ts || !newContact.channel_label){ setError('Per il contatto indica data/ora e canale.'); return }
+                const channelDb = channelDbFromLabel(newContact.channel_label)
                 const { error } = await supabase.from('activities').insert({
                   lead_id: selectedId,
                   ts: newContact.ts,
-                  channel: newContact.channel,
-                  outcome: newContact.channel || 'contatto',
+                  channel: channelDb,          // conforme al CHECK
+                  outcome: channelDb,          // legacy obbligatorio, allineato
                   notes: newContact.notes||null
                 })
                 if (error){ setError(error.message); return }
-                setNewContact({ ts:'', channel:'', notes:'' })
+                setNewContact({ ts:'', channel_label:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
@@ -300,7 +334,10 @@ export default function LeadsPage() {
                   </div>
                   <div>
                     <div style={lbl}>Canale</div>
-                    <input value={newContact.channel} onChange={e=>setNewContact({ ...newContact, channel:e.target.value })} placeholder="Telefono / Email / WhatsApp / Altro" style={ipt} />
+                    <select value={newContact.channel_label} onChange={e=>setNewContact({ ...newContact, channel_label:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
+                      <option value="">—</option>
+                      {CHANNEL_OPTIONS_UI.map(opt => <option key={opt.label} value={opt.label}>{opt.label}</option>)}
+                    </select>
                   </div>
                   <div>
                     <div style={lbl}>Note</div>
@@ -308,23 +345,24 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Canale'},{k:'outcome',l:'Esito'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={contacts} cols={[{k:'ts',l:'Quando'},{k:'channel',l:'Canale (db)'},{k:'outcome',l:'Esito'},{k:'notes',l:'Note'}]} />
             </>
           )}
 
           {selectedId && tab==='appuntamenti' && (
             <>
               <InlineNewRow title="Nuovo appuntamento" onSave={async()=>{
-                if (!newAppointment.ts || !newAppointment.method){ setError('Per l\'appuntamento indica data/ora e modalità.'); return }
+                if (!newAppointment.ts || !newAppointment.mode_label){ setError('Per l\'appuntamento indica data/ora e modalità.'); return }
+                const modeDb = modeDbFromLabel(newAppointment.mode_label)
                 const { error } = await supabase.from('appointments').insert({
                   lead_id: selectedId,
                   ts: newAppointment.ts,
-                  method: newAppointment.method,
-                  mode: newAppointment.method,
+                  method: newAppointment.mode_label, // etichetta leggibile
+                  mode: modeDb,                        // conforme al CHECK
                   notes: newAppointment.notes||null
                 })
                 if (error){ setError(error.message); return }
-                setNewAppointment({ ts:'', method:'', notes:'' })
+                setNewAppointment({ ts:'', mode_label:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
@@ -334,7 +372,10 @@ export default function LeadsPage() {
                   </div>
                   <div>
                     <div style={lbl}>Modalità</div>
-                    <input value={newAppointment.method} onChange={e=>setNewAppointment({ ...newAppointment, method:e.target.value })} placeholder="In presenza / Video / Telefono" style={ipt} />
+                    <select value={newAppointment.mode_label} onChange={e=>setNewAppointment({ ...newAppointment, mode_label:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
+                      <option value="">—</option>
+                      {MODE_OPTIONS_UI.map(opt => <option key={opt.label} value={opt.label}>{opt.label}</option>)}
+                    </select>
                   </div>
                   <div>
                     <div style={lbl}>Note</div>
@@ -342,7 +383,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={appointments} cols={[{k:'ts',l:'Quando'},{k:'method',l:'Metodo'},{k:'mode',l:'Mode'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={appointments} cols={[{k:'ts',l:'Quando'},{k:'method',l:'Metodo (label)'},{k:'mode',l:'Mode (db)'},{k:'notes',l:'Note'}]} />
             </>
           )}
 
@@ -369,10 +410,7 @@ export default function LeadsPage() {
                     <div style={lbl}>Linea</div>
                     <select value={newProposal.line} onChange={e=>setNewProposal({ ...newProposal, line:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
                       <option value="">—</option>
-                      <option value="Danni Non Auto">Danni Non Auto</option>
-                      <option value="Vita Protection">Vita Protection</option>
-                      <option value="Vita Premi Ricorrenti">Vita Premi Ricorrenti</option>
-                      <option value="Vita Premi Unici">Vita Premi Unici</option>
+                      {CONTRACT_TYPE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                   </div>
                   <div>
@@ -388,19 +426,21 @@ export default function LeadsPage() {
           {selectedId && tab==='contratti' && (
             <>
               <InlineNewRow title="Nuovo contratto" onSave={async()=>{
-                if (!newContract.ts || !newContract.kind){ setError('Indica data e tipo contratto.'); return }
+                if (!newContract.ts || !newContract.contract_type){ setError('Indica data e tipo contratto.'); return }
                 const amountNum = newContract.amount ? Number(newContract.amount) : null
                 if (newContract.amount && isNaN(Number(newContract.amount))){ setError('Importo non valido'); return }
+                const kindLabel = newContract.contract_type // usiamo il label italiano anche in kind per coerenza
                 const { error } = await supabase.from('contracts').insert({
                   lead_id: selectedId,
                   ts: newContract.ts,
-                  kind: newContract.kind,
-                  line: newContract.kind,
+                  kind: kindLabel,
+                  line: newContract.contract_type,
+                  contract_type: newContract.contract_type, // conforme al CHECK
                   amount: amountNum,
                   notes: newContract.notes||null
                 })
                 if (error){ setError(error.message); return }
-                setNewContract({ ts:'', kind:'', amount:'', notes:'' })
+                setNewContract({ ts:'', contract_type:'', amount:'', notes:'' })
                 await loadTabs(selectedId)
               }}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12, overflow:'visible' }}>
@@ -410,12 +450,9 @@ export default function LeadsPage() {
                   </div>
                   <div>
                     <div style={lbl}>Tipo</div>
-                    <select value={newContract.kind} onChange={e=>setNewContract({ ...newContract, kind:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
+                    <select value={newContract.contract_type} onChange={e=>setNewContract({ ...newContract, contract_type:e.target.value })} style={{ ...ipt, position:'relative', zIndex:2 }}>
                       <option value="">—</option>
-                      <option value="Danni Non Auto">Danni Non Auto</option>
-                      <option value="Vita Protection">Vita Protection</option>
-                      <option value="Vita Premi Ricorrenti">Vita Premi Ricorrenti</option>
-                      <option value="Vita Premi Unici">Vita Premi Unici</option>
+                      {CONTRACT_TYPE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                   </div>
                   <div>
@@ -428,7 +465,7 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </InlineNewRow>
-              <SimpleTable rows={contracts} cols={[{k:'ts',l:'Data'},{k:'kind',l:'Tipo'},{k:'line',l:'Linea'},{k:'amount',l:'Premio'},{k:'notes',l:'Note'}]} />
+              <SimpleTable rows={contracts} cols={[{k:'ts',l:'Data'},{k:'kind',l:'Tipo (label)'},{k:'contract_type',l:'Tipo (db)'},{k:'line',l:'Linea'},{k:'amount',l:'Premio'},{k:'notes',l:'Note'}]} />
             </>
           )}
         </div>
