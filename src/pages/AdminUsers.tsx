@@ -12,6 +12,7 @@ import { supabase } from '@/supabaseClient'
  * - Log import su tabella public.import_logs (vedi SQL a parte)
  */
 
+
 type RawRow = Record<string, any>
 
 type ValidRow = {
