@@ -14,9 +14,8 @@ export default function LoginPage(){
     try{
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) throw error
-      setOk('Accesso riuscito. Reindirizzo…')
-      // RootApp ascolta onAuthStateChange e tornerà in dashboard; forziamo anche un refresh per sicurezza
-      setTimeout(()=>{ window.location.href = '/' }, 300)
+      // Niente redirect: RootApp ascolta onAuthStateChange e ti riporta in Dashboard
+      setOk('Accesso riuscito. Sto entrando…')
     }catch(ex:any){ setErr(ex.message || 'Login fallito') }
     finally{ setLoading(false) }
   }
@@ -24,7 +23,10 @@ export default function LoginPage(){
   async function doMagicLink(){
     setErr(''); setOk(''); setLoading(true)
     try{
-      const { error } = await supabase.auth.signInWithOtp({ email, options:{ emailRedirectTo: window.location.origin } })
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options:{ emailRedirectTo: window.location.origin }
+      })
       if (error) throw error
       setOk('Email inviata. Controlla la posta (anche spam) e apri il link.')
     }catch(ex:any){ setErr(ex.message || 'Invio link fallito') }
