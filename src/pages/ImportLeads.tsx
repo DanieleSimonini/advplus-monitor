@@ -1,18 +1,7 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
-/**
- * ImportLeads.tsx — Import CSV/XLSX con validazione + dedup
- * Requisiti
- * - Campi richiesti: is_agency_client, (email OR phone), (first_name+last_name OR company_name)
- * - Dedup vs DB: scarta se email o phone già presenti in public.leads
- * - Owner mapping: se owner_email non esiste in advisors → blocca import
- * - Pulsante Import disabilitato se ci sono errori di validazione
- * - Supporto CSV; XLSX con fallback se libreria non presente
- */
-
 type RawRow = Record<string, any>
-
 type ValidRow = {
   is_agency_client: boolean
   email: string | null
@@ -22,14 +11,15 @@ type ValidRow = {
   company_name: string | null
   city: string | null
   address: string | null
-  source: 'Provided'|'Self'|null
+  source: 'Provided' | 'Self' | null
   owner_email: string
 }
-
 type Report = { valid: ValidRow[]; errors: string[] }
 
 const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
 const ipt: React.CSSProperties = { padding:'8px 10px', borderRadius:8, border:'1px solid #ddd' }
+const th: React.CSSProperties  = { textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #eee', background:'#fafafa' }
+const td: React.CSSProperties  = { padding:'6px 8px', borderBottom:'1px solid #f5f5f5' }
 
 export default function ImportLeadsPage(){
   const [rows, setRows] = useState<RawRow[] | null>(null)
@@ -37,6 +27,7 @@ export default function ImportLeadsPage(){
   const [dupes, setDupes] = useState<{ email:Set<string>; phone:Set<string> }>({ email:new Set(), phone:new Set() })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const fileRef = useRef<HTMLInputElement|null>(null)
 
   const sample = useMemo(()=> sampleCSV(), [])
 
@@ -45,23 +36,13 @@ export default function ImportLeadsPage(){
     if (!f) return
     setError(''); setRows(null); setReport(null)
     try{
-      if (f.name.toLowerCase().endsWith('.csv')){
+      const name = f.name.toLowerCase()
+      if (name.endsWith('.csv')) {
         const text = await f.text()
         const parsed = parseCSV(text)
         setRows(parsed)
-      } else if (f.name.toLowerCase().endsWith('.xlsx') || f.name.toLowerCase().endsWith('.xls')){
-        try{
-          const XLSX = await import('xlsx')
-          const data = await f.arrayBuffer()
-          const wb = XLSX.read(data)
-          const ws = wb.Sheets[wb.SheetNames[0]]
-          const json = XLSX.utils.sheet_to_json(ws, { defval: '' }) as RawRow[]
-          setRows(json)
-        } catch{
-          setError('File Excel non supportato in questo build. Carica un CSV oppure chiedimi di aggiungere la dipendenza "xlsx" in package.json.')
-        }
       } else {
-        setError('Formato non supportato. Carica un .csv o .xlsx')
+        setError('Formato non supportato in questa versione. Usa un file .csv')
       }
     } catch(ex:any){ setError(ex.message || 'Errore lettura file') }
   }
@@ -70,7 +51,7 @@ export default function ImportLeadsPage(){
     if (!rows || rows.length===0){ setReport({ valid:[], errors:['Nessuna riga nel file.'] }); return }
     setLoading(true); setError('')
     try{
-      // 1) Owner mapping
+      // Owner mapping complessivo
       const ownerEmails = Array.from(new Set(rows.map(r => String(r.owner_email||'').trim()).filter(Boolean)))
       const { data: advs, error: aerr } = await supabase
         .from('advisors')
@@ -80,23 +61,20 @@ export default function ImportLeadsPage(){
       const byEmail = new Map<string,string>()
       for(const a of (advs||[])) byEmail.set(a.email, a.user_id)
       const missing = ownerEmails.filter(e => !byEmail.has(e))
-      if (missing.length>0){
-        setReport({ valid:[], errors:[`owner_email non trovati in advisors: ${missing.join(', ')}`] })
-        return
-      }
+      if (missing.length>0){ setReport({ valid:[], errors:[`owner_email non trovati in advisors: ${missing.join(', ')}`] }); return }
 
-      // 2) Dedup vs DB
+      // Dedup vs DB
       const emails = Array.from(new Set(rows.map(r => String(r.email||'').trim()).filter(Boolean)))
       const phones = Array.from(new Set(rows.map(r => String(r.phone||'').trim()).filter(Boolean)))
       const [dbE, dbP] = await Promise.all([
         emails.length ? supabase.from('leads').select('email').in('email', emails) : Promise.resolve({ data:[] as any }),
-        phones.length ? supabase.from('leads').select('phone').in('phone', phones) : Promise.resolve({ data:[] as any })
+        phones.length ? supabase.from('leads').select('phone').in('phone', phones) : Promise.resolve({ data:[] as any }),
       ])
       const dbEmails = new Set<string>((dbE.data||[]).map((r:any)=>String(r.email)))
       const dbPhones = new Set<string>((dbP.data||[]).map((r:any)=>String(r.phone)))
       setDupes({ email: dbEmails, phone: dbPhones })
 
-      // 3) Validazione righe
+      // Validazione riga per riga
       const valid: ValidRow[] = []
       const errors: string[] = []
       for(let i=0;i<rows.length;i++){
@@ -114,16 +92,12 @@ export default function ImportLeadsPage(){
           source: toSource(r.source),
           owner_email: String(r.owner_email||'').trim(),
         }
-        // Obbligatorietà
         if (typeof v.is_agency_client !== 'boolean') errors.push(`${ctx}: is_agency_client deve essere true/false`)
         if (!v.email && !v.phone) errors.push(`${ctx}: indicare email oppure phone`)
         if (!((v.first_name && v.last_name) || v.company_name)) errors.push(`${ctx}: servono nome+cognome oppure ragione sociale`)
-        // Dedup runtime
         if (v.email && dbEmails.has(v.email)) errors.push(`${ctx}: email già presente a DB`)
         if (v.phone && dbPhones.has(v.phone)) errors.push(`${ctx}: phone già presente a DB`)
-        // Owner mapping (già verificato complessivo, ma check anche per riga)
         if (!byEmail.has(v.owner_email)) errors.push(`${ctx}: owner_email non mappato in advisors`)
-
         valid.push(v)
       }
       setReport({ valid, errors })
@@ -135,7 +109,6 @@ export default function ImportLeadsPage(){
     if (!report || report.errors.length>0){ return }
     setLoading(true); setError('')
     try{
-      // fetch mappa email->user_id
       const ownerEmails = Array.from(new Set(report.valid.map(v=>v.owner_email)))
       const { data: advs } = await supabase.from('advisors').select('user_id,email').in('email', ownerEmails)
       const map = new Map<string,string>()
@@ -156,10 +129,17 @@ export default function ImportLeadsPage(){
 
       const { error } = await supabase.from('leads').insert(payload)
       if (error) throw error
+
       alert(`Import completato: ${payload.length} lead inseriti`)
-      setRows(null); setReport(null)
+      setRows(null); setReport(null); if (fileRef.current) fileRef.current.value=''
     } catch(ex:any){ setError(ex.message || 'Errore durante import') }
     finally{ setLoading(false) }
+  }
+
+  function downloadCSV(){
+    const blob = new Blob([sample], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href=url; a.download='template_leads.csv'; a.click(); URL.revokeObjectURL(url)
   }
 
   return (
@@ -168,12 +148,13 @@ export default function ImportLeadsPage(){
 
       <div style={{ ...box }}>
         <div style={{ display:'grid', gap:10 }}>
-          <input type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} />
-          <div style={{ fontSize:12, color:'#666' }}>Formato atteso (intestazioni): <code>is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email</code></div>
-          <details>
-            <summary>Scarica un esempio CSV</summary>
-            <textarea readOnly style={{ width:'100%', height:120, ...ipt }}>{sample}</textarea>
-          </details>
+          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} />
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <button onClick={downloadCSV} style={{ ...ipt, cursor:'pointer' }}>Scarica template CSV</button>
+          </div>
+          <div style={{ fontSize:12, color:'#666' }}>
+            Intestazioni attese: <code>is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email</code>
+          </div>
           <div>
             <button onClick={validate} disabled={!rows || loading} style={{ ...ipt, cursor:'pointer' }}>Valida</button>
             <button onClick={doImport} disabled={!report || report.errors.length>0 || loading} style={{ ...ipt, cursor:'pointer', marginLeft:8 }}>Importa</button>
@@ -206,7 +187,7 @@ export default function ImportLeadsPage(){
           {report.errors.length>0 ? (
             <div>
               <div style={{ color:'#c00', marginBottom:8 }}>Errori: {report.errors.length}. Correggi il file e rilancia Valida.</div>
-              <ul>{report.errors.slice(0,50).map((e,i)=> <li key={i} style={{ color:'#c00' }}>{e}</li>)}</ul>
+              <ul>{report.errors.slice(0,100).map((e,i)=> <li key={i} style={{ color:'#c00' }}>{e}</li>)}</ul>
             </div>
           ) : (
             <div style={{ color:'#080' }}>Nessun errore. Puoi procedere con l'import.</div>
@@ -217,8 +198,8 @@ export default function ImportLeadsPage(){
   )
 }
 
+/* Helpers */
 function parseCSV(text: string): RawRow[]{
-  // CSV semplice: separatore "," o ";" e header obbligatorio
   const sep = text.indexOf(';')>-1 && text.indexOf(',')===-1 ? ';' : ','
   const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0)
   if (lines.length===0) return []
@@ -232,21 +213,16 @@ function parseCSV(text: string): RawRow[]{
   }
   return rows
 }
-
 function splitCsvLine(line:string, sep:string){
-  const out:string[] = []
-  let cur = ''
-  let inQ = false
+  const out:string[] = []; let cur=''; let inQ=false
   for(let i=0;i<line.length;i++){
-    const ch = line[i]
-    if (ch==='"') { inQ = !inQ; continue }
-    if (ch===sep && !inQ){ out.push(cur); cur=''; continue }
+    const ch=line[i]
+    if (ch === '"'){ inQ = !inQ; continue }
+    if (ch === sep && !inQ){ out.push(cur); cur=''; continue }
     cur += ch
   }
-  out.push(cur)
-  return out
+  out.push(cur); return out
 }
-
 function parseBool(v:any){
   const s = String(v).toLowerCase().trim()
   if (s==='true' || s==='1' || s==='si' || s==='sì' || s==='yes') return true
@@ -254,8 +230,12 @@ function parseBool(v:any){
   return (undefined as unknown) as any
 }
 function normStr(v:any){ const s=String(v??'').trim(); return s.length? s : null }
-function toSource(v:any): 'Provided'|'Self'|null{ const s=String(v||'').toLowerCase(); if(s==='provided') return 'Provided'; if(s==='self') return 'Self'; return null }
-
+function toSource(v:any): 'Provided'|'Self'|null{
+  const s=String(v||'').toLowerCase()
+  if (s==='provided') return 'Provided'
+  if (s==='self') return 'Self'
+  return null
+}
 function sampleCSV(){
   return [
     'is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email',
@@ -264,6 +244,3 @@ function sampleCSV(){
     'true,azienda@example.com,,,,Azienda Srl,Roma,Via B 2,Provided,junior2@advisoryplus.it'
   ].join('\n')
 }
-
-const th: React.CSSProperties = { textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #eee', background:'#fafafa' }
-const td: React.CSSProperties = { padding:'6px 8px', borderBottom:'1px solid #f5f5f5' }
