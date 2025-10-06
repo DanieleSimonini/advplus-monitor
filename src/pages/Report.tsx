@@ -101,7 +101,7 @@ export default function ReportPage(){
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
         const { data, error } = await supabase
-          .from('goals')
+          .from('v_goals_monthly')
           .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
           .eq('advisor_user_id', advisorUid)
           .eq('year', y)
