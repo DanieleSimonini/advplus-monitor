@@ -29,8 +29,8 @@ type GoalsRow = {
 
 type ProgressRow = GoalsRow & { }
 
-const box: React.CSSProperties = { background: '#fff', border: '1px solid #eee', borderRadius: 16, padding: 16 }
-const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid #ddd', borderRadius: 8 }
+const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
+const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border, #ddd)', borderRadius: 8, background:'#fff', color:'var(--text, #111)' }
 const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid #eee', background: '#fafafa' }
 const td: React.CSSProperties = { padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }
 
