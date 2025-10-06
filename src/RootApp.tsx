@@ -157,22 +157,23 @@ const navBtnActive: React.CSSProperties = {
 <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gridTemplateRows:'auto auto', rowGap:6, alignItems:'center', padding:'6px 0' }}>
   {/* Riga 1, Colonna 1: Logo GuideUp */}
   <div style={{ gridColumn:'1 / 2', gridRow:'1 / 2', display:'flex', alignItems:'center', gap:10 }}>
-    <img
-      src={typeof GUIDEUP_LOGO !== 'undefined' ? GUIDEUP_LOGO : '/guideup-logo.png'}
-      alt="GuideUp"
-      onError={(e:any)=>{ e.currentTarget.replaceWith(Object.assign(document.createElement('strong'),{textContent:'GuideUp',style:'font-size:18px'}))}}
-      style={{ height:36, width:'auto', display:'block' }}
-    />
+{/* Logo GuideUp (sx) — 36 → 54px */}
+<img
+  src={GUIDEUP_LOGO}
+  alt="GuideUp"
+  style={{ height: 54, width: 'auto', display: 'block' }}
+/>
   </div>
 
   {/* Riga 1, Colonna 2: Logo Advisory+ a destra */}
   <div style={{ gridColumn:'2 / 3', gridRow:'1 / 2', display:'flex', alignItems:'center', gap:10, justifyContent:'flex-end' }}>
-    <img
-      src={typeof APLUS_LOGO !== 'undefined' ? APLUS_LOGO : '/advisoryplus-logo.svg'}
-      alt="AdvisoryPlus"
-      onError={(e:any)=>{ e.currentTarget.replaceWith(Object.assign(document.createElement('strong'),{textContent:'AdvisoryPlus'}))}}
-      style={{ height:28, width:'auto', display:'block' }}
-    />
+    
+{/* Logo Advisory+ (dx) — 28 → 42px */}
+<img
+  src={APLUS_LOGO}
+  alt="AdvisoryPlus"
+  style={{ height: 42, width: 'auto', display: 'block' }}
+/>
   </div>
 
   {/* Riga 2: Menu centrato su tutta la larghezza */}
