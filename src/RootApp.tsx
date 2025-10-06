@@ -148,62 +148,56 @@ const navBtnActive: React.CSSProperties = {
 <BrandTheme />
 
 {/* Header / Nav */}
-<header className="appbar" style={{ background:'#fff', borderBottom:'1px solid var(--border, #e5e7eb)', position:'sticky', top:0, zIndex:40 }}>
-  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap', padding:'10px 16px' }}>
-    {/* Logo + chip nome app */}
-    <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-      <img src="/brand-logo.svg" alt="AdvisoryPlus" style={{ height:28 }} />
-      <div className="brand-chip">Adv+ Monitor</div>
-    </div>
+<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:16, flexWrap:'wrap', padding:'6px 0' }}>
+  {/* Logo sinistra: GuideUp */}
+  <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+    <img
+      src="/guideup-logo.png"
+      alt="GuideUp"
+      style={{ height:36, width:'auto', display:'block' }}
+    />
+  </div>
 
-    {/* Menu */}
-    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-      <button
-        style={screen==='dashboard' ? navBtnActive : navBtn}
-        onClick={()=>setScreen('dashboard')}
-      >
-        Dashboard
-      </button>
-      <button
-        style={screen==='leads' ? navBtnActive : navBtn}
-        onClick={()=>setScreen('leads')}
-      >
-        Leads
-      </button>
-      <button
-        style={screen==='import' ? navBtnActive : navBtn}
-        onClick={()=>setScreen('import')}
-      >
-        Importa Leads
-      </button>
-      <button
-        style={screen==='goals' ? navBtnActive : navBtn}
-        onClick={()=>setScreen('goals')}
-      >
-        Obiettivi TL
-      </button>
-      <button
-        style={screen==='report' ? navBtnActive : navBtn}
-        onClick={()=>setScreen('report')}
-      >
-        Report
-      </button>
-      <button
-        style={screen==='calendar' ? navBtnActive : navBtn}
-        onClick={()=>setScreen('calendar')}
-      >
-        Calendar
-      </button>
-      {/* opzionale: mostra Admin solo agli Admin */}
-      {me?.role === 'Admin' && (
+  {/* Nav centrale */}
+  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+    <button style={screen==='dashboard'?navBtnActive:navBtn} onClick={()=>setScreen('dashboard')}>Dashboard</button>
+    <button style={screen==='leads'?navBtnActive:navBtn} onClick={()=>setScreen('leads')}>Leads</button>
+    <button style={screen==='import'?navBtnActive:navBtn} onClick={()=>setScreen('import')}>Importa Leads</button>
+    <button style={screen==='goals'?navBtnActive:navBtn} onClick={()=>setScreen('goals')}>Obiettivi TL</button>
+    <button style={screen==='report'?navBtnActive:navBtn} onClick={()=>setScreen('report')}>Report</button>
+    <button style={screen==='calendar'?navBtnActive:navBtn} onClick={()=>setScreen('calendar')}>Calendar</button>
+    <button style={screen==='admin'?navBtnActive:navBtn} onClick={()=>setScreen('admin')}>Admin</button>
+  </div>
+
+  {/* Destra: logo Advisory+ + auth */}
+  <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+    <img
+      src="/advisoryplus-logo.svg"
+      alt="AdvisoryPlus"
+      style={{ height:28, width:'auto', display:'block' }}
+    />
+    {loading ? (
+      <span style={{ fontSize:12, color:'#666' }}>Caricamento…</span>
+    ) : me ? (
+      <>
+        <span style={{ fontSize:12, color:'#666' }}>{me.full_name || me.email} — {me.role}</span>
         <button
-          style={screen==='admin' ? navBtnActive : navBtn}
-          onClick={()=>setScreen('admin')}
+          onClick={async()=>{ await supabase.auth.signOut(); setMe(null); setScreen('login') }}
+          style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff' }}
         >
-          Admin
+          Esci
         </button>
-      )}
-    </div>
+      </>
+    ) : (
+      <button
+        onClick={()=>setScreen('login')}
+        style={{ padding:'8px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff' }}
+      >
+        Accedi
+      </button>
+    )}
+  </div>
+</div>
 
     {/* Auth */}
     <div style={{ display:'flex', gap:8, alignItems:'center' }}>
