@@ -150,118 +150,65 @@ const navBtnActive: React.CSSProperties = {
 <BrandTheme />
 
 {/* Header / Nav */}
-<div
-  style={{
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 16,
-    flexWrap: 'wrap',
-    padding: '6px 0',
-  }}
->
-  {/* Logo sinistra: GuideUp */}
-  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+<div style={{ display:'grid', gridTemplateColumns:'1fr auto', gridTemplateRows:'auto auto', rowGap:6, alignItems:'center', padding:'6px 0' }}>
+  {/* Riga 1, Colonna 1: Logo GuideUp */}
+  <div style={{ gridColumn:'1 / 2', gridRow:'1 / 2', display:'flex', alignItems:'center', gap:10 }}>
     <img
       src="/guideup-logo.png"
       alt="GuideUp"
-      style={{ height: 36, width: 'auto', display: 'block' }}
+      onError={(e:any)=>{ e.currentTarget.style.display='none'; /* fallback testo */ e.currentTarget.parentElement!.insertAdjacentHTML('beforeend','<strong style=\"font-size:18px\">GuideUp</strong>') }}
+      style={{ height:36, width:'auto', display:'block' }}
     />
   </div>
 
-  {/* Nav centrale */}
-  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-    <button
-      style={screen === 'dashboard' ? navBtnActive : navBtn}
-      onClick={() => setScreen('dashboard')}
-    >
-      Dashboard
-    </button>
-    <button
-      style={screen === 'leads' ? navBtnActive : navBtn}
-      onClick={() => setScreen('leads')}
-    >
-      Leads
-    </button>
-    <button
-      style={screen === 'import' ? navBtnActive : navBtn}
-      onClick={() => setScreen('import')}
-    >
-      Importa Leads
-    </button>
-    <button
-      style={screen === 'goals' ? navBtnActive : navBtn}
-      onClick={() => setScreen('goals')}
-    >
-      Obiettivi TL
-    </button>
-    <button
-      style={screen === 'report' ? navBtnActive : navBtn}
-      onClick={() => setScreen('report')}
-    >
-      Report
-    </button>
-    <button
-      style={screen === 'calendar' ? navBtnActive : navBtn}
-      onClick={() => setScreen('calendar')}
-    >
-      Calendar
-    </button>
-    <button
-      style={screen === 'admin' ? navBtnActive : navBtn}
-      onClick={() => setScreen('admin')}
-    >
-      Admin
-    </button>
-  </div>
-
-  {/* Destra: logo Advisory+ + auth */}
-  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+  {/* Riga 1, Colonna 2: Logo Advisory+ a destra */}
+  <div style={{ gridColumn:'2 / 3', gridRow:'1 / 2', display:'flex', alignItems:'center', gap:10, justifyContent:'flex-end' }}>
     <img
       src="/advisoryplus-logo.svg"
       alt="AdvisoryPlus"
-      style={{ height: 28, width: 'auto', display: 'block' }}
+      onError={(e:any)=>{ e.currentTarget.style.display='none'; e.currentTarget.parentElement!.insertAdjacentHTML('beforeend','<strong>AdvisoryPlus</strong>') }}
+      style={{ height:28, width:'auto', display:'block' }}
     />
+  </div>
+
+  {/* Riga 2, Colonna 1: Menu centrale/sinistra */}
+  <div style={{ gridColumn:'1 / 2', gridRow:'2 / 3', display:'flex', gap:8, flexWrap:'wrap' }}>
+    <button style={screen==='dashboard'?navBtnActive:navBtn} onClick={()=>setScreen('dashboard')}>Dashboard</button>
+    <button style={screen==='leads'?navBtnActive:navBtn} onClick={()=>setScreen('leads')}>Leads</button>
+    <button style={screen==='import'?navBtnActive:navBtn} onClick={()=>setScreen('import')}>Importa Leads</button>
+    <button style={screen==='goals'?navBtnActive:navBtn} onClick={()=>setScreen('goals')}>Obiettivi TL</button>
+    <button style={screen==='report'?navBtnActive:navBtn} onClick={()=>setScreen('report')}>Report</button>
+    <button style={screen==='calendar'?navBtnActive:navBtn} onClick={()=>setScreen('calendar')}>Calendar</button>
+    <button style={screen==='admin'?navBtnActive:navBtn} onClick={()=>setScreen('admin')}>Admin</button>
+  </div>
+
+  {/* Riga 2, Colonna 2: Pannello utente sotto a destra */}
+  <div style={{ gridColumn:'2 / 3', gridRow:'2 / 3', display:'flex', gap:10, alignItems:'center', justifyContent:'flex-end' }}>
     {loading ? (
-      <span style={{ fontSize: 12, color: '#666' }}>Caricamento…</span>
+      <span style={{ fontSize:12, color:'#666' }}>Caricamento…</span>
     ) : me ? (
       <>
-        <span style={{ fontSize: 12, color: '#666' }}>
-          {(me.full_name || me.email) + ' — ' + me.role}
-        </span>
+        <div style={{ textAlign:'right', lineHeight:1.2 }}>
+          <div style={{ fontSize:12, color:'#111' }}>{me.full_name || me.email}</div>
+          <div style={{ fontSize:11, color:'#666' }}>{me.role}</div>
+        </div>
         <button
-          onClick={async () => {
-            await supabase.auth.signOut()
-            setMe(null)
-            setScreen('login')
-          }}
-          style={{
-            padding: '6px 10px',
-            border: '1px solid #ddd',
-            borderRadius: 8,
-            background: '#fff',
-          }}
+          onClick={async()=>{ await supabase.auth.signOut(); setMe(null); setScreen('login') }}
+          style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff' }}
         >
           Esci
         </button>
       </>
     ) : (
       <button
-        onClick={() => setScreen('login')}
-        style={{
-          padding: '8px 12px',
-          borderRadius: 10,
-          border: '1px solid #111',
-          background: '#111',
-          color: '#fff',
-        }}
+        onClick={()=>setScreen('login')}
+        style={{ padding:'8px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff' }}
       >
         Accedi
       </button>
     )}
   </div>
 </div>
-
 
 
       {/* Contenuti */}
