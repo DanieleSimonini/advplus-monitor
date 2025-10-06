@@ -27,7 +27,12 @@ type Kpi = {
   byMonth: Record<string, MonthAgg>
 }
 
-const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
+const box: React.CSSProperties = {
+  background:'var(--card, #fff)',
+  border:'1px solid var(--border, #eee)',
+  borderRadius:16,
+  padding:16
+}
 const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
 const ipt: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd' }
 const title: React.CSSProperties = { fontWeight:700, marginBottom:12 }
