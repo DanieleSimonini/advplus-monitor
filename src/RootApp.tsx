@@ -29,6 +29,8 @@ export default function RootApp(){
   const [me, setMe] = useState<Me|null>(null)
   const [loading, setLoading] = useState(true)
 
+useEffect(()=>{ document.title = 'GuideUp' },[])
+  
   // Bootstrap auth soft: non blocca il menu
 useEffect(() => {
   let unsub: { unsubscribe: () => void } | null = null
