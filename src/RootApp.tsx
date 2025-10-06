@@ -69,7 +69,7 @@ useEffect(() => {
 
   return () => { if (unsub) unsub.unsubscribe() }
 }, [])
-useEffect(()=>{ document.title = 'GuideUp' },[])
+
 
  async function loadMe(uid: string){
   setLoading(true)
