@@ -106,6 +106,19 @@ export default function LeadsPage() {
   const [newProposal, setNewProposal] = useState<{ts:string; line:string; notes:string}>({ ts:'', line:'', notes:'' })
   const [newContract, setNewContract] = useState<{ts:string; contract_type:string; amount:string; notes:string}>({ ts:'', contract_type:'', amount:'', notes:'' })
 
+const [editingLeadId, setEditingLeadId] = useState<string|null>(null)
+const [confirmDeleteId, setConfirmDeleteId] = useState<string|null>(null)
+
+// per visibilità owner select (serve ruolo). Se hai già 'me', usa me.role.
+// In alternativa, leggo il ruolo via advisors (fallback semplice):
+const [myRole, setMyRole] = useState<'Admin'|'Team Lead'|'Junior'>('Junior')
+useEffect(()=>{ (async()=>{
+  const { data: u } = await supabase.auth.getUser()
+  if (!u?.user) return
+  const r = await supabase.from('advisors').select('role').eq('user_id', u.user.id).maybeSingle()
+  if (r.data?.role) setMyRole(r.data.role as any)
+})() },[])
+  
   // bootstrap
   useEffect(()=>{(async()=>{
     setLoading(true); setError('')
