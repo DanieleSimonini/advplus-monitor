@@ -255,6 +255,17 @@ useEffect(()=>{ (async()=>{
           </ul>
         </div>
       </div>
+      {/* dentro ogni riga lead nella lista */}
+<div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
+  <div /* il tuo label/nome lead */>
+    {leadLabel(l)}
+  </div>
+  <div style={{ display:'inline-flex', gap:6 }}>
+    <button title="Modifica" onClick={()=>{ setEditingLeadId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+    <button title="Elimina" onClick={()=>setConfirmDeleteId(l.id!)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+  </div>
+</div>
+
 
       {/* DESTRA: form + tabs */}
       <div style={{ display:'grid', gap:12 }}>
@@ -277,6 +288,25 @@ useEffect(()=>{ (async()=>{
               <div style={lbl}>Owner (Junior)</div>
               <input value={ownerName} readOnly style={{ ...ipt, background:'#f9f9f9' }} />
             </div>
+
+            {/* Owner (solo Admin/TL) */}
+{(myRole==='Admin' || myRole==='Team Lead') && (
+  <div>
+    <div style={{ fontSize:12, marginBottom:4 }}>Assegna a Junior</div>
+    <select
+      value={form.owner_id || ''}
+      onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))}
+      style={{ padding:'6px 10px', border:'1px solid var(--border, #ddd)', borderRadius:8 }}
+    >
+      <option value="">— Scegli —</option>
+      {advisorsList
+        .filter(a=>a.role==='Junior' && a.user_id)   // usa la tua lista advisors caricata
+        .map(a=>(
+          <option key={a.user_id} value={a.user_id!}>{a.full_name || a.email}</option>
+        ))}
+    </select>
+  </div>
+)}
 
             <div>
               <div style={lbl}>Nome</div>
