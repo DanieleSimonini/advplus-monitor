@@ -13,10 +13,6 @@ import BrandTheme from './theme/BrandTheme'
 // Placeholder opzionali
 const CalendarPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Calendar</b> in preparazione.</div>
 
-// Stile bottoni nav
-const navBtn: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
-const navBtnActive: React.CSSProperties = { ...navBtn, borderColor:'#111', color:'#111', background:'#f6f6f6' }
-
 // Logo inline
 const LogoAPlus: React.FC = () => (
   <div style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -126,26 +122,33 @@ useEffect(() => {
     return <LoginPage />
   }
 
-  const navBtn: React.CSSProperties = {
+const NAV_BLUE = '#0029ae'       // fallback se CSS vars mancanti
+const NAV_BORDER = '#e5e7eb'
+const NAV_TEXT = '#111'
+
+const navBtn: React.CSSProperties = {
   padding:'6px 10px',
-  border:'1px solid var(--border)',
+  border:'1px solid var(--border, '+NAV_BORDER+')',
   borderRadius:8,
   background:'#fff',
-  color:'var(--text)',
+  color:'var(--text, '+NAV_TEXT+')',
 }
 
-  const navBtnActive: React.CSSProperties = {
+const navBtnActive: React.CSSProperties = {
   ...navBtn,
-  background:'var(--brand-primary-600)',
-  borderColor:'var(--brand-primary-600)',
+  background:'var(--brand-primary-600, '+NAV_BLUE+')',
+  borderColor:'var(--brand-primary-600, '+NAV_BLUE+')',
   color:'#fff',
 }
+
 
   return (
     <div style={{ maxWidth:1200, margin:'0 auto', padding:16, display:'grid', gap:16 }}>
 
+<BrandTheme />
+
 {/* Header / Nav */}
-<header className="appbar">
+<header className="appbar" style={{ background:'#fff', borderBottom:'1px solid var(--border, #e5e7eb)', position:'sticky', top:0, zIndex:40 }}>
   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap', padding:'10px 16px' }}>
     {/* Logo + chip nome app */}
     <div style={{ display:'flex', alignItems:'center', gap:12 }}>
