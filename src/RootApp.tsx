@@ -10,6 +10,10 @@ import ImportLeadsPage from './pages/ImportLeads'
 import ReportPage from './pages/Report'
 import BrandTheme from './theme/BrandTheme'
 
+// Percorsi logo (serviti da /public)
+const GUIDEUP_LOGO = '/guideup-logo.png';
+const APLUS_LOGO   = '/advisoryplus-logo.svg';
+
 // Placeholder opzionali
 const CalendarPage: React.FC = () => <div style={{padding:16}}>Schermata <b>Calendar</b> in preparazione.</div>
 
