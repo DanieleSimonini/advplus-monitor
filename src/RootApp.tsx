@@ -154,9 +154,9 @@ const navBtnActive: React.CSSProperties = {
   {/* Riga 1, Colonna 1: Logo GuideUp */}
   <div style={{ gridColumn:'1 / 2', gridRow:'1 / 2', display:'flex', alignItems:'center', gap:10 }}>
     <img
-      src="/guideup-logo.png"
+      src={typeof GUIDEUP_LOGO !== 'undefined' ? GUIDEUP_LOGO : '/guideup-logo.png'}
       alt="GuideUp"
-      onError={(e:any)=>{ e.currentTarget.style.display='none'; /* fallback testo */ e.currentTarget.parentElement!.insertAdjacentHTML('beforeend','<strong style=\"font-size:18px\">GuideUp</strong>') }}
+      onError={(e:any)=>{ e.currentTarget.replaceWith(Object.assign(document.createElement('strong'),{textContent:'GuideUp',style:'font-size:18px'}))}}
       style={{ height:36, width:'auto', display:'block' }}
     />
   </div>
@@ -164,15 +164,15 @@ const navBtnActive: React.CSSProperties = {
   {/* Riga 1, Colonna 2: Logo Advisory+ a destra */}
   <div style={{ gridColumn:'2 / 3', gridRow:'1 / 2', display:'flex', alignItems:'center', gap:10, justifyContent:'flex-end' }}>
     <img
-      src="/advisoryplus-logo.svg"
+      src={typeof APLUS_LOGO !== 'undefined' ? APLUS_LOGO : '/advisoryplus-logo.svg'}
       alt="AdvisoryPlus"
-      onError={(e:any)=>{ e.currentTarget.style.display='none'; e.currentTarget.parentElement!.insertAdjacentHTML('beforeend','<strong>AdvisoryPlus</strong>') }}
+      onError={(e:any)=>{ e.currentTarget.replaceWith(Object.assign(document.createElement('strong'),{textContent:'AdvisoryPlus'}))}}
       style={{ height:28, width:'auto', display:'block' }}
     />
   </div>
 
-  {/* Riga 2, Colonna 1: Menu centrale/sinistra */}
-  <div style={{ gridColumn:'1 / 2', gridRow:'2 / 3', display:'flex', gap:8, flexWrap:'wrap' }}>
+  {/* Riga 2: Menu centrato su tutta la larghezza */}
+  <div style={{ gridColumn:'1 / 3', gridRow:'2 / 3', display:'flex', gap:8, flexWrap:'wrap', justifyContent:'center' }}>
     <button style={screen==='dashboard'?navBtnActive:navBtn} onClick={()=>setScreen('dashboard')}>Dashboard</button>
     <button style={screen==='leads'?navBtnActive:navBtn} onClick={()=>setScreen('leads')}>Leads</button>
     <button style={screen==='import'?navBtnActive:navBtn} onClick={()=>setScreen('import')}>Importa Leads</button>
@@ -182,8 +182,8 @@ const navBtnActive: React.CSSProperties = {
     <button style={screen==='admin'?navBtnActive:navBtn} onClick={()=>setScreen('admin')}>Admin</button>
   </div>
 
-  {/* Riga 2, Colonna 2: Pannello utente sotto a destra */}
-  <div style={{ gridColumn:'2 / 3', gridRow:'2 / 3', display:'flex', gap:10, alignItems:'center', justifyContent:'flex-end' }}>
+  {/* Pannello utente: sotto a destra, riga 3 opzionale */}
+  <div style={{ gridColumn:'2 / 3', gridRow:'3 / 4', display:'flex', gap:10, alignItems:'center', justifyContent:'flex-end' }}>
     {loading ? (
       <span style={{ fontSize:12, color:'#666' }}>Caricamento…</span>
     ) : me ? (
@@ -209,6 +209,7 @@ const navBtnActive: React.CSSProperties = {
     )}
   </div>
 </div>
+
 
 
       {/* Contenuti */}
