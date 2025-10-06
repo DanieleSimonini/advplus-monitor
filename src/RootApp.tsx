@@ -172,7 +172,7 @@ const navBtnActive: React.CSSProperties = {
 <img
   src={APLUS_LOGO}
   alt="AdvisoryPlus"
-  style={{ height: 42, width: 'auto', display: 'block' }}
+  style={{ height: 48, width: 'auto', display: 'block' }}
 />
   </div>
 
