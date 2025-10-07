@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
 /**
- * Dashboard.tsx — Funnel SVG + "Lead non contattati"
+ * Dashboard.tsx — Funnel + "Lead non contattati" (UX migliorata)
  * - Filtri Advisor (Me/Team/All) e Periodo (mese da / a)
- * - KPI esistenti + grafico ad imbuto (Leads → Contatti → Appuntamenti → Proposte → Contratti)
- * - Riquadro evidenziato "Lead non contattati" (owner-scope aware; per i Junior mostra solo i propri)
+ * - KPI + grafico ad imbuto vero (trapezi SVG con % di conversione)
+ * - Riquadro evidenziato "Lead non contattati" (scope-aware)
  */
 
 type Role = 'Admin'|'Team Lead'|'Junior'
@@ -81,13 +81,14 @@ async function countIn(table: 'activities'|'appointments'|'proposals'|'contracts
 
 async function sumContractsByType(leadIds: string[], startIso: string, endIso: string, types: string[]){
   if (!leadIds.length) return 0
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('contracts')
     .select('amount, contract_type, ts')
     .in('lead_id', leadIds)
     .in('contract_type', types)
     .gte('ts', startIso).lt('ts', endIso)
-  return (data||[]).reduce((s,r)=> s + Number(r.amount||0), 0)
+  if (error || !data) return 0
+  return data.reduce((s,r)=> s + Number(r.amount||0), 0)
 }
 
 async function countLeadsCreated(ownerIds: string[], startIso: string, endIso: string){
@@ -104,11 +105,12 @@ async function countLeadsCreated(ownerIds: string[], startIso: string, endIso: s
 async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
   if (!ownerIds.length) return 0
   // all-time: lead senza alcuna activity
-  const { data: leads } = await supabase
+  const { data, error } = await supabase
     .from('leads')
     .select('id')
     .in('owner_id', ownerIds)
-  const leadIds = (leads||[]).map(d=>d.id)
+  if (error || !data) return 0
+  const leadIds = data.map(d=>d.id)
   if (!leadIds.length) return 0
   const { data: acts } = await supabase
     .from('activities')
@@ -121,52 +123,51 @@ async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
 function formatNumber(n:number){ return new Intl.NumberFormat('it-IT').format(n) }
 function formatCurrency(n:number){ return new Intl.NumberFormat('it-IT',{ style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }
 
-// === UI helpers (card funnel & pill) ===
-const funnelCard: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
-const kpiPill: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'1px solid #e5e7eb', background:'#f8fafc', display:'inline-flex', gap:8, alignItems:'baseline' }
+/**
+ * Funnel a trapezi SVG con % conversione
+ */
+function Funnel({ steps }:{ steps: { label:string; value:number }[] }){
+  const max = Math.max(1, ...steps.map(s=>s.value))
+  const width = 560, rowH = 52, padX = 12, labelW = 160
+  const totalH = steps.length * rowH
+  const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, border:'1px solid #e5e7eb', background:'#f8fafc', display:'inline-flex', gap:6, alignItems:'baseline' }
 
-/** Funnel a trapezi in SVG (no librerie) */
-function FunnelSVG({ stages }: { stages: { key:string; label:string; value:number; color?:string }[] }){
-  const max = Math.max(1, ...stages.map(s=>s.value))
-  const width = 560, rowH = 52, labelW = 160
-  const totalH = stages.length * rowH
-  const conv = stages.map((s,i)=> i===0 ? null : (stages[i-1].value>0 ? Math.round((s.value/stages[i-1].value)*100) : 0))
+  const conv = steps.map((s,i)=>{
+    if (i===0) return null
+    const from = steps[i-1].value||0
+    const to = s.value||0
+    return from>0 ? Math.round((to/from)*100) : 0
+  })
 
   return (
-    <div className="brand-card" style={{ ...funnelCard }}>
+    <div className="brand-card" style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
       <div style={{ fontWeight:700, marginBottom:12 }}>Imbuto di conversione</div>
       <div style={{ display:'grid', gridTemplateColumns:`${labelW}px auto`, gap:12 }}>
         {/* Colonna etichette + % conversione */}
         <div style={{ display:'grid', rowGap: rowH-20 }}>
-          {stages.map((s,i)=> (
-            <div key={s.key} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', height:rowH }}>
+          {steps.map((s,i)=> (
+            <div key={s.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', height:rowH }}>
               <div>
                 <div style={{ fontSize:13, fontWeight:600 }}>{s.label}</div>
                 <div style={{ fontSize:12, color:'#6b7280' }}>{formatNumber(s.value)}</div>
               </div>
-              {i>0 && (
-                <div title="Conversione dallo step precedente" style={{ ...kpiPill }}>
-                  <span style={{ fontSize:11, color:'#6b7280' }}>→</span>
-                  <strong style={{ fontSize:14 }}>{conv[i]}%</strong>
-                </div>
-              )}
+              {i>0 && <div style={pill}><span style={{ fontSize:11, color:'#6b7280' }}>→</span><strong style={{ fontSize:14 }}>{conv[i]}%</strong></div>}
             </div>
           ))}
         </div>
-
         {/* Colonna funnel SVG */}
         <div style={{ overflow:'hidden' }}>
           <svg width={width} height={totalH} viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Funnel">
-            {stages.map((s,i)=>{
-              const topW = (i===0) ? (width - 24) : (width - 24) * (stages[i-1].value / max)
-              const botW = (width - 24) * (s.value / max)
+            {steps.map((s,i)=>{
+              const topW = (i===0) ? (width - padX*2) : (width - padX*2) * (steps[i-1].value / max)
+              const botW = (width - padX*2) * (s.value / max)
               const yTop = i*rowH + 6
               const yBot = yTop + rowH - 12
               const xTop = (width - topW)/2
               const xBot = (width - botW)/2
-              const fill = s.color || 'url(#gFunnel)'
+              const fill = 'url(#gFunnel)'
               return (
-                <g key={s.key}>
+                <g key={s.label}>
                   <polygon
                     points={`${xTop},${yTop} ${xTop+topW},${yTop} ${xBot+botW},${yBot} ${xBot},${yBot}`}
                     fill={fill}
@@ -181,26 +182,12 @@ function FunnelSVG({ stages }: { stages: { key:string; label:string; value:numbe
             })}
             <defs>
               <linearGradient id="gFunnel" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85"/>
-                <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55"/>
+                <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85" />
+                <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55" />
               </linearGradient>
             </defs>
           </svg>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function UnworkedCard({ count }:{ count:number }){
-  return (
-    <div className="brand-card" style={{ ...funnelCard, background:'#F5FBFF', borderColor:'#BFE4FF' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-        <div>
-          <div style={{ fontWeight:700 }}>Lead da contattare</div>
-          <div style={{ fontSize:12, color:'#475569' }}>Lead senza alcun contatto (nello scope selezionato)</div>
-        </div>
-        <div style={{ fontSize:28, fontWeight:800, color:'#0b57d0' }}>{formatNumber(count)}</div>
       </div>
     </div>
   )
@@ -314,10 +301,10 @@ export default function DashboardPage(){
           <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contracts||0)}</div>
         </div>
         {/* KPI speciale: Lead non contattati */}
-        <div style={{ background:'#fffbeb', border:'1px solid #fde68a', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#92400e' }}>Lead non contattati</div>
-          <div style={{ fontSize:24, fontWeight:800, color:'#92400e' }}>{formatNumber(notContacted)}</div>
-          <div style={{ fontSize:11, color:'#a16207' }}>Opportunità da lavorare</div>
+        <div style={{ background:'#F5FBFF', border:'1px solid #BFE4FF', borderRadius:12, padding:12 }}>
+          <div style={{ fontSize:12, color:'#0b57d0' }}>Lead non contattati</div>
+          <div style={{ fontSize:24, fontWeight:800, color:'#0b57d0' }}>{formatNumber(notContacted)}</div>
+          <div style={{ fontSize:11, color:'#2563eb' }}>Opportunità da lavorare</div>
         </div>
       </div>
 
@@ -331,7 +318,7 @@ export default function DashboardPage(){
           <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Protection</div>
           <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVProt||0)}</div>
         </div>
-        <div style={{ background:'#fff', border:'1px solid '#eee', borderRadius:12, padding:12 }}>
+        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
           <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Premi Ricorrenti</div>
           <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVPR||0)}</div>
         </div>
@@ -341,17 +328,14 @@ export default function DashboardPage(){
         </div>
       </div>
 
-      {/* Funnel SVG */}
-      <FunnelSVG stages={[
-        { key:'leads',        label:'Leads',         value: funnel.leads },
-        { key:'contacts',     label:'Contatti',      value: funnel.contacts },
-        { key:'appointments', label:'Appuntamenti',  value: funnel.appointments },
-        { key:'proposals',    label:'Proposte',      value: funnel.proposals },
-        { key:'contracts',    label:'Contratti',     value: funnel.contracts },
+      {/* Funnel vero (SVG) */}
+      <Funnel steps={[
+        { label:'Leads', value: funnel.leads },
+        { label:'Contatti', value: funnel.contacts },
+        { label:'Appuntamenti', value: funnel.appointments },
+        { label:'Proposte', value: funnel.proposals },
+        { label:'Contratti', value: funnel.contracts },
       ]} />
-
-      {/* Card dedicata ai lead non contattati */}
-      <UnworkedCard count={notContacted} />
     </div>
   )
 }
