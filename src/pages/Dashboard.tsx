@@ -126,68 +126,115 @@ function formatCurrency(n:number){ return new Intl.NumberFormat('it-IT',{ style:
 /**
  * Funnel a trapezi SVG con % conversione
  */
-function Funnel({ steps }:{ steps: { label:string; value:number }[] }){
-  const max = Math.max(1, ...steps.map(s=>s.value))
-  const width = 560, rowH = 52, padX = 12, labelW = 160
+function Funnel({ steps }:{ steps: { label:string; value:number }[] }) {
+  // Allineamento etichette/trapezi: stessa griglia a righe fisse
+  const max = Math.max(1, ...steps.map(s => s.value))
+  const rowH = 64          // altezza di ogni fascia (etichetta + trapezio)
+  const padX = 12
+  const labelW = 164
+  const width = 560
   const totalH = steps.length * rowH
-  const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, border:'1px solid #e5e7eb', background:'#f8fafc', display:'inline-flex', gap:6, alignItems:'baseline' }
 
-  const conv = steps.map((s,i)=>{
-    if (i===0) return null
-    const from = steps[i-1].value||0
-    const to = s.value||0
-    return from>0 ? Math.round((to/from)*100) : 0
+  const pill: React.CSSProperties = {
+    padding: '6px 10px',
+    borderRadius: 999,
+    border: '1px solid #e5e7eb',
+    background: '#f8fafc',
+    display: 'inline-flex',
+    gap: 6,
+    alignItems: 'baseline'
+  }
+
+  const conv = steps.map((s, i) => {
+    if (i === 0) return 0
+    const from = steps[i - 1].value || 0
+    const to = s.value || 0
+    return from > 0 ? Math.round((to / from) * 100) : 0
   })
 
   return (
     <div className="brand-card" style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
       <div style={{ fontWeight:700, marginBottom:12 }}>Imbuto di conversione</div>
-      <div style={{ display:'grid', gridTemplateColumns:`${labelW}px auto`, gap:12 }}>
-        {/* Colonna etichette + % conversione */}
-        <div style={{ display:'grid', rowGap: rowH-20 }}>
-          {steps.map((s,i)=> (
-            <div key={s.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', height:rowH }}>
-              <div>
-                <div style={{ fontSize:13, fontWeight:600 }}>{s.label}</div>
-                <div style={{ fontSize:12, color:'#6b7280' }}>{formatNumber(s.value)}</div>
-              </div>
-              {i>0 && <div style={pill}><span style={{ fontSize:11, color:'#6b7280' }}>→</span><strong style={{ fontSize:14 }}>{conv[i]}%</strong></div>}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `${labelW}px ${width}px`,
+          gridTemplateRows: `repeat(${steps.length}, ${rowH}px)`,
+          columnGap: 12,
+          rowGap: 0,
+          alignItems: 'center'
+        }}
+      >
+        {/* Colonna etichette (una riga = una fascia) */}
+        {steps.map((s, i) => (
+          <div key={`lbl-${s.label}`} style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600 }}>{s.label}</div>
+              <div style={{ fontSize:12, color:'#6b7280' }}>{new Intl.NumberFormat('it-IT').format(s.value)}</div>
             </div>
-          ))}
-        </div>
-        {/* Colonna funnel SVG */}
-        <div style={{ overflow:'hidden' }}>
-          <svg width={width} height={totalH} viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Funnel">
-            {steps.map((s,i)=>{
-              const topW = (i===0) ? (width - padX*2) : (width - padX*2) * (steps[i-1].value / max)
-              const botW = (width - padX*2) * (s.value / max)
-              const yTop = i*rowH + 6
-              const yBot = yTop + rowH - 12
-              const xTop = (width - topW)/2
-              const xBot = (width - botW)/2
-              const fill = 'url(#gFunnel)'
-              return (
-                <g key={s.label}>
-                  <polygon
-                    points={`${xTop},${yTop} ${xTop+topW},${yTop} ${xBot+botW},${yBot} ${xBot},${yBot}`}
-                    fill={fill}
-                    stroke="#e5e7eb"
-                    strokeWidth="1"
-                  />
-                  <text x={width/2} y={yTop + (rowH/2)} dominantBaseline="middle" textAnchor="middle" fontSize="13" fill="#0f172a">
-                    {formatNumber(s.value)}
-                  </text>
-                </g>
-              )
-            })}
-            <defs>
-              <linearGradient id="gFunnel" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85" />
-                <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55" />
-              </linearGradient>
-            </defs>
-          </svg>
-        </div>
+            {i > 0 && (
+              <div style={pill}>
+                <span style={{ fontSize:11, color:'#6b7280' }}>→</span>
+                <strong style={{ fontSize:14 }}>{conv[i]}%</strong>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Colonna funnel: un solo SVG che occupa tutte le righe */}
+        <svg
+          width={width}
+          height={totalH}
+          viewBox={`0 0 ${width} ${totalH}`}
+          role="img"
+          aria-label="Funnel"
+          style={{ gridColumn: 2, gridRow: `1 / span ${steps.length}` }}
+        >
+          <defs>
+            <linearGradient id="gFunnel" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85" />
+              <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55" />
+            </linearGradient>
+          </defs>
+
+          {steps.map((s, i) => {
+            // larghezze relative rispetto al massimo
+            const topW = i === 0 ? (width - padX * 2)
+                                 : (width - padX * 2) * (steps[i - 1].value / max)
+            const botW = (width - padX * 2) * (s.value / max)
+
+            // ogni fascia è centrata verticalmente nella sua riga
+            const yCenter = i * rowH + rowH / 2
+            const bandH = rowH - 14
+            const yTop = yCenter - bandH / 2
+            const yBot = yCenter + bandH / 2
+
+            const xTop = (width - topW) / 2
+            const xBot = (width - botW) / 2
+
+            return (
+              <g key={`poly-${s.label}`}>
+                <polygon
+                  points={`${xTop},${yTop} ${xTop + topW},${yTop} ${xBot + botW},${yBot} ${xBot},${yBot}`}
+                  fill="url(#gFunnel)"
+                  stroke="#e5e7eb"
+                  strokeWidth="1"
+                />
+                <text
+                  x={width / 2}
+                  y={yCenter}
+                  dominantBaseline="middle"
+                  textAnchor="middle"
+                  fontSize="13"
+                  fill="#0f172a"
+                >
+                  {new Intl.NumberFormat('it-IT').format(s.value)}
+                </text>
+              </g>
+            )
+          })}
+        </svg>
       </div>
     </div>
   )
