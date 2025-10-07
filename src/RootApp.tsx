@@ -121,6 +121,16 @@ useEffect(() => {
   }
 }
 
+  // route “hard” per la pagina di reset password
+if (window.location.pathname === '/reset') {
+  return <ResetPasswordPage />
+}
+
+// Utente non autenticato → mostra pagina di login
+if (!loading && !me) {
+  return <LoginPage />
+}
+
   
   // Se sono su login e la sessione è attiva → torna in dashboard automaticamente
   useEffect(()=>{
