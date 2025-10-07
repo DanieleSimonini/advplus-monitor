@@ -1,222 +1,308 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useMemo, useState, useRef } from 'react'
 import { supabase } from '@/supabaseClient'
 
 /**
- * AdminUsers.tsx — Gestione Utenti (solo Admin)
- * Richieste:
- * 1) Larghezza coerente con le altre pagine (contenuto centrato, max-width)
- * 2) Rimuovere placeholder "Admin One" (non usiamo più dati hardcoded)
- * 3) Edit/Delete utenti (solo Admin):
- *    - Modifica: nome, email, ruolo, responsabile (team lead)
- *    - Cancella: soft-delete se esiste colonna `active`; fallback a delete fisico
- * 4) Nascondere colonne Stato e UserID
- * 5) Nuovo ordine colonne: Nome | Email | Ruolo | Responsabile | Azioni (Reinvia invito, Modifica, Cancella)
- * 6) Nome visualizzato = `full_name` (se vuoto, fallback a email)
- *
- * Nota tecnica:
- * - La modifica EMAIL qui aggiorna `advisors.email` (dato anagrafico). Non modifica l'email dell'utente nel sistema Auth.
- *   Per cambiare l'email di login serve una Edge Function con Service Role (possiamo aggiungerla in seguito).
- * - "Reinvia invito" usa la funzione edge `invite` già usata in precedenza.
+ * ImportLeads.tsx — Import CSV/XLSX con validazione + dedup + log
+ * Requisiti
+ * - Obbligatori: is_agency_client, (email OR phone), e (first_name+last_name OR company_name)
+ * - Dedup vs DB: scarta se email o phone già presenti in public.leads
+ * - Owner mapping: se owner_email non esiste in advisors → blocca import
+ * - Pulsante Import disabilitato se ci sono errori
+ * - Download template CSV/XLSX (XLSX opzionale: richiede dipendenza 'xlsx')
+ * - Log import su tabella public.import_logs (vedi SQL a parte)
  */
 
-type Role = 'Admin' | 'Team Lead' | 'Junior'
+type RawRow = Record<string, any>
 
-type Advisor = {
-  user_id: string | null
-  email: string
-  full_name: string | null
-  role: Role
-  team_lead_user_id?: string | null
-  active?: boolean | null
+type ValidRow = {
+  is_agency_client: boolean
+  email: string | null
+  phone: string | null
+  first_name: string | null
+  last_name: string | null
+  company_name: string | null
+  city: string | null
+  address: string | null
+  source: 'Provided'|'Self'|null
+  owner_email: string
 }
 
+type Report = { valid: ValidRow[]; errors: string[] }
+
 const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
-const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }
-const label: React.CSSProperties = { fontSize:12, color:'#666' }
+const ipt: React.CSSProperties = { padding:'8px 10px', borderRadius:8, border:'1px solid #ddd' }
+const th: React.CSSProperties = { textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #eee', background:'#fafafa' }
+const td: React.CSSProperties = { padding:'6px 8px', borderBottom:'1px solid #f5f5f5' }
 
-export default function AdminUsersPage(){
-  const [meRole, setMeRole] = useState<Role>('Junior')
-  const [meUid, setMeUid] = useState<string>('')
+export default function ImportLeadsPage(){
+  const [rows, setRows] = useState<RawRow[] | null>(null)
+  const [report, setReport] = useState<Report | null>(null)
+  const [dupes, setDupes] = useState<{ email:Set<string>; phone:Set<string> }>({ email:new Set(), phone:new Set() })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [logId, setLogId] = useState<string>('')
+  const fileRef = useRef<HTMLInputElement|null>(null)
 
-  const [rows, setRows] = useState<Advisor[]>([])
-  const [tls, setTls] = useState<Advisor[]>([]) // elenco Team Lead per assegnazione responsabile
-  const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
+  const sample = useMemo(()=> sampleCSV(), [])
 
-  // editor
-  const [isOpen, setIsOpen] = useState(false)
-  const [editUid, setEditUid] = useState<string|null>(null)
-  const emptyDraft = { full_name:'', email:'', role:'Junior' as Role, team_lead_user_id:'' }
-  const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
-
-  useEffect(()=>{ (async()=>{
-    setLoading(true); setErr('')
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>){
+    const f = e.target.files?.[0]
+    if (!f) return
+    setError(''); setRows(null); setReport(null); setLogId('')
     try{
-      const u = await supabase.auth.getUser()
-      const uid = u.data.user?.id || ''
-      setMeUid(uid)
-      if (uid){
-        const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
-        if (me?.role) setMeRole(me.role as Role)
+      if (f.name.toLowerCase().endsWith('.csv')){
+        const text = await f.text()
+        const parsed = parseCSV(text)
+        setRows(parsed)
+      } else if (f.name.toLowerCase().endsWith('.xlsx') || f.name.toLowerCase().endsWith('.xls')){
+        try{
+          // @ts-ignore: modulo opzionale
+          const XLSX = await import('xlsx')
+          const data = await f.arrayBuffer()
+          const wb = XLSX.read(data)
+          const ws = wb.Sheets[wb.SheetNames[0]]
+          const json = XLSX.utils.sheet_to_json(ws, { defval: '' }) as RawRow[]
+          setRows(json)
+        } catch{
+          setError('File Excel non supportato in questo build. Carica un CSV oppure abilitiamo la dipendenza "xlsx".')
+        }
+      } else {
+        setError('Formato non supportato. Carica un .csv o .xlsx')
       }
-      await loadAdvisors()
-    } catch(e:any){ setErr(e.message||'Errore caricamento') } finally { setLoading(false) }
-  })() },[])
-
-  async function loadAdvisors(){
-    // ⛏️ Niente colonna "active": selezioniamo solo i campi esistenti
-    const { data, error } = await supabase
-      .from('advisors')
-      .select('user_id,email,full_name,role,team_lead_user_id')
-      .order('full_name', { ascending:true })
-    if (error){ setErr(error.message); return }
-    const list = (data||[]) as Advisor[]
-    setRows(list)
-    setTls(list.filter(a=>a.role==='Team Lead'))
+    } catch(ex:any){ setError(ex.message || 'Errore lettura file') }
   }
 
-  function canAdmin(){ return meRole==='Admin' }
-
-  function nameOf(a: Advisor){ return (a.full_name && a.full_name.trim()) || a.email }
-  function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
-
-  function openEdit(a: Advisor){
-    setEditUid(a.user_id || null)
-    setDraft({
-      full_name: a.full_name || '',
-      email: a.email || '',
-      role: a.role,
-      team_lead_user_id: a.team_lead_user_id || ''
-    })
-    setIsOpen(true)
-  }
-  function closeEdit(){ setIsOpen(false); setEditUid(null); setDraft(emptyDraft) }
-
-  async function saveEdit(){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-    if (!editUid) return
-    if (!draft.email.trim()) return alert('Email obbligatoria')
-
-    const payload: Partial<Advisor> = {
-      full_name: draft.full_name || null,
-      email: draft.email,
-      role: draft.role,
-      team_lead_user_id: draft.team_lead_user_id || null,
-    }
-    const { error } = await supabase.from('advisors').update(payload).eq('user_id', editUid)
-    if (error){ alert(error.message); return }
-    await loadAdvisors(); closeEdit()
-  }
-
-  async function resendInvite(a: Advisor){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-    if (!a.email) return alert('Email non valida')
+  async function validate(){
+    if (!rows || rows.length===0){ setReport({ valid:[], errors:['Nessuna riga nel file.'] }); return }
+    setLoading(true); setError('')
     try{
-      const { error } = await supabase.functions.invoke('invite', {
-        body: { email: a.email, role: a.role, full_name: a.full_name || undefined }
-      })
+      // 1) Owner mapping complessivo
+      const ownerEmails = Array.from(new Set(rows.map(r => String(r.owner_email||'').trim()).filter(Boolean)))
+      const { data: advs, error: aerr } = await supabase
+        .from('advisors')
+        .select('user_id,email')
+        .in('email', ownerEmails)
+      if (aerr) throw aerr
+      const byEmail = new Map<string,string>()
+      for(const a of (advs||[])) byEmail.set(a.email, a.user_id)
+      const missing = ownerEmails.filter(e => !byEmail.has(e))
+      if (missing.length>0){ setReport({ valid:[], errors:[`owner_email non trovati in advisors: ${missing.join(', ')}`] }); return }
+
+      // 2) Dedup vs DB
+      const emails = Array.from(new Set(rows.map(r => String(r.email||'').trim()).filter(Boolean)))
+      const phones = Array.from(new Set(rows.map(r => String(r.phone||'').trim()).filter(Boolean)))
+      const [dbE, dbP] = await Promise.all([
+        emails.length ? supabase.from('leads').select('email').in('email', emails) : Promise.resolve({ data:[] as any }),
+        phones.length ? supabase.from('leads').select('phone').in('phone', phones) : Promise.resolve({ data:[] as any })
+      ])
+      const dbEmails = new Set<string>((dbE.data||[]).map((r:any)=>String(r.email)))
+      const dbPhones = new Set<string>((dbP.data||[]).map((r:any)=>String(r.phone)))
+      setDupes({ email: dbEmails, phone: dbPhones })
+
+      // 3) Validazione riga per riga (raccogliamo motivi di scarto)
+      const valid: ValidRow[] = []
+      const errors: string[] = []
+      for(let i=0;i<rows.length;i++){
+        const r = rows[i]
+        const ctx = `riga ${i+1}`
+        const v: ValidRow = {
+          is_agency_client: parseBool(r.is_agency_client),
+          email: normStr(r.email),
+          phone: normStr(r.phone),
+          first_name: normStr(r.first_name),
+          last_name: normStr(r.last_name),
+          company_name: normStr(r.company_name),
+          city: normStr(r.city),
+          address: normStr(r.address),
+          source: toSource(r.source),
+          owner_email: String(r.owner_email||'').trim(),
+        }
+        if (typeof v.is_agency_client !== 'boolean') errors.push(`${ctx}: is_agency_client deve essere true/false`)
+        if (!v.email && !v.phone) errors.push(`${ctx}: indicare email oppure phone`)
+        if (!((v.first_name && v.last_name) || v.company_name)) errors.push(`${ctx}: servono nome+cognome oppure ragione sociale`)
+        if (v.email && dbEmails.has(v.email)) errors.push(`${ctx}: email già presente a DB`)
+        if (v.phone && dbPhones.has(v.phone)) errors.push(`${ctx}: phone già presente a DB`)
+        if (!byEmail.has(v.owner_email)) errors.push(`${ctx}: owner_email non mappato in advisors`)
+        valid.push(v)
+      }
+      setReport({ valid, errors })
+    } catch(ex:any){ setError(ex.message || 'Errore di validazione') }
+    finally{ setLoading(false) }
+  }
+
+  async function doImport(){
+    if (!report || report.errors.length>0){ return }
+    setLoading(true); setError('')
+    try{
+      // mappa email->user_id
+      const ownerEmails = Array.from(new Set(report.valid.map(v=>v.owner_email)))
+      const { data: advs } = await supabase.from('advisors').select('user_id,email').in('email', ownerEmails)
+      const map = new Map<string,string>()
+      for(const a of (advs||[])) map.set(a.email, a.user_id)
+
+      const payload = report.valid.map(v=>({
+        owner_id: map.get(v.owner_email)!,
+        is_agency_client: v.is_agency_client,
+        first_name: v.first_name,
+        last_name: v.last_name,
+        company_name: v.company_name,
+        email: v.email,
+        phone: v.phone,
+        city: v.city,
+        address: v.address,
+        source: v.source,
+      }))
+
+      // log pre-inserimento
+      const { data: pre, error: le } = await supabase
+        .from('import_logs')
+        .insert({ total_rows: report.valid.length, inserted: 0, errors: report.errors, filename: fileRef.current?.files?.[0]?.name || null })
+        .select('id').single()
+      if (le) throw le
+      const log_id = pre.id as string
+
+      const { error } = await supabase.from('leads').insert(payload)
       if (error) throw error
-      alert('Invito inviato a '+a.email)
-    } catch(e:any){ alert(e.message||'Errore invio invito') }
+
+      await supabase.from('import_logs').update({ inserted: payload.length }).eq('id', log_id)
+      setLogId(log_id)
+
+      alert(`Import completato: ${payload.length} lead inseriti`)
+      setRows(null); setReport(null); if (fileRef.current) fileRef.current.value=''
+    } catch(ex:any){ setError(ex.message || 'Errore durante import') }
+    finally{ setLoading(false) }
   }
 
-  async function deleteUser(a: Advisor){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-    const ok = confirm(`Confermi la rimozione di ${nameOf(a)}?
-Le assegnazioni ai lead resteranno con il suo user_id.`)
-    if (!ok) return
-
-    // 🔥 Hard delete (nessuna colonna active nello schema corrente)
-    const del = await supabase.from('advisors').delete().eq('user_id', a.user_id!)
-    if (del.error){ alert(del.error.message); return }
-    await loadAdvisors()
+  function downloadCSV(){
+    const blob = new Blob([sample], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href=url; a.download='template_leads.csv'; a.click(); URL.revokeObjectURL(url)
   }
-
-  if (meRole!=='Admin'){
-    return <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16, maxWidth:1100, margin:'0 auto' }}>Accesso negato: solo Admin.</div>
+  async function downloadXLSX(){
+    try{
+      // @ts-ignore opzionale
+      const XLSX = await import('xlsx')
+      const rows = sampleCSVRows()
+      const ws = XLSX.utils.json_to_sheet(rows)
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Leads')
+      const wbout = XLSX.write(wb, { bookType:'xlsx', type:'array' })
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href=url; a.download='template_leads.xlsx'; a.click(); URL.revokeObjectURL(url)
+    } catch{
+      alert('Per il template .xlsx serve la dipendenza opzionale "xlsx". Posso abilitarla quando vuoi; intanto usa il CSV.')
+    }
   }
 
   return (
-    <div style={{ maxWidth:1100, margin:'0 auto', display:'grid', gap:16 }}>
-      <div className="brand-card" style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-          <div style={{ fontSize:18, fontWeight:700 }}>Gestione utenti</div>
-          <div style={{ fontSize:12, color:'#666' }}>{rows.length} utenti</div>
-        </div>
+    <div style={{ display:'grid', gap:16 }}>
+      <div style={{ fontSize:20, fontWeight:800 }}>Importa Leads</div>
 
-        {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
-
-        {/* Tabella */}
-        <div style={{ overflowX:'auto' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <thead>
-              <tr style={{ textAlign:'left' }}>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Nome</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Email</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Ruolo</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Responsabile</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Azioni</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(a => (
-                <tr key={a.user_id || a.email}>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{nameOf(a)}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{a.email}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{a.role}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{nameByUid(a.team_lead_user_id||null)}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>
-                    <div style={{ display:'flex', gap:8 }}>
-                      <button className="brand-btn" onClick={()=>resendInvite(a)}>Reinvia invito</button>
-                      <button className="brand-btn" onClick={()=>openEdit(a)}>Modifica</button>
-                      <button className="brand-btn" onClick={()=>deleteUser(a)} style={{ background:'#c00', borderColor:'#c00', color:'#fff' }}>Cancella</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div style={{ ...box }}>
+        <div style={{ display:'grid', gap:10 }}>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} />
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <button onClick={downloadCSV} style={{ ...ipt, cursor:'pointer' }}>Scarica template CSV</button>
+            <button onClick={downloadXLSX} style={{ ...ipt, cursor:'pointer' }}>Scarica template XLSX</button>
+          </div>
+          <div style={{ fontSize:12, color:'#666' }}>Intestazioni attese: <code>is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email</code></div>
+          <div>
+            <button onClick={validate} disabled={!rows || loading} style={{ ...ipt, cursor:'pointer' }}>Valida</button>
+            <button onClick={doImport} disabled={!report || report.errors.length>0 || loading} style={{ ...ipt, cursor:'pointer', marginLeft:8 }}>Importa</button>
+          </div>
+          {error && <div style={{ color:'#c00' }}>{error}</div>}
+          {logId && <div style={{ color:'#080' }}>Log import salvato: <code>{logId}</code></div>}
         </div>
       </div>
 
-      {/* Modal Edit */}
-      {isOpen && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:520 }}>
-            <div style={{ fontWeight:700, marginBottom:12 }}>Modifica utente</div>
-            <div style={{ display:'grid', gap:12 }}>
-              <div>
-                <div style={{ fontSize:12, color:'#666' }}>Nome</div>
-                <input value={draft.full_name} onChange={e=>setDraft(d=>({ ...d, full_name:e.target.value }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }} />
-              </div>
-              <div>
-                <div style={{ fontSize:12, color:'#666' }}>Email (visiva)</div>
-                <input type="email" value={draft.email} onChange={e=>setDraft(d=>({ ...d, email:e.target.value }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }} />
-                <div style={{ fontSize:11, color:'#777', marginTop:4 }}>Nota: questo cambia l'email in anagrafica, non quella di login.</div>
-              </div>
-              <div>
-                <div style={{ fontSize:12, color:'#666' }}>Ruolo</div>
-                <select value={draft.role} onChange={e=>setDraft(d=>({ ...d, role: e.target.value as Role }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }}>
-                  <option value="Junior">Junior</option>
-                  <option value="Team Lead">Team Lead</option>
-                  <option value="Admin">Admin</option>
-                </select>
-              </div>
-              <div>
-                <div style={{ fontSize:12, color:'#666' }}>Responsabile (Team Lead)</div>
-                <select value={draft.team_lead_user_id} onChange={e=>setDraft(d=>({ ...d, team_lead_user_id:e.target.value }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }}>
-                  <option value="">— Nessuno —</option>
-                  {tls.map(t => <option key={t.user_id||t.email} value={t.user_id||''}>{nameOf(t)}</option>)}
-                </select>
-              </div>
-              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-                <button className="brand-btn" onClick={closeEdit}>Annulla</button>
-                <button className="brand-btn" onClick={saveEdit}>Salva</button>
-              </div>
-            </div>
+      {rows && (
+        <div style={{ ...box }}>
+          <div style={{ fontWeight:700, marginBottom:8 }}>Anteprima file ({rows.length} righe)</div>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ minWidth:800, borderCollapse:'collapse' }}>
+              <thead>
+                <tr>{Object.keys(rows[0]||{}).map(h=> <th key={h} style={th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {rows.slice(0,50).map((r,i)=> (
+                  <tr key={i}>{Object.keys(rows[0]||{}).map(h=> <td key={h} style={td}>{String(r[h]??'')}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+        </div>
+      )}
+
+      {report && (
+        <div style={{ ...box }}>
+          <div style={{ fontWeight:700, marginBottom:8 }}>Esito validazione</div>
+          {report.errors.length>0 ? (
+            <div>
+              <div style={{ color:'#c00', marginBottom:8 }}>Errori: {report.errors.length}. Correggi il file e rilancia Valida.</div>
+              <ul>{report.errors.slice(0,100).map((e,i)=> <li key={i} style={{ color:'#c00' }}>{e}</li>)}</ul>
+            </div>
+          ) : (
+            <div style={{ color:'#080' }}>Nessun errore. Puoi procedere con l'import.</div>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+function parseCSV(text: string): RawRow[]{
+  const sep = text.indexOf(';')>-1 && text.indexOf(',')===-1 ? ';' : ','
+  const lines = text.split(/
+?
+/).filter(l=>l.trim().length>0)
+  if (lines.length===0) return []
+  const headers = lines[0].split(sep).map(h=>h.trim())
+  const rows: RawRow[] = []
+  for(let i=1;i<lines.length;i++){
+    const cols = splitCsvLine(lines[i], sep)
+    const obj: RawRow = {}
+    headers.forEach((h,idx)=>{ obj[h] = (cols[idx] ?? '').trim() })
+    rows.push(obj)
+  }
+  return rows
+}
+
+function splitCsvLine(line:string, sep:string){
+  const out:string[] = []
+  let cur = ''
+  let inQ = false
+  for(let i=0;i<line.length;i++){
+    const ch = line[i]
+    if (ch==='"') { inQ = !inQ; continue }
+    if (ch===sep && !inQ){ out.push(cur); cur=''; continue }
+    cur += ch
+  }
+  out.push(cur)
+  return out
+}
+
+function parseBool(v:any){
+  const s = String(v).toLowerCase().trim()
+  if (s==='true' || s==='1' || s==='si' || s==='sì' || s==='yes') return true
+  if (s==='false' || s==='0' || s==='no') return false
+  return (undefined as unknown) as any
+}
+function normStr(v:any){ const s=String(v??'').trim(); return s.length? s : null }
+function toSource(v:any): 'Provided'|'Self'|null{ const s=String(v||'').toLowerCase(); if(s==='provided') return 'Provided'; if(s==='self') return 'Self'; return null }
+
+function sampleCSV(){
+  return [
+    'is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email',
+    'true,mario.rossi@example.com,,Mario,Rossi,,Milano,Via A 1,Provided,teamlead@advisoryplus.it',
+    'false,,3331234567,Giulia,Bianchi,,,Self,junior1@advisoryplus.it',
+    'true,azienda@example.com,,,,Azienda Srl,Roma,Via B 2,Provided,junior2@advisoryplus.it'
+  ].join('
+')
+}
+function sampleCSVRows(){
+  return [
+    { is_agency_client:true, email:'mario.rossi@example.com', phone:'', first_name:'Mario', last_name:'Rossi', company_name:'', city:'Milano', address:'Via A 1', source:'Provided', owner_email:'teamlead@advisoryplus.it' },
+    { is_agency_client:false, email:'', phone:'3331234567', first_name:'Giulia', last_name:'Bianchi', company_name:'', city:'', address:'', source:'Self', owner_email:'junior1@advisoryplus.it' },
+    { is_agency_client:true, email:'azienda@example.com', phone:'', first_name:'', last_name:'', company_name:'Azienda Srl', city:'Roma', address:'Via B 2', source:'Provided', owner_email:'junior2@advisoryplus.it' },
+  ]
 }
