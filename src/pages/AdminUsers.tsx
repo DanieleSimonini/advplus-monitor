@@ -80,24 +80,39 @@ export default function AdminUsersPage(){
   function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
 
   // ====== INVITES ======
-  async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
-    // 1) Prova Edge Function ufficiale `invite`
+async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
+  const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
+  const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+  if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
+
+  // 1) Direct fetch (mostra il body d'errore completo)
+  try{
+    const resp = await fetch(`${url}/functions/v1/invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': anon,
+        'authorization': `Bearer ${anon}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok){
+      const txt = await resp.text();
+      throw new Error(`HTTP ${resp.status} — ${txt}`);
+    }
+    return 'direct';
+  }catch(e1:any){
+    // 2) Fallback SDK (se per qualche motivo la route diretta non va)
     try{
-      const { error } = await supabase.functions.invoke('invite', { body: payload })
-      if (error) throw error
-      return 'edge'
-    } catch(e:any){
-      // 2) Fallback su `smtp_invite` (SMTP custom): necessita env nella Function
-      try{
-        const { error } = await supabase.functions.invoke('smtp_invite', { body: payload })
-        if (error) throw error
-        return 'smtp'
-      } catch(e2:any){
-        const m1 = e?.message||''; const m2 = e2?.message||''
-        throw new Error(`Invio invito fallito. invite: ${m1}; smtp_invite: ${m2}`)
-      }
+      const { error } = await supabase.functions.invoke('invite', { body: payload });
+      if (error) throw error;
+      return 'edge';
+    }catch(e2:any){
+      throw new Error(`Invio invito fallito. direct: ${e1?.message||e1}; edge: ${e2?.message||e2}`);
     }
   }
+}
+
 
   async function inviteNew(){
     if (!canAdmin()) return alert('Accesso negato: solo Admin')
