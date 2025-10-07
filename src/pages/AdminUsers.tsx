@@ -1,341 +1,333 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
 /**
- * Dashboard.tsx — Funnel + "Lead non contattati" (UX migliorata)
- * - Filtri Advisor (Me/Team/All) e Periodo (mese da / a)
- * - KPI + grafico ad imbuto vero (trapezi SVG con % di conversione)
- * - Riquadro evidenziato "Lead non contattati" (scope-aware)
+ * AdminUsers.tsx — Gestione Utenti (solo Admin)
+ *
+ * Funzioni chiave:
+ * - Lista utenti (Nome | Email | Ruolo | Responsabile | Azioni)
+ * - Nuovo utente → invio invito: prova Edge Function `invite`,
+ *   se non raggiungibile/fa errore usa fallback `smtp_invite` (altra Edge Function)
+ * - Modifica: full_name, email (anagrafica), ruolo, team_lead_user_id
+ * - Cancella: se user_id mancante → delete by email; se presente e possiede lead → modale di riassegnazione
+ *
+ * Note SMTP (per la Edge Function fallback `smtp_invite`):
+ *   Configurare su Supabase (Function Secrets) o Vercel (Serverless) le env:
+ *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_SECURE ("true"/"false").
  */
 
-type Role = 'Admin'|'Team Lead'|'Junior'
+type Role = 'Admin' | 'Team Lead' | 'Junior'
 
-type Advisor = { id?: string; user_id: string; full_name: string|null; email: string; role: Role; team_lead_user_id?: string|null }
-
-type Period = { fromMonthKey: string; toMonthKey: string }
-
-type Kpi = {
-  contacts: number
-  appointments: number
-  proposals: number
-  contracts: number
-  prodDanni: number
-  prodVProt: number
-  prodVPR: number
-  prodVPU: number
+type Advisor = {
+  user_id: string | null
+  email: string
+  full_name: string | null
+  role: Role
+  team_lead_user_id?: string | null
 }
 
-function addMonths(ym: string, delta: number){
-  const [y,m] = ym.split('-').map(Number)
-  const d = new Date(y, m-1+delta, 1)
-  const y2 = d.getFullYear(), m2 = (d.getMonth()+1).toString().padStart(2,'0')
-  return `${y2}-${m2}`
-}
-function defaultPeriod(): Period{
-  // ultimi 6 mesi inclusi → from = now-5m; to = now
-  const now = new Date()
-  const ym = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}`
-  return { fromMonthKey: addMonths(ym, -5), toMonthKey: ym }
-}
-function monthKeyToRange(ym: string){
-  const [y,m] = ym.split('-').map(Number)
-  const start = new Date(y, m-1, 1)
-  const end = new Date(y, m, 1) // esclusivo
-  return { start: start.toISOString(), end: end.toISOString() }
-}
-function periodToRange(p: Period){
-  const a = monthKeyToRange(p.fromMonthKey)
-  const b = monthKeyToRange(p.toMonthKey)
-  // uniamo start del primo e end dell'ultimo mese
-  return { start: a.start, end: b.end }
-}
+const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
+const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%', maxWidth:'100%', minWidth:0, boxSizing:'border-box' }
+const label: React.CSSProperties = { fontSize:12, color:'#666' }
 
-function ownersToQuery(scope: 'me'|'team'|'all', me: Advisor|null, advisors: Advisor[]): string[]{
-  if (!me) return []
-  if (me.role==='Junior') return [me.user_id]
-  if (scope==='me') return [me.user_id]
-  if (scope==='team'){
-    const team = advisors.filter(a=> a.team_lead_user_id===me.user_id || a.user_id===me.user_id)
-    return team.map(a=>a.user_id)
-  }
-  // all
-  return advisors.map(a=>a.user_id)
-}
-
-async function fetchLeadIds(ownerIds: string[]): Promise<string[]>{
-  if (!ownerIds.length) return []
-  const { data } = await supabase.from('leads').select('id').in('owner_id', ownerIds)
-  return (data||[]).map(r=>r.id)
-}
-
-async function countIn(table: 'activities'|'appointments'|'proposals'|'contracts', leadIds: string[], startIso: string, endIso: string){
-  if (!leadIds.length) return 0
-  const { count } = await supabase
-    .from(table)
-    .select('id', { count:'exact', head:true })
-    .in('lead_id', leadIds)
-    .gte('ts', startIso)
-    .lt('ts', endIso)
-  return count||0
-}
-
-async function sumContractsByType(leadIds: string[], startIso: string, endIso: string, types: string[]){
-  if (!leadIds.length) return 0
-  const { data, error } = await supabase
-    .from('contracts')
-    .select('amount, contract_type, ts')
-    .in('lead_id', leadIds)
-    .in('contract_type', types)
-    .gte('ts', startIso).lt('ts', endIso)
-  if (error || !data) return 0
-  return data.reduce((s,r)=> s + Number(r.amount||0), 0)
-}
-
-async function countLeadsCreated(ownerIds: string[], startIso: string, endIso: string){
-  if (!ownerIds.length) return 0
-  const { count } = await supabase
-    .from('leads')
-    .select('id', { count:'exact', head:true })
-    .in('owner_id', ownerIds)
-    .gte('created_at', startIso)
-    .lt('created_at', endIso)
-  return count||0
-}
-
-async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
-  if (!ownerIds.length) return 0
-  // all-time: lead senza alcuna activity
-  const { data, error } = await supabase
-    .from('leads')
-    .select('id')
-    .in('owner_id', ownerIds)
-  if (error || !data) return 0
-  const leadIds = data.map(d=>d.id)
-  if (!leadIds.length) return 0
-  const { data: acts } = await supabase
-    .from('activities')
-    .select('lead_id')
-    .in('lead_id', leadIds)
-  const contacted = new Set((acts||[]).map(a=>a.lead_id))
-  return leadIds.filter(id=> !contacted.has(id)).length
-}
-
-function formatNumber(n:number){ return new Intl.NumberFormat('it-IT').format(n) }
-function formatCurrency(n:number){ return new Intl.NumberFormat('it-IT',{ style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }
-
-/**
- * Funnel a trapezi SVG con % conversione
- */
-function Funnel({ steps }:{ steps: { label:string; value:number }[] }){
-  const max = Math.max(1, ...steps.map(s=>s.value))
-  const width = 560, rowH = 52, padX = 12, labelW = 160
-  const totalH = steps.length * rowH
-  const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, border:'1px solid #e5e7eb', background:'#f8fafc', display:'inline-flex', gap:6, alignItems:'baseline' }
-
-  const conv = steps.map((s,i)=>{
-    if (i===0) return null
-    const from = steps[i-1].value||0
-    const to = s.value||0
-    return from>0 ? Math.round((to/from)*100) : 0
-  })
-
-  return (
-    <div className="brand-card" style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
-      <div style={{ fontWeight:700, marginBottom:12 }}>Imbuto di conversione</div>
-      <div style={{ display:'grid', gridTemplateColumns:`${labelW}px auto`, gap:12 }}>
-        {/* Colonna etichette + % conversione */}
-        <div style={{ display:'grid', rowGap: rowH-20 }}>
-          {steps.map((s,i)=> (
-            <div key={s.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', height:rowH }}>
-              <div>
-                <div style={{ fontSize:13, fontWeight:600 }}>{s.label}</div>
-                <div style={{ fontSize:12, color:'#6b7280' }}>{formatNumber(s.value)}</div>
-              </div>
-              {i>0 && <div style={pill}><span style={{ fontSize:11, color:'#6b7280' }}>→</span><strong style={{ fontSize:14 }}>{conv[i]}%</strong></div>}
-            </div>
-          ))}
-        </div>
-        {/* Colonna funnel SVG */}
-        <div style={{ overflow:'hidden' }}>
-          <svg width={width} height={totalH} viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Funnel">
-            {steps.map((s,i)=>{
-              const topW = (i===0) ? (width - padX*2) : (width - padX*2) * (steps[i-1].value / max)
-              const botW = (width - padX*2) * (s.value / max)
-              const yTop = i*rowH + 6
-              const yBot = yTop + rowH - 12
-              const xTop = (width - topW)/2
-              const xBot = (width - botW)/2
-              const fill = 'url(#gFunnel)'
-              return (
-                <g key={s.label}>
-                  <polygon
-                    points={`${xTop},${yTop} ${xTop+topW},${yTop} ${xBot+botW},${yBot} ${xBot},${yBot}`}
-                    fill={fill}
-                    stroke="#e5e7eb"
-                    strokeWidth="1"
-                  />
-                  <text x={width/2} y={yTop + (rowH/2)} dominantBaseline="middle" textAnchor="middle" fontSize="13" fill="#0f172a">
-                    {formatNumber(s.value)}
-                  </text>
-                </g>
-              )
-            })}
-            <defs>
-              <linearGradient id="gFunnel" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85" />
-                <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55" />
-              </linearGradient>
-            </defs>
-          </svg>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-export default function DashboardPage(){
-  const [me, setMe] = useState<Advisor|null>(null)
-  const [advisors, setAdvisors] = useState<Advisor[]>([])
-  const [ownerFilter, setOwnerFilter] = useState<'me'|'team'|'all'>('me')
-  const [period, setPeriod] = useState<Period>(defaultPeriod())
-
+export default function AdminUsersPage(){
+  const [meRole, setMeRole] = useState<Role>('Junior')
+  const [rows, setRows] = useState<Advisor[]>([])
+  const [tls, setTls] = useState<Advisor[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [err, setErr] = useState('')
 
-  // KPI base
-  const [kpi, setKpi] = useState<Kpi|null>(null)
-  // Funnel + Not Contacted
-  const [funnel, setFunnel] = useState<{leads:number; contacts:number; appointments:number; proposals:number; contracts:number}>({leads:0,contacts:0,appointments:0,proposals:0,contracts:0})
-  const [notContacted, setNotContacted] = useState<number>(0)
+  // EDIT
+  const [isOpen, setIsOpen] = useState(false)
+  const [editUid, setEditUid] = useState<string|null>(null)
+  const emptyDraft = { full_name:'', email:'', role:'Junior' as Role, team_lead_user_id:'' }
+  const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
 
-  // bootstrap me+advisors
+  // DELETE → REASSIGN
+  const [reassignUid, setReassignUid] = useState<string|null>(null)
+  const [reassignTo, setReassignTo] = useState<string>('')
+  const [reassignCount, setReassignCount] = useState<number>(0)
+
+  // NEW USER
+  const [newUser, setNewUser] = useState<{full_name:string; email:string; role:Role; team_lead_user_id:string}>({ full_name:'', email:'', role:'Junior', team_lead_user_id:'' })
+
   useEffect(()=>{ (async()=>{
-    setLoading(true)
+    setLoading(true); setErr('')
     try{
       const u = await supabase.auth.getUser()
-      const uid = u.data.user?.id
+      const uid = u.data.user?.id || ''
       if (uid){
-        const { data: meRow } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id').eq('user_id', uid).maybeSingle()
-        if (meRow) setMe(meRow as any)
+        const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
+        if (me?.role) setMeRole(me.role as Role)
       }
-      const { data: adv } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id')
-      setAdvisors((adv||[]) as any)
-    } finally { setLoading(false) }
+      await loadAdvisors()
+    } catch(e:any){ setErr(e.message||'Errore caricamento') } finally { setLoading(false) }
   })() },[])
 
-  const owners = useMemo(()=> ownersToQuery(ownerFilter, me, advisors), [ownerFilter, me, advisors])
-  const { start, end } = useMemo(()=> periodToRange(period), [period])
+  async function loadAdvisors(){
+    const { data, error } = await supabase
+      .from('advisors')
+      .select('user_id,email,full_name,role,team_lead_user_id')
+      .order('full_name', { ascending:true })
+    if (error){ setErr(error.message); return }
+    const list = (data||[]) as Advisor[]
+    setRows(list)
+    setTls(list.filter(a=>a.role==='Team Lead'))
+  }
 
-  // ricarica KPI + funnel + notContacted quando cambiano filtri
-  useEffect(()=>{ (async()=>{
-    if (!owners.length) return
-    setLoading(true); setError('')
+  function canAdmin(){ return meRole==='Admin' }
+  function nameOf(a: Advisor){ return (a.full_name && a.full_name.trim()) || a.email }
+  function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
+
+  // ====== INVITES ======
+  async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
+    // 1) Prova Edge Function ufficiale `invite`
     try{
-      const leadIds = await fetchLeadIds(owners)
-      // KPI base
-      const [contacts, appointments, proposals, contracts] = await Promise.all([
-        countIn('activities', leadIds, start, end),
-        countIn('appointments', leadIds, start, end),
-        countIn('proposals', leadIds, start, end),
-        countIn('contracts', leadIds, start, end),
-      ])
-      const [prodDanni, prodVProt, prodVPR, prodVPU] = await Promise.all([
-        sumContractsByType(leadIds, start, end, ['Danni Non Auto']),
-        sumContractsByType(leadIds, start, end, ['Vita Protection']),
-        sumContractsByType(leadIds, start, end, ['Vita Premi Ricorrenti']),
-        sumContractsByType(leadIds, start, end, ['Vita Premi Unici']),
-      ])
-      setKpi({ contacts, appointments, proposals, contracts, prodDanni, prodVProt, prodVPR, prodVPU })
+      const { error } = await supabase.functions.invoke('invite', { body: payload })
+      if (error) throw error
+      return 'edge'
+    } catch(e:any){
+      // 2) Fallback su `smtp_invite` (SMTP custom): necessita env nella Function
+      try{
+        const { error } = await supabase.functions.invoke('smtp_invite', { body: payload })
+        if (error) throw error
+        return 'smtp'
+      } catch(e2:any){
+        const m1 = e?.message||''; const m2 = e2?.message||''
+        throw new Error(`Invio invito fallito. invite: ${m1}; smtp_invite: ${m2}`)
+      }
+    }
+  }
 
-      // Funnel
-      const leadsCreated = await countLeadsCreated(owners, start, end)
-      setFunnel({ leads: leadsCreated, contacts, appointments, proposals, contracts })
+  async function inviteNew(){
+    if (!canAdmin()) return alert('Accesso negato: solo Admin')
+    if (!newUser.email.trim()) return alert('Email obbligatoria')
+    try{
+      const mode = await sendInvite({ email:newUser.email, role:newUser.role, full_name: newUser.full_name || undefined })
+      alert(`Invito inviato (${mode}).`)
+      setNewUser({ full_name:'', email:'', role:'Junior', team_lead_user_id:'' })
+      await loadAdvisors()
+    } catch(e:any){ alert(e.message||'Errore invito') }
+  }
 
-      // Lead mai contattati (all-time per scope selezionato)
-      const nc = await countLeadsNeverContacted(owners)
-      setNotContacted(nc)
-    } catch(e:any){ setError(e.message||'Errore caricamento KPI') }
-    finally{ setLoading(false) }
-  })() }, [owners.join(','), start, end])
+  async function resendInvite(a: Advisor){
+    if (!canAdmin()) return alert('Accesso negato: solo Admin')
+    if (!a?.email) return alert('Email non valida')
+    try{
+      const mode = await sendInvite({ email:a.email, role:a.role, full_name: a.full_name||undefined })
+      alert(`Invito inviato a ${a.email} (${mode}).`)
+    } catch(e:any){ alert(e.message||'Errore invio invito') }
+  }
+
+  // ====== EDIT ======
+  function openEdit(a: Advisor){
+    setEditUid(a.user_id || null)
+    setDraft({ full_name: a.full_name || '', email: a.email || '', role: a.role, team_lead_user_id: a.team_lead_user_id || '' })
+    setIsOpen(true)
+  }
+  function closeEdit(){ setIsOpen(false); setEditUid(null); setDraft(emptyDraft) }
+
+  async function saveEdit(){
+    if (!canAdmin()) return alert('Accesso negato: solo Admin')
+    if (!editUid) return
+    if (!draft.email.trim()) return alert('Email obbligatoria')
+
+    const payload: Partial<Advisor> = { full_name: draft.full_name || null, email: draft.email, role: draft.role, team_lead_user_id: draft.team_lead_user_id || null }
+    const { error } = await supabase.from('advisors').update(payload).eq('user_id', editUid)
+    if (error){ alert(error.message); return }
+    await loadAdvisors(); closeEdit()
+  }
+
+  // ====== DELETE + REASSIGN ======
+  async function requestDelete(a: Advisor){
+    if (!canAdmin()) return alert('Accesso negato: solo Admin')
+
+    // Utente mai loggato: niente user_id → elimina per email
+    if (!a.user_id){
+      const ok = confirm(`Confermi l'eliminazione di ${nameOf(a)}?`)
+      if (!ok) return
+      const del = await supabase.from('advisors').delete().eq('email', a.email)
+      if (del.error){ alert(del.error.message); return }
+      await loadAdvisors();
+      return
+    }
+
+    // Conta lead posseduti
+    const { count, error } = await supabase
+      .from('leads')
+      .select('id', { count:'exact', head:true })
+      .eq('owner_id', a.user_id)
+    if (error){ alert(error.message); return }
+
+    if ((count||0) > 0){
+      setReassignUid(a.user_id)
+      setReassignTo(a.team_lead_user_id || '')
+      setReassignCount(count||0)
+    } else {
+      const ok = confirm(`Confermi l'eliminazione di ${nameOf(a)}?`)
+      if (!ok) return
+      const del = await supabase.from('advisors').delete().eq('user_id', a.user_id)
+      if (del.error){ alert(del.error.message); return }
+      await loadAdvisors()
+    }
+  }
+
+  async function confirmReassignAndDelete(){
+    if (!reassignUid) return
+    if (!reassignTo) return alert('Seleziona un nuovo assegnatario per i lead')
+    const upd = await supabase.from('leads').update({ owner_id: reassignTo }).eq('owner_id', reassignUid)
+    if (upd.error){ alert(upd.error.message); return }
+    const del = await supabase.from('advisors').delete().eq('user_id', reassignUid)
+    if (del.error){ alert(del.error.message); return }
+    setReassignUid(null); setReassignTo(''); setReassignCount(0)
+    await loadAdvisors()
+  }
+
+  if (meRole!=='Admin'){
+    return <div style={{ ...box, maxWidth:1100, margin:'0 auto' }}>Accesso negato: solo Admin.</div>
+  }
 
   return (
-    <div style={{ display:'grid', gap:16 }}>
-      {/* Filtri */}
-      <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
-        <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Advisor</div>
-          <select value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value as any)} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }}>
-            <option value="me">Solo me</option>
-            {(me?.role!=='Junior') && <option value="team">Il mio Team</option>}
-            {(me?.role==='Admin') && <option value="all">Tutti</option>}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Dal mese</div>
-          <input type="month" value={period.fromMonthKey} onChange={e=>setPeriod(p=>({ ...p, fromMonthKey:e.target.value }))} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }} />
-        </div>
-        <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Al mese</div>
-          <input type="month" value={period.toMonthKey} onChange={e=>setPeriod(p=>({ ...p, toMonthKey:e.target.value }))} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }} />
-        </div>
-      </div>
-
-      {error && <div style={{ padding:10, background:'#fee', border:'1px solid #fbb', borderRadius:8, color:'#900' }}>{error}</div>}
-
-      {/* KPI cards */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(5, 1fr)', gap:12 }}>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Contatti</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contacts||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Appuntamenti</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.appointments||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Proposte</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.proposals||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Contratti</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contracts||0)}</div>
-        </div>
-        {/* KPI speciale: Lead non contattati */}
-        <div style={{ background:'#F5FBFF', border:'1px solid #BFE4FF', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#0b57d0' }}>Lead non contattati</div>
-          <div style={{ fontSize:24, fontWeight:800, color:'#0b57d0' }}>{formatNumber(notContacted)}</div>
-          <div style={{ fontSize:11, color:'#2563eb' }}>Opportunità da lavorare</div>
+    <div style={{ maxWidth:1100, margin:'0 auto', display:'grid', gap:16 }}>
+      {/* Nuovo utente */}
+      <div className="brand-card" style={{ ...box }}>
+        <div style={{ fontWeight:700, marginBottom:12 }}>Nuovo utente</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1.2fr 1.4fr 1fr 1fr auto', gap:8, alignItems:'end' }}>
+          <div>
+            <div style={label}>Nome</div>
+            <input value={newUser.full_name} onChange={e=>setNewUser(s=>({ ...s, full_name:e.target.value }))} style={ipt} placeholder="Nome e cognome" />
+          </div>
+          <div>
+            <div style={label}>Email</div>
+            <input type="email" value={newUser.email} onChange={e=>setNewUser(s=>({ ...s, email:e.target.value }))} style={ipt} placeholder="name@domain" />
+          </div>
+          <div>
+            <div style={label}>Ruolo</div>
+            <select value={newUser.role} onChange={e=>setNewUser(s=>({ ...s, role: e.target.value as Role }))} style={ipt}>
+              <option value="Junior">Junior</option>
+              <option value="Team Lead">Team Lead</option>
+              <option value="Admin">Admin</option>
+            </select>
+          </div>
+          <div>
+            <div style={label}>Responsabile (TL)</div>
+            <select value={newUser.team_lead_user_id} onChange={e=>setNewUser(s=>({ ...s, team_lead_user_id:e.target.value }))} style={ipt}>
+              <option value="">— Nessuno —</option>
+              {tls.map(t => <option key={t.user_id||t.email} value={t.user_id||''}>{nameOf(t)}</option>)}
+            </select>
+          </div>
+          <div>
+            <button className="brand-btn" onClick={inviteNew}>Invia invito</button>
+          </div>
         </div>
       </div>
 
-      {/* Produzione per linee */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Danni Non Auto</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodDanni||0)}</div>
+      {/* Lista utenti */}
+      <div className="brand-card" style={{ ...box }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div style={{ fontSize:18, fontWeight:700 }}>Gestione utenti</div>
+          <div style={{ fontSize:12, color:'#666' }}>{rows.length} utenti</div>
         </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Protection</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVProt||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Premi Ricorrenti</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVPR||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Premi Unici</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVPU||0)}</div>
+
+        {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
+
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <thead>
+              <tr style={{ textAlign:'left' }}>
+                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Nome</th>
+                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Email</th>
+                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Ruolo</th>
+                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Responsabile</th>
+                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Azioni</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(a => (
+                <tr key={a.user_id || a.email}>
+                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{nameOf(a)}</td>
+                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{a.email}</td>
+                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{a.role}</td>
+                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{nameByUid(a.team_lead_user_id||null)}</td>
+                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                      <button className="brand-btn" onClick={()=>resendInvite(a)}>Reinvia invito</button>
+                      <button className="brand-btn" onClick={()=>openEdit(a)}>Modifica</button>
+                      <button className="brand-btn" onClick={()=>requestDelete(a)} style={{ background:'#c00', borderColor:'#c00', color:'#fff' }}>Cancella</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      {/* Funnel vero (SVG) */}
-      <Funnel steps={[
-        { label:'Leads', value: funnel.leads },
-        { label:'Contatti', value: funnel.contacts },
-        { label:'Appuntamenti', value: funnel.appointments },
-        { label:'Proposte', value: funnel.proposals },
-        { label:'Contratti', value: funnel.contracts },
-      ]} />
+      {/* Modal Edit */}
+      {isOpen && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:16, width:'min(92vw, 560px)' }}>
+            <div style={{ fontWeight:700, marginBottom:12 }}>Modifica utente</div>
+            <div style={{ display:'grid', gap:12 }}>
+              <div>
+                <div style={label}>Nome</div>
+                <input value={draft.full_name} onChange={e=>setDraft(d=>({ ...d, full_name:e.target.value }))} style={ipt} />
+              </div>
+              <div>
+                <div style={label}>Email (anagrafica)</div>
+                <input type="email" value={draft.email} onChange={e=>setDraft(d=>({ ...d, email:e.target.value }))} style={ipt} />
+                <div style={{ fontSize:11, color:'#777', marginTop:4 }}>Nota: non modifica l'email di login.</div>
+              </div>
+              <div>
+                <div style={label}>Ruolo</div>
+                <select value={draft.role} onChange={e=>setDraft(d=>({ ...d, role: e.target.value as Role }))} style={ipt}>
+                  <option value="Junior">Junior</option>
+                  <option value="Team Lead">Team Lead</option>
+                  <option value="Admin">Admin</option>
+                </select>
+              </div>
+              <div>
+                <div style={label}>Responsabile (Team Lead)</div>
+                <select value={draft.team_lead_user_id} onChange={e=>setDraft(d=>({ ...d, team_lead_user_id:e.target.value }))} style={ipt}>
+                  <option value="">— Nessuno —</option>
+                  {tls.map(t => <option key={t.user_id||t.email} value={t.user_id||''}>{nameOf(t)}</option>)}
+                </select>
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+                <button className="brand-btn" onClick={closeEdit}>Annulla</button>
+                <button className="brand-btn" onClick={saveEdit}>Salva</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Reassign + Delete */}
+      {reassignUid && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:16, width:'min(92vw, 560px)' }}>
+            <div style={{ fontWeight:700, marginBottom:12 }}>Riassegna {reassignCount} lead</div>
+            <div style={{ display:'grid', gap:12 }}>
+              <div>
+                <div style={label}>Nuovo assegnatario</div>
+                <select value={reassignTo} onChange={e=>setReassignTo(e.target.value)} style={ipt}>
+                  <option value="">— Seleziona —</option>
+                  {rows.filter(r=>r.user_id!==reassignUid).map(r=> (
+                    <option key={r.user_id||r.email} value={r.user_id||''}>{nameOf(r)} — {r.role}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+                <button className="brand-btn" onClick={()=>{ setReassignUid(null); setReassignTo(''); setReassignCount(0) }}>Annulla</button>
+                <button className="brand-btn" onClick={confirmReassignAndDelete}>Riassegna e cancella</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
+      {loading && <div>Caricamento…</div>}
     </div>
   )
 }
