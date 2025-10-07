@@ -10,6 +10,8 @@ import ImportLeadsPage from './pages/ImportLeads'
 import ReportPage from './pages/Report'
 import BrandTheme from './theme/BrandTheme'
 import Calendar from './pages/Calendar'
+import LoginPage from './pages/Login'
+import ResetPasswordPage from './pages/ResetPassword'
 
 // Percorsi logo (serviti da /public)
 const GUIDEUP_LOGO = '/guideup-logo.png';
@@ -119,6 +121,7 @@ useEffect(() => {
   }
 }
 
+  
   // Se sono su login e la sessione è attiva → torna in dashboard automaticamente
   useEffect(()=>{
     if (screen==='login' && me){ setScreen('dashboard') }
