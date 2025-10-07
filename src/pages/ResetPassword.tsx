@@ -11,54 +11,53 @@ const card: React.CSSProperties = {
 }
 
 export default function ResetPasswordPage() {
-  const [pwd, setPwd] = useState<string>('')
-  const [pwd2, setPwd2] = useState<string>('')
-  const [err, setErr] = useState<string>('')
-  const [ok, setOk] = useState<string>('')
-  const [canReset, setCanReset] = useState<boolean>(false)
-  const [loading, setLoading] = useState<boolean>(true)
-  const [saving, setSaving] = useState<boolean>(false)
+  const [pwd, setPwd] = useState('')
+  const [pwd2, setPwd2] = useState('')
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [canReset, setCanReset] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [debug, setDebug] = useState<string>('')
 
-  // Attiva la sessione dalla URL (invito/reset: #access_token, type=recovery|signup)
+  // 1) Attiva la sessione dall’URL (invito/reset). Copre sia #access_token che ?access_token
   useEffect(() => {
     (async () => {
       try {
-        const hash = typeof window !== 'undefined' ? window.location.hash : ''
-        if (hash && hash.includes('access_token')) {
-          // Supabase v2 helper: crea la sessione dal fragment
-          await supabase.auth.exchangeCodeForSession(hash)
+        const href = typeof window !== 'undefined' ? window.location.href : ''
+        if (href && (href.includes('access_token=') || href.includes('refresh_token='))) {
+          // Supabase v2: estrae token da URL (hash o query) e crea la sessione
+          await supabase.auth.exchangeCodeForSession(href)
         }
-      } catch (e) {
-        // no-op (lato UI mostriamo form solo se la sessione è valida)
+      } catch (e: any) {
+        // No-op (continuiamo e verifichiamo se c’è già sessione)
       } finally {
         const { data } = await supabase.auth.getSession()
+        const email = data.session?.user?.email || ''
+        setDebug(`hasSession=${!!data.session} user=${email || '-'}`)
         setCanReset(!!data.session)
         setLoading(false)
       }
     })()
   }, [])
 
+  // 2) Salvataggio nuova password
   async function onSave(e: React.FormEvent) {
     e.preventDefault()
     setErr('')
     setOk('')
 
-    if (pwd.length < 8) {
-      setErr('La password deve avere almeno 8 caratteri.')
-      return
-    }
-    if (pwd !== pwd2) {
-      setErr('Le password non coincidono.')
-      return
-    }
+    if (pwd.length < 8) { setErr('La password deve avere almeno 8 caratteri.'); return }
+    if (pwd !== pwd2)   { setErr('Le password non coincidono.'); return }
 
     setSaving(true)
     try {
       const { error } = await supabase.auth.updateUser({ password: pwd })
       if (error) throw error
+
       setOk('Password aggiornata. Reindirizzo al login…')
 
-      // Chiudi la sessione “recovery” e torna al login
+      // Chiudi la sessione “recovery” e vai al login (replace evita il “torna indietro”)
       await supabase.auth.signOut()
       window.location.replace('/login?reset=ok')
     } catch (ex: any) {
@@ -75,6 +74,7 @@ export default function ResetPasswordPage() {
   if (!canReset) {
     return (
       <div style={{ margin: '40px auto', ...card }}>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
         Link non valido o scaduto. Torna al <a href="/login">login</a> e richiedi un nuovo reset.
       </div>
     )
@@ -92,6 +92,9 @@ export default function ResetPasswordPage() {
     >
       <div style={card}>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Imposta nuova password</div>
+
+        {/* Mini ribbon debug – utile ora, poi lo rimuoviamo */}
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
 
         <form onSubmit={onSave} style={{ display: 'grid', gap: 10 }}>
           <label style={{ display: 'grid', gap: 6 }}>
@@ -132,8 +135,9 @@ export default function ResetPasswordPage() {
         </form>
 
         {err && <div style={{ color: '#c00', marginTop: 8 }}>{err}</div>}
-        {ok && <div style={{ color: '#0a0', marginTop: 8 }}>{ok}</div>}
+        {ok  && <div style={{ color: '#0a0', marginTop: 8 }}>{ok}</div>}
       </div>
     </div>
   )
 }
+
