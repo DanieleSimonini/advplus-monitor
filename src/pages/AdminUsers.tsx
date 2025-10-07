@@ -215,7 +215,7 @@ async function resendInvite(a: Advisor){
       {/* Modal Create */}
       {isCreateOpen && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:520 }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:16, width: 'min(92vw, 560px)' }}>
             <div style={{ fontWeight:700, marginBottom:12 }}>Nuovo utente</div>
             <div style={{ display:'grid', gap:12 }}>
               <div>
@@ -253,7 +253,7 @@ async function resendInvite(a: Advisor){
       {/* Modal Edit */}
       {isOpen && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:520 }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:16, width: 'min(92vw, 560px)' }}>
             <div style={{ fontWeight:700, marginBottom:12 }}>Modifica utente</div>
             <div style={{ display:'grid', gap:12 }}>
               <div>
@@ -292,7 +292,7 @@ async function resendInvite(a: Advisor){
       {/* Modal Delete con trasferimento */}
       {isDeleteOpen && deleteTarget && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:520 }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:16, width: 'min(92vw, 560px)' }}>
             <div style={{ fontWeight:700, marginBottom:12 }}>Elimina utente</div>
             <div style={{ display:'grid', gap:12 }}>
               <div>Stai per eliminare <strong>{nameOf(deleteTarget)}</strong>.</div>
