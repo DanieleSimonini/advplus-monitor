@@ -10,6 +10,21 @@ const card: React.CSSProperties = {
   padding: 24,
 }
 
+function getUrlTokensDebug(u: string){
+  const out: string[] = []
+  const hasHash = u.includes('#')
+  const hasQ = u.includes('?')
+  if (hasHash) out.push('#present')
+  if (hasQ) out.push('?present')
+  const frag = u.split('#')[1] || ''
+  const query = u.split('?')[1]?.split('#')[0] || ''
+  const hasAT = frag.includes('access_token=') || query.includes('access_token=')
+  const hasRT = frag.includes('refresh_token=') || query.includes('refresh_token=')
+  const hasType = frag.includes('type=') || query.includes('type=')
+  out.push(`hasAT=${hasAT}`, `hasRT=${hasRT}`, `hasType=${hasType}`)
+  return out.join(' · ')
+}
+
 export default function ResetPasswordPage() {
   const [pwd, setPwd] = useState('')
   const [pwd2, setPwd2] = useState('')
@@ -18,34 +33,34 @@ export default function ResetPasswordPage() {
   const [canReset, setCanReset] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [debug, setDebug] = useState<string>('')
+  const [debug, setDebug] = useState('')
 
-  // 1) Attiva la sessione dall’URL (invito/reset). Copre sia #access_token che ?access_token
   useEffect(() => {
     (async () => {
       try {
         const href = typeof window !== 'undefined' ? window.location.href : ''
-        if (href && (href.includes('access_token=') || href.includes('refresh_token='))) {
-          // Supabase v2: estrae token da URL (hash o query) e crea la sessione
+        // DEBUG: cosa contiene davvero l’URL?
+        const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
+        // Tenta sempre l’exchange: gestisce sia hash (#) che query (?)
+        if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
           await supabase.auth.exchangeCodeForSession(href)
         }
-      } catch (e: any) {
-        // No-op (continuiamo e verifichiamo se c’è già sessione)
-      } finally {
         const { data } = await supabase.auth.getSession()
         const email = data.session?.user?.email || ''
-        setDebug(`hasSession=${!!data.session} user=${email || '-'}`)
+        setDebug(`url: ${urlDbg} · hasSession=${!!data.session} · user=${email || '-'}`)
         setCanReset(!!data.session)
+      } catch (e:any) {
+        setDebug(`exchange error: ${e?.message||e}`)
+        setCanReset(false)
+      } finally {
         setLoading(false)
       }
     })()
   }, [])
 
-  // 2) Salvataggio nuova password
   async function onSave(e: React.FormEvent) {
     e.preventDefault()
-    setErr('')
-    setOk('')
+    setErr(''); setOk('')
 
     if (pwd.length < 8) { setErr('La password deve avere almeno 8 caratteri.'); return }
     if (pwd !== pwd2)   { setErr('Le password non coincidono.'); return }
@@ -54,46 +69,37 @@ export default function ResetPasswordPage() {
     try {
       const { error } = await supabase.auth.updateUser({ password: pwd })
       if (error) throw error
-
       setOk('Password aggiornata. Reindirizzo al login…')
 
-      // Chiudi la sessione “recovery” e vai al login (replace evita il “torna indietro”)
       await supabase.auth.signOut()
       window.location.replace('/login?reset=ok')
-    } catch (ex: any) {
-      setErr(ex?.message || 'Aggiornamento password fallito')
+    } catch (ex:any) {
+      // Mostra SEMPRE l’errore reale
+      const msg = ex?.message || String(ex)
+      console.error('updateUser error', ex)
+      setErr(`Errore: ${msg}`)
     } finally {
       setSaving(false)
     }
   }
 
-  if (loading) {
-    return <div style={{ padding: 24 }}>Caricamento…</div>
-  }
+  if (loading) return <div style={{ padding: 24 }}>Caricamento…</div>
 
   if (!canReset) {
     return (
       <div style={{ margin: '40px auto', ...card }}>
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
-        Link non valido o scaduto. Torna al <a href="/login">login</a> e richiedi un nuovo reset.
+        Link non valido o scaduto (mancano i token nell’URL). Torna al <a href="/login">login</a> e richiedi un nuovo reset/invito.
       </div>
     )
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'grid',
-        placeItems: 'center',
-        background: '#f7f8fb',
-        padding: 24,
-      }}
-    >
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#f7f8fb', padding: 24 }}>
       <div style={card}>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Imposta nuova password</div>
 
-        {/* Mini ribbon debug – utile ora, poi lo rimuoviamo */}
+        {/* Ribbon di debug: lo rimuoveremo quando tutto è ok */}
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
 
         <form onSubmit={onSave} style={{ display: 'grid', gap: 10 }}>
@@ -104,7 +110,7 @@ export default function ResetPasswordPage() {
               required
               value={pwd}
               onChange={(e) => setPwd(e.target.value)}
-              style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8 }}
+              style={{ padding: '10px 12px', border: '1px solid '#ddd', borderRadius: 8 }}
             />
           </label>
 
@@ -119,7 +125,7 @@ export default function ResetPasswordPage() {
             />
           </label>
 
-          <button
+        <button
             type="submit"
             disabled={saving}
             style={{
@@ -140,4 +146,3 @@ export default function ResetPasswordPage() {
     </div>
   )
 }
-
