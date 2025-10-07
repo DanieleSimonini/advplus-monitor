@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
 /**
- * Dashboard.tsx — Funnel + "Lead non contattati" (Step extra)
+ * Dashboard.tsx — Funnel SVG + "Lead non contattati"
  * - Filtri Advisor (Me/Team/All) e Periodo (mese da / a)
  * - KPI esistenti + grafico ad imbuto (Leads → Contatti → Appuntamenti → Proposte → Contratti)
  * - Riquadro evidenziato "Lead non contattati" (owner-scope aware; per i Junior mostra solo i propri)
@@ -64,8 +64,7 @@ function ownersToQuery(scope: 'me'|'team'|'all', me: Advisor|null, advisors: Adv
 
 async function fetchLeadIds(ownerIds: string[]): Promise<string[]>{
   if (!ownerIds.length) return []
-  const { data, error } = await supabase.from('leads').select('id').in('owner_id', ownerIds)
-  if (error) return []
+  const { data } = await supabase.from('leads').select('id').in('owner_id', ownerIds)
   return (data||[]).map(r=>r.id)
 }
 
@@ -82,14 +81,13 @@ async function countIn(table: 'activities'|'appointments'|'proposals'|'contracts
 
 async function sumContractsByType(leadIds: string[], startIso: string, endIso: string, types: string[]){
   if (!leadIds.length) return 0
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('contracts')
     .select('amount, contract_type, ts')
     .in('lead_id', leadIds)
     .in('contract_type', types)
     .gte('ts', startIso).lt('ts', endIso)
-  if (error || !data) return 0
-  return data.reduce((s,r)=> s + Number(r.amount||0), 0)
+  return (data||[]).reduce((s,r)=> s + Number(r.amount||0), 0)
 }
 
 async function countLeadsCreated(ownerIds: string[], startIso: string, endIso: string){
@@ -106,12 +104,11 @@ async function countLeadsCreated(ownerIds: string[], startIso: string, endIso: s
 async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
   if (!ownerIds.length) return 0
   // all-time: lead senza alcuna activity
-  const { data, error } = await supabase
+  const { data: leads } = await supabase
     .from('leads')
     .select('id')
     .in('owner_id', ownerIds)
-  if (error || !data) return 0
-  const leadIds = data.map(d=>d.id)
+  const leadIds = (leads||[]).map(d=>d.id)
   if (!leadIds.length) return 0
   const { data: acts } = await supabase
     .from('activities')
@@ -124,24 +121,87 @@ async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
 function formatNumber(n:number){ return new Intl.NumberFormat('it-IT').format(n) }
 function formatCurrency(n:number){ return new Intl.NumberFormat('it-IT',{ style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }
 
-function Funnel({ steps }:{ steps: { label:string; value:number }[] }){
-  const max = Math.max(1, ...steps.map(s=>s.value))
+// === UI helpers (card funnel & pill) ===
+const funnelCard: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
+const kpiPill: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'1px solid #e5e7eb', background:'#f8fafc', display:'inline-flex', gap:8, alignItems:'baseline' }
+
+/** Funnel a trapezi in SVG (no librerie) */
+function FunnelSVG({ stages }: { stages: { key:string; label:string; value:number; color?:string }[] }){
+  const max = Math.max(1, ...stages.map(s=>s.value))
+  const width = 560, rowH = 52, labelW = 160
+  const totalH = stages.length * rowH
+  const conv = stages.map((s,i)=> i===0 ? null : (stages[i-1].value>0 ? Math.round((s.value/stages[i-1].value)*100) : 0))
+
   return (
-    <div style={{ display:'grid', gap:8 }}>
-      {steps.map((s,i)=>{
-        const w = Math.max(6, Math.round((s.value/max)*100))
-        return (
-          <div key={s.label} style={{ display:'grid', gap:6 }}>
-            <div style={{ fontSize:12, color:'var(--muted,#666)', display:'flex', justifyContent:'space-between' }}>
-              <span>{s.label}</span>
-              <strong>{formatNumber(s.value)}</strong>
+    <div className="brand-card" style={{ ...funnelCard }}>
+      <div style={{ fontWeight:700, marginBottom:12 }}>Imbuto di conversione</div>
+      <div style={{ display:'grid', gridTemplateColumns:`${labelW}px auto`, gap:12 }}>
+        {/* Colonna etichette + % conversione */}
+        <div style={{ display:'grid', rowGap: rowH-20 }}>
+          {stages.map((s,i)=> (
+            <div key={s.key} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', height:rowH }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:600 }}>{s.label}</div>
+                <div style={{ fontSize:12, color:'#6b7280' }}>{formatNumber(s.value)}</div>
+              </div>
+              {i>0 && (
+                <div title="Conversione dallo step precedente" style={{ ...kpiPill }}>
+                  <span style={{ fontSize:11, color:'#6b7280' }}>→</span>
+                  <strong style={{ fontSize:14 }}>{conv[i]}%</strong>
+                </div>
+              )}
             </div>
-            <div style={{ height:18, background:'var(--border,#eee)', borderRadius:10, overflow:'hidden' }}>
-              <div style={{ width:`${w}%`, height:'100%', background:'#0b57d0', transition:'width .3s' }} />
-            </div>
-          </div>
-        )
-      })}
+          ))}
+        </div>
+
+        {/* Colonna funnel SVG */}
+        <div style={{ overflow:'hidden' }}>
+          <svg width={width} height={totalH} viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Funnel">
+            {stages.map((s,i)=>{
+              const topW = (i===0) ? (width - 24) : (width - 24) * (stages[i-1].value / max)
+              const botW = (width - 24) * (s.value / max)
+              const yTop = i*rowH + 6
+              const yBot = yTop + rowH - 12
+              const xTop = (width - topW)/2
+              const xBot = (width - botW)/2
+              const fill = s.color || 'url(#gFunnel)'
+              return (
+                <g key={s.key}>
+                  <polygon
+                    points={`${xTop},${yTop} ${xTop+topW},${yTop} ${xBot+botW},${yBot} ${xBot},${yBot}`}
+                    fill={fill}
+                    stroke="#e5e7eb"
+                    strokeWidth="1"
+                  />
+                  <text x={width/2} y={yTop + (rowH/2)} dominantBaseline="middle" textAnchor="middle" fontSize="13" fill="#0f172a">
+                    {formatNumber(s.value)}
+                  </text>
+                </g>
+              )
+            })}
+            <defs>
+              <linearGradient id="gFunnel" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85"/>
+                <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function UnworkedCard({ count }:{ count:number }){
+  return (
+    <div className="brand-card" style={{ ...funnelCard, background:'#F5FBFF', borderColor:'#BFE4FF' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+        <div>
+          <div style={{ fontWeight:700 }}>Lead da contattare</div>
+          <div style={{ fontSize:12, color:'#475569' }}>Lead senza alcun contatto (nello scope selezionato)</div>
+        </div>
+        <div style={{ fontSize:28, fontWeight:800, color:'#0b57d0' }}>{formatNumber(count)}</div>
+      </div>
     </div>
   )
 }
@@ -271,7 +331,7 @@ export default function DashboardPage(){
           <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Protection</div>
           <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVProt||0)}</div>
         </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
+        <div style={{ background:'#fff', border:'1px solid '#eee', borderRadius:12, padding:12 }}>
           <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Premi Ricorrenti</div>
           <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVPR||0)}</div>
         </div>
@@ -281,17 +341,17 @@ export default function DashboardPage(){
         </div>
       </div>
 
-      {/* Funnel */}
-      <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:16 }}>
-        <div style={{ fontWeight:700, marginBottom:8 }}>Imbuto di conversione</div>
-        <Funnel steps={[
-          { label:'Leads', value: funnel.leads },
-          { label:'Contatti', value: funnel.contacts },
-          { label:'Appuntamenti', value: funnel.appointments },
-          { label:'Proposte', value: funnel.proposals },
-          { label:'Contratti', value: funnel.contracts },
-        ]} />
-      </div>
+      {/* Funnel SVG */}
+      <FunnelSVG stages={[
+        { key:'leads',        label:'Leads',         value: funnel.leads },
+        { key:'contacts',     label:'Contatti',      value: funnel.contacts },
+        { key:'appointments', label:'Appuntamenti',  value: funnel.appointments },
+        { key:'proposals',    label:'Proposte',      value: funnel.proposals },
+        { key:'contracts',    label:'Contratti',     value: funnel.contracts },
+      ]} />
+
+      {/* Card dedicata ai lead non contattati */}
+      <UnworkedCard count={notContacted} />
     </div>
   )
 }
