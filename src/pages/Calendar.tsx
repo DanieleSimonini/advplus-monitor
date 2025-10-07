@@ -3,14 +3,12 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * Calendar.tsx — Agenda mensile/settimana con CRUD appuntamenti
- * - Filtri: Ambito (Solo me / Team / Tutti) e mese
- * - Vista mensile (grid 7x6), mini-vista settimanale (lista)
- * - Crea/Modifica/Elimina appuntamenti (appointments)
- * - Rispettati i literal CHECK: mode ∈ { 'inperson','phone','video' }
- * - Collega Lead (select) visibile solo ai lead nel proprio ambito
+ * Fix TS: tipizza correttamente `mode` come union 'inperson'|'phone'|'video'
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
+
+type Mode = 'inperson' | 'phone' | 'video'
 
 type Advisor = { user_id: string, email: string, full_name: string|null, role: Role, team_lead_user_id?: string|null }
 
@@ -20,15 +18,15 @@ type Appointment = {
   id: string
   lead_id: string
   ts: string // ISO
-  mode: 'inperson'|'phone'|'video'
+  mode: Mode
   notes: string|null
   lead?: Lead
 }
 
-const MODE_OPTIONS = [
-  { label: 'In presenza', db: 'inperson' as const },
-  { label: 'Video', db: 'video' as const },
-  { label: 'Telefono', db: 'phone' as const },
+const MODE_OPTIONS: { label:string; db:Mode }[] = [
+  { label: 'In presenza', db: 'inperson' },
+  { label: 'Video', db: 'video' },
+  { label: 'Telefono', db: 'phone' },
 ]
 
 function monthKey(d: Date){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` }
@@ -59,7 +57,7 @@ export default function CalendarPage(){
   const [err, setErr] = useState('')
 
   // modal editor
-  const emptyDraft = { id:'', lead_id:'', ts:'', mode:'inperson' as const, notes:'' }
+  const emptyDraft: { id:string; lead_id:string; ts:string; mode:Mode; notes:string } = { id:'', lead_id:'', ts:'', mode:'inperson', notes:'' }
   const [editingId, setEditingId] = useState<string|null>(null)
   const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
 
@@ -274,7 +272,7 @@ export default function CalendarPage(){
               </div>
               <div>
                 <div style={label}>Modalità</div>
-                <select value={draft.mode} onChange={e=>setDraft(d=>({ ...d, mode:e.target.value as any }))} style={ipt}>
+                <select value={draft.mode} onChange={e=>{ const v = e.target.value as Mode; setDraft(d=>({ ...d, mode: (v==='inperson'||v==='phone'||v==='video')? v : 'phone' })) }} style={ipt}>
                   {MODE_OPTIONS.map(o=> <option key={o.db} value={o.db}>{o.label}</option>)}
                 </select>
               </div>
