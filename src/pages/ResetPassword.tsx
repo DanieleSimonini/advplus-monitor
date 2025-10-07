@@ -10,10 +10,19 @@ export default function ResetPasswordPage(){
   const [loading, setLoading] = useState(true)
 
   useEffect(()=>{ (async()=>{
-    // Se il link è valido, Supabase crea una sessione temporanea di recovery
-    const { data } = await supabase.auth.getSession()
-    setCanReset(!!data.session)
-    setLoading(false)
+    try{
+      // Se arriva un link con #access_token / type=recovery o type=signup
+      if (typeof window !== 'undefined' && window.location.hash.includes('access_token')){
+        // Supabase v2 helper: crea la sessione dal fragment
+        await supabase.auth.exchangeCodeForSession(window.location.hash)
+      }
+      const { data } = await supabase.auth.getSession()
+      setCanReset(!!data.session)
+    }catch(e:any){
+      setErr(e?.message || 'Sessione non valida')
+    }finally{
+      setLoading(false)
+    }
   })() },[])
 
   async function onSave(e:React.FormEvent){
@@ -25,16 +34,14 @@ export default function ResetPasswordPage(){
       const { error } = await supabase.auth.updateUser({ password: pwd })
       if (error) throw error
       setOk('Password aggiornata. Ora puoi accedere.')
-      // opzionale: signOut e redirect a /login
       setTimeout(async()=>{
         await supabase.auth.signOut()
         window.location.href = '/login'
-      }, 1200)
+      }, 1000)
     }catch(ex:any){ setErr(ex.message || 'Aggiornamento password fallito') }
   }
 
   if (loading) return <div style={{ padding:24 }}>Caricamento…</div>
-
   if (!canReset){
     return (
       <div style={{ maxWidth:480, margin:'40px auto', padding:24, border:'1px solid #eee', borderRadius:16, background:'#fff' }}>
@@ -68,3 +75,4 @@ export default function ResetPasswordPage(){
     </div>
   )
 }
+
