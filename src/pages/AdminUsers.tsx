@@ -146,6 +146,22 @@ export default function AdminUsersPage(){
     } catch(e:any){ alert(e.message||'Errore eliminazione') }
   }
 
+async function resendInvite(a: Advisor){
+  // solo Admin
+  if (meRole !== 'Admin') { alert('Accesso negato: solo Admin'); return }
+  if (!a?.email) { alert('Email non valida'); return }
+  try {
+    const { error } = await supabase.functions.invoke('invite', {
+      body: { email: a.email, role: a.role, full_name: a.full_name || undefined }
+    })
+    if (error) throw error
+    alert('Invito inviato a ' + a.email)
+  } catch (e:any) {
+    alert(e.message || 'Errore invio invito')
+  }
+}
+
+  
   if (meRole!=='Admin'){
     return <div style={{ ...box, maxWidth:1100, margin:'0 auto' }}>Accesso negato: solo Admin.</div>
   }
