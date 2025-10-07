@@ -64,16 +64,15 @@ export default function AdminUsersPage(){
   })() },[])
 
   async function loadAdvisors(){
+    // ⛏️ Niente colonna "active": selezioniamo solo i campi esistenti
     const { data, error } = await supabase
       .from('advisors')
-      .select('user_id,email,full_name,role,team_lead_user_id,active')
+      .select('user_id,email,full_name,role,team_lead_user_id')
       .order('full_name', { ascending:true })
     if (error){ setErr(error.message); return }
-    // filtra gli inattivi se esiste la colonna active
     const list = (data||[]) as Advisor[]
-    const visible = list.filter(a => (typeof a.active === 'boolean' ? a.active : true))
-    setRows(visible)
-    setTls(visible.filter(a=>a.role==='Team Lead'))
+    setRows(list)
+    setTls(list.filter(a=>a.role==='Team Lead'))
   }
 
   function canAdmin(){ return meRole==='Admin' }
@@ -127,26 +126,22 @@ export default function AdminUsersPage(){
 Le assegnazioni ai lead resteranno con il suo user_id.`)
     if (!ok) return
 
-    // preferisci soft-delete se c'è la colonna active, altrimenti delete fisico
-    const upd = await supabase.from('advisors').update({ active:false }).eq('user_id', a.user_id!)
-    if (upd.error){
-      // se la colonna non esiste, fai delete
-      const del = await supabase.from('advisors').delete().eq('user_id', a.user_id!)
-      if (del.error){ alert(del.error.message); return }
-    }
+    // 🔥 Hard delete (nessuna colonna active nello schema corrente)
+    const del = await supabase.from('advisors').delete().eq('user_id', a.user_id!)
+    if (del.error){ alert(del.error.message); return }
     await loadAdvisors()
   }
 
   if (meRole!=='Admin'){
-    return <div style={{ ...box, maxWidth:1100, margin:'0 auto' }}>Accesso negato: solo Admin.</div>
+    return <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16, maxWidth:1100, margin:'0 auto' }}>Accesso negato: solo Admin.</div>
   }
 
   return (
     <div style={{ maxWidth:1100, margin:'0 auto', display:'grid', gap:16 }}>
-      <div className="brand-card" style={{ ...box }}>
+      <div className="brand-card" style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
           <div style={{ fontSize:18, fontWeight:700 }}>Gestione utenti</div>
-          <div style={{ fontSize:12, color:'#666' }}>{rows.length} utenti attivi</div>
+          <div style={{ fontSize:12, color:'#666' }}>{rows.length} utenti</div>
         </div>
 
         {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
@@ -191,25 +186,25 @@ Le assegnazioni ai lead resteranno con il suo user_id.`)
             <div style={{ fontWeight:700, marginBottom:12 }}>Modifica utente</div>
             <div style={{ display:'grid', gap:12 }}>
               <div>
-                <div style={label}>Nome</div>
-                <input value={draft.full_name} onChange={e=>setDraft(d=>({ ...d, full_name:e.target.value }))} style={ipt} />
+                <div style={{ fontSize:12, color:'#666' }}>Nome</div>
+                <input value={draft.full_name} onChange={e=>setDraft(d=>({ ...d, full_name:e.target.value }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }} />
               </div>
               <div>
-                <div style={label}>Email (visiva)</div>
-                <input type="email" value={draft.email} onChange={e=>setDraft(d=>({ ...d, email:e.target.value }))} style={ipt} />
+                <div style={{ fontSize:12, color:'#666' }}>Email (visiva)</div>
+                <input type="email" value={draft.email} onChange={e=>setDraft(d=>({ ...d, email:e.target.value }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }} />
                 <div style={{ fontSize:11, color:'#777', marginTop:4 }}>Nota: questo cambia l'email in anagrafica, non quella di login.</div>
               </div>
               <div>
-                <div style={label}>Ruolo</div>
-                <select value={draft.role} onChange={e=>setDraft(d=>({ ...d, role: e.target.value as Role }))} style={ipt}>
+                <div style={{ fontSize:12, color:'#666' }}>Ruolo</div>
+                <select value={draft.role} onChange={e=>setDraft(d=>({ ...d, role: e.target.value as Role }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }}>
                   <option value="Junior">Junior</option>
                   <option value="Team Lead">Team Lead</option>
                   <option value="Admin">Admin</option>
                 </select>
               </div>
               <div>
-                <div style={label}>Responsabile (Team Lead)</div>
-                <select value={draft.team_lead_user_id} onChange={e=>setDraft(d=>({ ...d, team_lead_user_id:e.target.value }))} style={ipt}>
+                <div style={{ fontSize:12, color:'#666' }}>Responsabile (Team Lead)</div>
+                <select value={draft.team_lead_user_id} onChange={e=>setDraft(d=>({ ...d, team_lead_user_id:e.target.value }))} style={{ padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }}>
                   <option value="">— Nessuno —</option>
                   {tls.map(t => <option key={t.user_id||t.email} value={t.user_id||''}>{nameOf(t)}</option>)}
                 </select>
