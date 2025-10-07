@@ -22,7 +22,7 @@ type Advisor = {
 }
 
 const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
-const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%' }
+const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%', maxWidth:'100%', minWidth:0, boxSizing:'border-box' }
 const label: React.CSSProperties = { fontSize:12, color:'#666' }
 
 export default function AdminUsersPage(){
