@@ -9,7 +9,7 @@ import AdminPage from './pages/AdminUsers'
 import ImportLeadsPage from './pages/ImportLeads'
 import ReportPage from './pages/Report'
 import BrandTheme from './theme/BrandTheme'
-import CalendarPage from './pages/Calendar'
+import Calendar from './pages/Calendar'
 
 // Percorsi logo (serviti da /public)
 const GUIDEUP_LOGO = '/guideup-logo.png';
@@ -224,7 +224,7 @@ const navBtnActive: React.CSSProperties = {
       {screen==='import' && <ImportLeadsPage />}
       {screen==='goals' && <GoalsTLPage />}
       {screen==='report' && <ReportPage />}
-      {screen==='calendar' && <CalendarPage />}
+      {screen==='calendar' && <Calendar />}
       {screen==='admin' && <AdminPage />}
     </div>
   )
