@@ -9,6 +9,7 @@ import AdminPage from './pages/AdminUsers'
 import ImportLeadsPage from './pages/ImportLeads'
 import ReportPage from './pages/Report'
 import BrandTheme from './theme/BrandTheme'
+import CalendarPage from './pages/Calendar'
 
 // Percorsi logo (serviti da /public)
 const GUIDEUP_LOGO = '/guideup-logo.png';
