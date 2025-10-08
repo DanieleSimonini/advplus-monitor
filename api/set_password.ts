@@ -39,8 +39,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 2) Aggiorna la password lato admin (Service Role)
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
-    const { error: updErr } = await admin.auth.admin.updateUserById(userId, { password })
-    if (updErr) return res.status(500).json({ error: updErr.message })
+    const { error: updErr } = await admin.auth.admin.updateUserById(userId, {
+      password,
+      email_confirm: true, // gli utenti invitati restano "pending" senza questa conferma
+    })
+      if (updErr) return res.status(500).json({ error: updErr.message })
 
     return res.status(200).json({ ok: true })
   } catch (e: any) {
