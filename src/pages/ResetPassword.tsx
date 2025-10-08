@@ -81,7 +81,7 @@ export default function ResetPasswordPage() {
     return () => { cancelled = true; clearTimeout(hardFallback) }
   }, [])
 
-  async function onSave(e: React.FormEvent) {
+   async function onSave(e: React.FormEvent) {
     e.preventDefault()
     setErr(''); setOk('')
 
@@ -90,37 +90,26 @@ export default function ResetPasswordPage() {
 
     setSaving(true)
     try {
-      // Leggi la sessione per ottenere il token
+      // 1) Leggi la sessione (servirà il token per l’Authorization lato Edge)
       const { data: s } = await supabase.auth.getSession()
       const token = s?.session?.access_token
-      if (!token) throw new Error('Sessione non valida: rifai clic dal link in email')
+      if (!token) throw new Error('Sessione non valida: riapri il link dall’email')
 
-      // Chiama l’Edge Function server-side (aggiorna password in modo affidabile)
-      const base = (typeof window !== 'undefined') ? window.location.origin : ''
-      const url = `${base}/functions/v1/set_password`
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'apikey': (supabase as any).supabaseKey || '' // opzionale
-        },
-        body: JSON.stringify({ password: pwd })
+      // 2) Invoca l’Edge Function sul dominio Supabase (niente URL manuali su Vercel)
+      const { data, error } = await supabase.functions.invoke('set_password', {
+        body: { password: pwd },
+        headers: { Authorization: `Bearer ${token}` },
       })
-      if (!r.ok) {
-        const j = await r.json().catch(()=>({}))
-        throw new Error(j?.error || `HTTP ${r.status}`)
-      }
+      if (error) throw new Error(error.message || 'set_password error')
 
       setOk('Password aggiornata. Reindirizzo al login…')
 
-      // Chiudi la sessione e redirigi comunque
+      // 3) Chiudi la sessione e redirigi (anche se signOut è lento, non bloccare)
       try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
       window.location.replace('/login?reset=ok')
     } catch (ex:any) {
-      const msg = ex?.message || String(ex)
-      console.error('set_password error', ex)
-      setErr(`Errore: ${msg}`)
+      setErr(`Errore: ${ex?.message || String(ex)}`)
+      console.error('set_password invoke error', ex)
     } finally {
       setSaving(false)
     }
