@@ -90,23 +90,36 @@ export default function ResetPasswordPage() {
 
     setSaving(true)
     try {
-      // aggiorna con timeout
-      const { error } = await withTimeout(
-        supabase.auth.updateUser({ password: pwd }),
-        15000,
-        'updateUser'
-      )
-      if ((error as any)) throw (error as any)
+      // Leggi la sessione per ottenere il token
+      const { data: s } = await supabase.auth.getSession()
+      const token = s?.session?.access_token
+      if (!token) throw new Error('Sessione non valida: rifai clic dal link in email')
+
+      // Chiama l’Edge Function server-side (aggiorna password in modo affidabile)
+      const base = (typeof window !== 'undefined') ? window.location.origin : ''
+      const url = `${base}/functions/v1/set_password`
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'apikey': (supabase as any).supabaseKey || '' // opzionale
+        },
+        body: JSON.stringify({ password: pwd })
+      })
+      if (!r.ok) {
+        const j = await r.json().catch(()=>({}))
+        throw new Error(j?.error || `HTTP ${r.status}`)
+      }
 
       setOk('Password aggiornata. Reindirizzo al login…')
 
-      // signOut con timeout ma senza bloccare il redirect
+      // Chiudi la sessione e redirigi comunque
       try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
-
       window.location.replace('/login?reset=ok')
     } catch (ex:any) {
       const msg = ex?.message || String(ex)
-      console.error('updateUser/signOut error', ex)
+      console.error('set_password error', ex)
       setErr(`Errore: ${msg}`)
     } finally {
       setSaving(false)
