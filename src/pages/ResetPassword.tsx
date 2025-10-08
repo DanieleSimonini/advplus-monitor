@@ -95,46 +95,27 @@ async function onSave(e: React.FormEvent) {
 
   setSaving(true)
   try {
-    // 1) prendo token + env
     const { data: s } = await supabase.auth.getSession()
     const token = s?.session?.access_token
     if (!token) throw new Error('Sessione non valida: riapri il link dalla mail')
 
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
-    const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string
-    if (!supabaseUrl || !anon) throw new Error('Env mancanti (VITE_SUPABASE_URL/ANON_KEY)')
-
-    // 2) primo tentativo: SDK (comodo, di solito funziona)
-    try {
-      const { error } = await supabase.functions.invoke('set_password', { body: { password: pwd } })
-      if (error) throw error
-    } catch (ex: any) {
-      // 3) fallback diretto: chiama l’Edge Function sul dominio Supabase
-      //    NOTA: usare il dominio di Supabase, NON /functions su Vercel.
-      const url = `${supabaseUrl.replace(/\/+$/, '')}/functions/v1/set_password`
-      const r = await withTimeout(fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'apikey': anon
-        },
-        body: JSON.stringify({ password: pwd })
-      }), 15000, 'set_password (fallback fetch)')
-      if (!r.ok) {
-        const j = await r.json().catch(()=>({}))
-        throw new Error(j?.error || `HTTP ${r.status}`)
-      }
-    }
+    // Chiama la serverless del tuo dominio
+    const resp = await fetch('/api/set_password', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ password: pwd })
+    })
+    const json = await resp.json().catch(()=> ({}))
+    if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`)
 
     setOk('Password aggiornata. Reindirizzo al login…')
-
-    // signout best-effort + redirect
-    try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
+    try { await supabase.auth.signOut() } catch {}
     window.location.replace('/login?reset=ok')
   } catch (ex:any) {
     setErr(`Errore: ${ex?.message || String(ex)}`)
-    console.error('[ResetPassword] set_password error', ex)
   } finally {
     setSaving(false)
   }
