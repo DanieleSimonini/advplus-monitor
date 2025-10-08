@@ -95,14 +95,12 @@ export default function ResetPasswordPage() {
       const token = s?.session?.access_token
       if (!token) throw new Error('Sessione non valida: riapri il link dall’email')
 
-      // 2) Invoca l’Edge Function sul dominio Supabase (niente URL manuali su Vercel)
-      const { data, error } = await supabase.functions.invoke('set_password', {
-        body: { password: pwd },
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (error) throw new Error(error.message || 'set_password error')
+// 2) Invoca l’Edge Function: il client allega automaticamente il JWT della sessione
+const { error } = await supabase.functions.invoke('set_password', {
+  body: { password: pwd },
+})
+if (error) throw new Error(error.message || 'set_password error')
 
-      setOk('Password aggiornata. Reindirizzo al login…')
 
       // 3) Chiudi la sessione e redirigi (anche se signOut è lento, non bloccare)
       try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
