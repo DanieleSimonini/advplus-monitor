@@ -37,13 +37,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (uerr || !u?.user?.id) return res.status(401).json({ error: uerr?.message || 'Invalid session' })
     const userId = u.user.id
 
-    // 2) Aggiorna la password lato admin (Service Role)
+    // 2) Aggiorna la password con il token dell'utente invitato (mantiene il flusso recovery/invite)
+    const { error: setPwdErr } = await userClient.auth.updateUser({ password })
+    if (setPwdErr) return res.status(400).json({ error: setPwdErr.message })
+
+    // 3) Conferma l'email se è ancora "pending" (richiede service role)    
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
-    const { error: updErr } = await admin.auth.admin.updateUserById(userId, {
-      password,
-      email_confirm: true, // gli utenti invitati restano "pending" senza questa conferma
-    })
-      if (updErr) return res.status(500).json({ error: updErr.message })
+    const { data: adminUser, error: fetchErr } = await admin.auth.admin.getUserById(userId)
+    if (fetchErr) return res.status(500).json({ error: fetchErr.message })
+
+    if (!adminUser?.user?.email_confirmed_at) {
+      const { error: confirmErr } = await admin.auth.admin.updateUserById(userId, {
+        email_confirm: true, // gli utenti invitati restano "pending" senza questa conferma
+      })
+      if (confirmErr) return res.status(500).json({ error: confirmErr.message })
+    }
 
     return res.status(200).json({ ok: true })
   } catch (e: any) {
