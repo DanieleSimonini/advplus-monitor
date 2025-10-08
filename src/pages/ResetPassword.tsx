@@ -25,6 +25,13 @@ function getUrlTokensDebug(u: string){
   return out.join(' · ')
 }
 
+function withTimeout<T>(p: Promise<T>, ms = 15000, label = 'operazione'): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
+    p.then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
+  })
+}
+
 export default function ResetPasswordPage() {
   const [pwd, setPwd] = useState('')
   const [pwd2, setPwd2] = useState('')
@@ -40,6 +47,7 @@ export default function ResetPasswordPage() {
       try {
         const href = typeof window !== 'undefined' ? window.location.href : ''
         const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
+        // prova sempre l'exchange (gestisce hash e query)
         if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
           await supabase.auth.exchangeCodeForSession(href)
         }
@@ -65,15 +73,26 @@ export default function ResetPasswordPage() {
 
     setSaving(true)
     try {
-      const { error } = await supabase.auth.updateUser({ password: pwd })
-      if (error) throw error
+      // 1) aggiorna con timeout
+      const { error } = await withTimeout(
+        supabase.auth.updateUser({ password: pwd }),
+        15000,
+        'updateUser'
+      )
+      if ((error as any)) throw (error as any)
+
       setOk('Password aggiornata. Reindirizzo al login…')
 
-      await supabase.auth.signOut()
+      // 2) prova signOut con timeout, ma non bloccare il redirect se va lungo
+      try {
+        await withTimeout(supabase.auth.signOut(), 8000, 'signOut')
+      } catch(_) { /* no-op: forziamo ugualmente il redirect */ }
+
+      // 3) redirect immediato
       window.location.replace('/login?reset=ok')
     } catch (ex:any) {
       const msg = ex?.message || String(ex)
-      console.error('updateUser error', ex)
+      console.error('updateUser/signOut error', ex)
       setErr(`Errore: ${msg}`)
     } finally {
       setSaving(false)
@@ -96,7 +115,7 @@ export default function ResetPasswordPage() {
       <div style={card}>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Imposta nuova password</div>
 
-        {/* Ribbon di debug – rimuoveremo quando tutto è ok */}
+        {/* Ribbon di debug – lo rimuoveremo quando tutto è ok */}
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
 
         <form onSubmit={onSave} style={{ display: 'grid', gap: 10 }}>
