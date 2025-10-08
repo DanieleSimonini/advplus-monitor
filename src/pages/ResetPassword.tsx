@@ -42,6 +42,11 @@ export default function ResetPasswordPage() {
   const [saving, setSaving] = useState(false)
   const [debug, setDebug] = useState('')
 
+useEffect(()=>{
+  console.log('[DEBUG] supabaseUrl =', import.meta.env.VITE_SUPABASE_URL)
+  console.log('[DEBUG] functionsUrl (SDK) =', (supabase as any)?.functions?.url)
+},[])
+  
   // Inizializzazione robusta con timeout
   useEffect(() => {
     let cancelled = false
@@ -81,37 +86,60 @@ export default function ResetPasswordPage() {
     return () => { cancelled = true; clearTimeout(hardFallback) }
   }, [])
 
-   async function onSave(e: React.FormEvent) {
-    e.preventDefault()
-    setErr(''); setOk('')
+async function onSave(e: React.FormEvent) {
+  e.preventDefault()
+  setErr(''); setOk('')
 
-    if (pwd.length < 8) { setErr('La password deve avere almeno 8 caratteri.'); return }
-    if (pwd !== pwd2)   { setErr('Le password non coincidono.'); return }
+  if (pwd.length < 8) { setErr('La password deve avere almeno 8 caratteri.'); return }
+  if (pwd !== pwd2)   { setErr('Le password non coincidono.'); return }
 
-    setSaving(true)
+  setSaving(true)
+  try {
+    // 1) prendo token + env
+    const { data: s } = await supabase.auth.getSession()
+    const token = s?.session?.access_token
+    if (!token) throw new Error('Sessione non valida: riapri il link dalla mail')
+
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
+    const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string
+    if (!supabaseUrl || !anon) throw new Error('Env mancanti (VITE_SUPABASE_URL/ANON_KEY)')
+
+    // 2) primo tentativo: SDK (comodo, di solito funziona)
     try {
-      // 1) Leggi la sessione (servirà il token per l’Authorization lato Edge)
-      const { data: s } = await supabase.auth.getSession()
-      const token = s?.session?.access_token
-      if (!token) throw new Error('Sessione non valida: riapri il link dall’email')
-
-// 2) Invoca l’Edge Function: il client allega automaticamente il JWT della sessione
-const { error } = await supabase.functions.invoke('set_password', {
-  body: { password: pwd },
-})
-if (error) throw new Error(error.message || 'set_password error')
-
-
-      // 3) Chiudi la sessione e redirigi (anche se signOut è lento, non bloccare)
-      try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
-      window.location.replace('/login?reset=ok')
-    } catch (ex:any) {
-      setErr(`Errore: ${ex?.message || String(ex)}`)
-      console.error('set_password invoke error', ex)
-    } finally {
-      setSaving(false)
+      const { error } = await supabase.functions.invoke('set_password', { body: { password: pwd } })
+      if (error) throw error
+    } catch (ex: any) {
+      // 3) fallback diretto: chiama l’Edge Function sul dominio Supabase
+      //    NOTA: usare il dominio di Supabase, NON /functions su Vercel.
+      const url = `${supabaseUrl.replace(/\/+$/, '')}/functions/v1/set_password`
+      const r = await withTimeout(fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'apikey': anon
+        },
+        body: JSON.stringify({ password: pwd })
+      }), 15000, 'set_password (fallback fetch)')
+      if (!r.ok) {
+        const j = await r.json().catch(()=>({}))
+        throw new Error(j?.error || `HTTP ${r.status}`)
+      }
     }
+
+    setOk('Password aggiornata. Reindirizzo al login…')
+
+    // signout best-effort + redirect
+    try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
+    window.location.replace('/login?reset=ok')
+  } catch (ex:any) {
+    setErr(`Errore: ${ex?.message || String(ex)}`)
+    console.error('[ResetPassword] set_password error', ex)
+  } finally {
+    setSaving(false)
   }
+}
+
 
   if (loading) return <div style={{ padding: 24 }}>Caricamento…</div>
 
