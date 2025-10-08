@@ -25,56 +25,12 @@ function getUrlTokensDebug(u: string){
   return out.join(' · ')
 }
 
-// aggiungi/lascia questo helper in alto (se non c’è già)
 function withTimeout<T>(p: Promise<T>, ms = 15000, label = 'operazione'): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
     p.then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
   })
 }
-
-// --- PATCH useEffect ---
-useEffect(() => {
-  let cancelled = false
-
-  ;(async () => {
-    const href = typeof window !== 'undefined' ? window.location.href : ''
-    const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
-
-    try {
-      // Prova a creare la sessione da URL (hash o query) ma con timeout
-      if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
-        await withTimeout(supabase.auth.exchangeCodeForSession(href), 12000, 'exchangeCodeForSession')
-      }
-    } catch (e:any) {
-      // non blocchiamo: segnaliamo nel debug
-      if (!cancelled) setDebug(`exchange error: ${e?.message || e} · url: ${urlDbg}`)
-    }
-
-    try {
-      // Leggi la sessione con timeout
-      const { data } = await withTimeout(supabase.auth.getSession(), 8000, 'getSession')
-      const email = data.session?.user?.email || ''
-      if (!cancelled) {
-        setDebug(prev => (prev ? prev + ' · ' : '') + `url: ${urlDbg} · hasSession=${!!data.session} · user=${email || '-'}`)
-        setCanReset(!!data.session)
-      }
-    } catch (e:any) {
-      if (!cancelled) {
-        setDebug(prev => (prev ? prev + ' · ' : '') + `getSession error: ${e?.message || e} · url: ${urlDbg}`)
-        setCanReset(false)
-      }
-    } finally {
-      if (!cancelled) setLoading(false)
-    }
-  })()
-
-  // failsafe extra: anche se qualcosa rimane sospeso, sblocca il loading dopo 4s
-  const hardFallback = setTimeout(() => { if (!cancelled) setLoading(false) }, 4000)
-
-  return () => { cancelled = true; clearTimeout(hardFallback) }
-}, [])
-
 
 export default function ResetPasswordPage() {
   const [pwd, setPwd] = useState('')
@@ -86,26 +42,43 @@ export default function ResetPasswordPage() {
   const [saving, setSaving] = useState(false)
   const [debug, setDebug] = useState('')
 
+  // Inizializzazione robusta con timeout
   useEffect(() => {
-    (async () => {
+    let cancelled = false
+
+    ;(async () => {
+      const href = typeof window !== 'undefined' ? window.location.href : ''
+      const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
+
       try {
-        const href = typeof window !== 'undefined' ? window.location.href : ''
-        const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
-        // prova sempre l'exchange (gestisce hash e query)
+        // Crea sessione da URL (hash o query) ma con timeout
         if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
-          await supabase.auth.exchangeCodeForSession(href)
+          await withTimeout(supabase.auth.exchangeCodeForSession(href), 12000, 'exchangeCodeForSession')
         }
-        const { data } = await supabase.auth.getSession()
-        const email = data.session?.user?.email || ''
-        setDebug(`url: ${urlDbg} · hasSession=${!!data.session} · user=${email || '-'}`)
-        setCanReset(!!data.session)
       } catch (e:any) {
-        setDebug(`exchange error: ${e?.message||e}`)
-        setCanReset(false)
+        if (!cancelled) setDebug(`exchange error: ${e?.message || e} · url: ${urlDbg}`)
+      }
+
+      try {
+        const { data } = await withTimeout(supabase.auth.getSession(), 8000, 'getSession')
+        const email = data.session?.user?.email || ''
+        if (!cancelled) {
+          setDebug(prev => (prev ? prev + ' · ' : '') + `url: ${urlDbg} · hasSession=${!!data.session} · user=${email || '-'}`)
+          setCanReset(!!data.session)
+        }
+      } catch (e:any) {
+        if (!cancelled) {
+          setDebug(prev => (prev ? prev + ' · ' : '') + `getSession error: ${e?.message || e} · url: ${urlDbg}`)
+          setCanReset(false)
+        }
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     })()
+
+    // failsafe: sblocca il loading anche se qualcosa resta sospeso
+    const hardFallback = setTimeout(() => { if (!cancelled) setLoading(false) }, 4000)
+    return () => { cancelled = true; clearTimeout(hardFallback) }
   }, [])
 
   async function onSave(e: React.FormEvent) {
@@ -117,7 +90,7 @@ export default function ResetPasswordPage() {
 
     setSaving(true)
     try {
-      // 1) aggiorna con timeout
+      // aggiorna con timeout
       const { error } = await withTimeout(
         supabase.auth.updateUser({ password: pwd }),
         15000,
@@ -127,12 +100,9 @@ export default function ResetPasswordPage() {
 
       setOk('Password aggiornata. Reindirizzo al login…')
 
-      // 2) prova signOut con timeout, ma non bloccare il redirect se va lungo
-      try {
-        await withTimeout(supabase.auth.signOut(), 8000, 'signOut')
-      } catch(_) { /* no-op: forziamo ugualmente il redirect */ }
+      // signOut con timeout ma senza bloccare il redirect
+      try { await withTimeout(supabase.auth.signOut(), 8000, 'signOut') } catch(_) {}
 
-      // 3) redirect immediato
       window.location.replace('/login?reset=ok')
     } catch (ex:any) {
       const msg = ex?.message || String(ex)
@@ -159,7 +129,7 @@ export default function ResetPasswordPage() {
       <div style={card}>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Imposta nuova password</div>
 
-        {/* Ribbon di debug – lo rimuoveremo quando tutto è ok */}
+        {/* Ribbon di debug – rimuoveremo quando tutto è ok */}
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
 
         <form onSubmit={onSave} style={{ display: 'grid', gap: 10 }}>
