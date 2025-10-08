@@ -39,9 +39,7 @@ export default function ResetPasswordPage() {
     (async () => {
       try {
         const href = typeof window !== 'undefined' ? window.location.href : ''
-        // DEBUG: cosa contiene davvero l’URL?
         const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
-        // Tenta sempre l’exchange: gestisce sia hash (#) che query (?)
         if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
           await supabase.auth.exchangeCodeForSession(href)
         }
@@ -74,7 +72,6 @@ export default function ResetPasswordPage() {
       await supabase.auth.signOut()
       window.location.replace('/login?reset=ok')
     } catch (ex:any) {
-      // Mostra SEMPRE l’errore reale
       const msg = ex?.message || String(ex)
       console.error('updateUser error', ex)
       setErr(`Errore: ${msg}`)
@@ -99,7 +96,7 @@ export default function ResetPasswordPage() {
       <div style={card}>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Imposta nuova password</div>
 
-        {/* Ribbon di debug: lo rimuoveremo quando tutto è ok */}
+        {/* Ribbon di debug – rimuoveremo quando tutto è ok */}
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
 
         <form onSubmit={onSave} style={{ display: 'grid', gap: 10 }}>
@@ -110,7 +107,7 @@ export default function ResetPasswordPage() {
               required
               value={pwd}
               onChange={(e) => setPwd(e.target.value)}
-              style={{ padding: '10px 12px', border: '1px solid '#ddd', borderRadius: 8 }}
+              style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8 }}
             />
           </label>
 
@@ -125,7 +122,7 @@ export default function ResetPasswordPage() {
             />
           </label>
 
-        <button
+          <button
             type="submit"
             disabled={saving}
             style={{
