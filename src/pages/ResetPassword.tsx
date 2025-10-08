@@ -25,12 +25,56 @@ function getUrlTokensDebug(u: string){
   return out.join(' · ')
 }
 
+// aggiungi/lascia questo helper in alto (se non c’è già)
 function withTimeout<T>(p: Promise<T>, ms = 15000, label = 'operazione'): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
     p.then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
   })
 }
+
+// --- PATCH useEffect ---
+useEffect(() => {
+  let cancelled = false
+
+  ;(async () => {
+    const href = typeof window !== 'undefined' ? window.location.href : ''
+    const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
+
+    try {
+      // Prova a creare la sessione da URL (hash o query) ma con timeout
+      if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
+        await withTimeout(supabase.auth.exchangeCodeForSession(href), 12000, 'exchangeCodeForSession')
+      }
+    } catch (e:any) {
+      // non blocchiamo: segnaliamo nel debug
+      if (!cancelled) setDebug(`exchange error: ${e?.message || e} · url: ${urlDbg}`)
+    }
+
+    try {
+      // Leggi la sessione con timeout
+      const { data } = await withTimeout(supabase.auth.getSession(), 8000, 'getSession')
+      const email = data.session?.user?.email || ''
+      if (!cancelled) {
+        setDebug(prev => (prev ? prev + ' · ' : '') + `url: ${urlDbg} · hasSession=${!!data.session} · user=${email || '-'}`)
+        setCanReset(!!data.session)
+      }
+    } catch (e:any) {
+      if (!cancelled) {
+        setDebug(prev => (prev ? prev + ' · ' : '') + `getSession error: ${e?.message || e} · url: ${urlDbg}`)
+        setCanReset(false)
+      }
+    } finally {
+      if (!cancelled) setLoading(false)
+    }
+  })()
+
+  // failsafe extra: anche se qualcosa rimane sospeso, sblocca il loading dopo 4s
+  const hardFallback = setTimeout(() => { if (!cancelled) setLoading(false) }, 4000)
+
+  return () => { cancelled = true; clearTimeout(hardFallback) }
+}, [])
+
 
 export default function ResetPasswordPage() {
   const [pwd, setPwd] = useState('')
