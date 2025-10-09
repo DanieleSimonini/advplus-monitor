@@ -1,137 +1,77 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node'
+// api/set_password.ts — Edge runtime (niente @vercel/node)
+export const config = { runtime: 'edge' }
+
 import { createClient } from '@supabase/supabase-js'
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
-const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
-
-function applyCors(res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'authorization, Authorization, x-client-info, apikey, content-type')
-  res.setHeader('Access-Control-Max-Age', '86400')
+const { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY } = process.env as {
+  SUPABASE_URL?: string
+  SUPABASE_ANON_KEY?: string
+  SUPABASE_SERVICE_ROLE_KEY?: string
 }
 
-function extractAuthHeader(headers: VercelRequest['headers']): string | undefined {
-  const raw = headers.authorization ?? (headers as Record<string, string | string[] | undefined>).Authorization
-  if (!raw) return undefined
-  return Array.isArray(raw) ? raw.find(Boolean) : raw
-}
-
-function getBearerToken(authHeader: string): string | undefined {
-  const match = authHeader.match(/^\s*bearer\s+(.+)$/i)
-  return match?.[1]?.trim()
-}
-
-async function readRequestBody(req: VercelRequest): Promise<string | object | undefined> {
-  if (typeof req.body !== 'undefined') return req.body as any
-
-  return new Promise((resolve, reject) => {
-    let acc: Buffer[] = []
-    req
-      .on('data', (chunk: Buffer) => {
-        acc.push(Buffer.from(chunk))
-      })
-      .on('end', () => {
-        if (!acc.length) {
-          resolve(undefined)
-          return
-        }
-        try {
-          resolve(Buffer.concat(acc).toString('utf8'))
-        } catch (error) {
-          reject(error)
-        }
-      })
-      .on('error', reject)
+function json(code: number, data: unknown) {
+  return new Response(JSON.stringify(data), {
+    status: code,
+    headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' },
   })
 }
 
-async function parseBody(req: VercelRequest): Promise<{ password?: string }> {
-  const body = await readRequestBody(req)
-  if (!body) return {}
-  if (typeof body === 'string') {
-    const trimmed = body.trim()
-    if (!trimmed) return {}
-    try {
-      return JSON.parse(trimmed)
-    } catch (error) {
-      throw Object.assign(new Error('Invalid JSON body'), { status: 400 })
-    }
-  }
-  if (Buffer.isBuffer(body)) {
-    try {
-      return JSON.parse(body.toString('utf8'))
-    } catch (error) {
-      throw Object.assign(new Error('Invalid JSON body'), { status: 400 })
-    }
-  }
-  if (typeof body === 'object') {
-    return body as { password?: string }
-  }
-  throw Object.assign(new Error('Unsupported body format'), { status: 400 })
+function getAuthHeader(req: Request): string | undefined {
+  const h = req.headers.get('authorization') ?? req.headers.get('Authorization')
+  return h || undefined
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  applyCors(res)
+export default async function handler(req: Request): Promise<Response> {
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'access-control-allow-origin': '*',
+        'access-control-allow-headers': 'content-type, authorization',
+        'access-control-allow-methods': 'POST, OPTIONS',
+      },
+    })
+  }
 
-  if (req.method === 'OPTIONS') return res.status(204).end()
+  if (req.method !== 'POST') return json(405, { error: 'Method Not Allowed' })
+
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
+    return json(500, { error: 'Missing Supabase env on server' })
+  }
+
+  const authHeader = getAuthHeader(req)
+  if (!authHeader || !/^bearer\s+/i.test(authHeader)) {
+    return json(401, { error: 'Missing bearer token' })
+  }
+
+  let body: any = {}
+  try { body = await req.json() } catch {}
+  const password: unknown = body?.password
+  if (typeof password !== 'string' || password.length < 8) {
+    return json(400, { error: 'Password too short (min 8)' })
+  }
 
   try {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(500).json({ error: 'Missing Supabase env on server' })
-    }
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' })
-
-    const authHeader = extractAuthHeader(req.headers)
-    if (!authHeader || !/^bearer\s+/i.test(authHeader)) {
-      return res.status(401).json({ error: 'Missing bearer token' })
-    }
-
-    const accessToken = getBearerToken(authHeader)
-    if (!accessToken) {
-      return res.status(401).json({ error: 'Invalid bearer token' })
-    }
-
-    const { password } = await parseBody(req)
-    if (!password || password.length < 8) {
-      return res.status(400).json({ error: 'Password too short' })
-    }
-
+    // 1) Verifica token utente → id
     const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
     })
-    const { data: userData, error: userErr } = await userClient.auth.getUser(accessToken)
-    if (userErr || !userData?.user?.id) {
-      const status = typeof (userErr as { status?: number })?.status === 'number'
-        ? (userErr as { status?: number }).status
-        : 401
-      return res.status(status).json({ error: userErr?.message || 'Invalid session token' })
-    }
+    const { data: userData, error: userErr } = await userClient.auth.getUser()
+    if (userErr || !userData?.user) return json(401, { error: 'Invalid or expired token' })
 
     const userId = userData.user.id
-    const needsEmailConfirm = !userData.user.email_confirmed_at
 
+    // 2) Aggiorna password come admin (service role)
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
+      auth: { persistSession: false },
     })
+    const { error: updErr } = await admin.auth.admin.updateUserById(userId, { password })
+    if (updErr) return json(400, { error: updErr.message })
 
-    const { error: updateErr } = await admin.auth.admin.updateUserById(userId, {
-      password,
-      ...(needsEmailConfirm ? { email_confirm: true } : {}),
-    })
-
-    if (updateErr) {
-      const status = typeof (updateErr as { status?: number }).status === 'number'
-        ? ((updateErr as { status?: number }).status ?? 400)
-        : 400
-      return res.status(status).json({ error: updateErr.message })
-    }
-
-    return res.status(200).json({ ok: true })
+    return json(200, { ok: true })
   } catch (e: any) {
-    const status = typeof e?.status === 'number' ? e.status : 500
-    return res.status(status).json({ error: e?.message || String(e) })
+    return json(500, { error: e?.message ?? 'Unexpected error' })
   }
 }
