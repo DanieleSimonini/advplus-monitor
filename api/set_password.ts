@@ -1,148 +1,199 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { createClient } from '@supabase/supabase-js'
+import { useState, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { supabase } from '../lib/supabaseClient'
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
-const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
+export default function SetPasswordPage() {
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
 
-function applyCors(res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type')
-  res.setHeader('Access-Control-Max-Age', '86400')
-}
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
 
-function extractAuthHeader(headers: VercelRequest['headers']): string | undefined {
-  const raw = headers.authorization ?? headers.Authorization
-  if (!raw) return undefined
-  return Array.isArray(raw) ? raw.find(Boolean) : raw
-}
+  // Estrai token e verifica utente dall'URL
+  useEffect(() => {
+    const extractTokenAndUser = async () => {
+      // Supabase mette il token nell'hash (#) dell'URL
+      const hashParams = new URLSearchParams(window.location.hash.substring(1))
+      const token = hashParams.get('access_token') || searchParams.get('token')
+      
+      if (!token) {
+        setError('Link non valido o scaduto')
+        return
+      }
 
-function parseBody(req: VercelRequest): { password?: string } {
-  const body = req.body
-  if (!body) return {}
-  if (typeof body === 'string') {
-    try {
-      return JSON.parse(body)
-    } catch (error) {
-      console.error('JSON parse error:', error)
-      throw new Error('Invalid JSON body')
-    }
-  }
-  if (typeof body === 'object') {
-    return body as { password?: string }
-  }
-  throw new Error('Unsupported body format')
-}
+      setAccessToken(token)
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  applyCors(res)
+      // Verifica il token e ottieni l'email dell'utente
+      const { data: { user }, error: userError } = await supabase.auth.getUser(token)
+      
+      if (userError || !user) {
+        setError('Link non valido o scaduto')
+        return
+      }
 
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end()
-  }
-
-  try {
-    // Validate environment variables
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
-      console.error('Missing Supabase environment variables')
-      return res.status(500).json({ error: 'Server configuration error' })
+      setUserEmail(user.email || null)
     }
 
-    // Only allow POST
-    if (req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method Not Allowed' })
-    }
+    extractTokenAndUser()
+  }, [searchParams])
 
-    // Extract and validate Authorization header
-    const authHeader = extractAuthHeader(req.headers)
-    if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) {
-      console.error('Missing or invalid authorization header')
-      return res.status(401).json({ error: 'Missing or invalid authorization token' })
-    }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
 
-    // Parse and validate password
-    const { password } = parseBody(req)
-    if (!password || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Password is required' })
-    }
+    // Validazioni
     if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' })
+      setError('La password deve essere di almeno 8 caratteri')
+      return
     }
 
-    console.log('Verifying user token...')
-
-    // Create client with user's authorization header
-    // This is the CORRECT way to verify the user's JWT
-    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { 
-        headers: { 
-          Authorization: authHeader 
-        } 
-      },
-      auth: { 
-        persistSession: false,
-        autoRefreshToken: false 
-      },
-    })
-
-    // Get user from the token (no need to pass the token again)
-    const { data: userData, error: userError } = await userClient.auth.getUser()
-    
-    if (userError) {
-      console.error('User verification error:', userError)
-      return res.status(401).json({ error: userError.message || 'Invalid or expired token' })
+    if (password !== confirmPassword) {
+      setError('Le password non coincidono')
+      return
     }
 
-    if (!userData?.user?.id) {
-      console.error('No user ID found')
-      return res.status(401).json({ error: 'Invalid session' })
+    if (!accessToken) {
+      setError('Token mancante. Richiedi un nuovo link.')
+      return
     }
 
-    const userId = userData.user.id
-    const needsEmailConfirm = !userData.user.email_confirmed_at
-
-    console.log(`Updating password for user: ${userId}`)
-
-    // Create admin client
-    const adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { 
-        persistSession: false,
-        autoRefreshToken: false 
-      },
-    })
-
-    // Update password and confirm email if needed
-    const updatePayload: any = { password }
-    if (needsEmailConfirm) {
-      updatePayload.email_confirm = true
+    if (!userEmail) {
+      setError('Email utente non trovata. Richiedi un nuovo link.')
+      return
     }
 
-    const { error: updateErr } = await adminClient.auth.admin.updateUserById(
-      userId,
-      updatePayload
-    )
+    setLoading(true)
 
-    if (updateErr) {
-      console.error('Password update error:', updateErr)
-      const status = (updateErr as any).status || 400
-      return res.status(status).json({ 
-        error: updateErr.message || 'Failed to update password' 
+    try {
+      // 1. Chiama l'endpoint per impostare la password
+      const response = await fetch('/api/set_password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ password }),
       })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Errore durante l\'impostazione della password')
+      }
+
+      console.log('Password impostata con successo')
+
+      // 2. IMPORTANTE: Fai il login automatico con le nuove credenziali
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: userEmail,
+        password: password,
+      })
+
+      if (signInError) {
+        console.error('Errore durante il login automatico:', signInError)
+        // Se il login automatico fallisce, redirect al login manuale
+        setError('Password impostata! Effettua il login manualmente.')
+        setTimeout(() => {
+          navigate('/login', { 
+            state: { message: 'Password impostata con successo! Effettua il login.' }
+          })
+        }, 2000)
+        return
+      }
+
+      if (signInData.session) {
+        console.log('Login automatico riuscito')
+        // Login riuscito! Redirect alla dashboard
+        navigate('/dashboard', { replace: true })
+      } else {
+        // Nessuna sessione creata, redirect al login
+        navigate('/login', { 
+          state: { message: 'Password impostata con successo! Effettua il login.' }
+        })
+      }
+
+    } catch (err: any) {
+      console.error('Errore:', err)
+      setError(err.message || 'Si è verificato un errore')
+      setLoading(false)
     }
-
-    console.log('Password updated successfully')
-    return res.status(200).json({ 
-      ok: true,
-      message: 'Password set successfully' 
-    })
-
-  } catch (e: any) {
-    console.error('Unexpected error:', e)
-    return res.status(500).json({ 
-      error: e?.message || 'Internal server error' 
-    })
   }
+
+  if (!accessToken && !error) {
+    return (
+      <div className="loading-container">
+        <p>Verifica in corso...</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="set-password-container">
+      <div className="logo-container">
+        <img src="/logo.svg" alt="GuideUp" />
+      </div>
+
+      <div className="set-password-card">
+        <h1>Imposta la tua password</h1>
+        
+        {userEmail && (
+          <p className="user-email">Account: <strong>{userEmail}</strong></p>
+        )}
+
+        {error && (
+          <div className="error-message" style={{ 
+            padding: '12px', 
+            marginBottom: '20px', 
+            backgroundColor: '#fee', 
+            color: '#c00',
+            borderRadius: '4px'
+          }}>
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label htmlFor="password">Nuova Password</label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Minimo 8 caratteri"
+              required
+              disabled={loading}
+              autoComplete="new-password"
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="confirmPassword">Conferma Password</label>
+            <input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Ripeti la password"
+              required
+              disabled={loading}
+              autoComplete="new-password"
+            />
+          </div>
+
+          <button 
+            type="submit" 
+            className="btn-primary"
+            disabled={loading}
+          >
+            {loading ? 'Caricamento...' : 'Imposta Password'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
 }
