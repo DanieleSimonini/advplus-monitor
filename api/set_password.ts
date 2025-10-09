@@ -1,178 +1,86 @@
+// api/set_password.ts (Node runtime su Vercel)
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
+const { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY } = process.env
 
-function applyCors(res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type')
-  res.setHeader('Access-Control-Max-Age', '86400')
+function json(res: VercelResponse, code: number, data: unknown) {
+  res.status(code).setHeader('content-type', 'application/json')
+  res.send(JSON.stringify(data))
 }
 
-function extractAuthHeader(headers: VercelRequest['headers']): string | undefined {
-  const raw = headers.authorization ?? (headers as any).Authorization
-  if (!raw) return undefined
-  return Array.isArray(raw) ? raw.find(Boolean) : raw
+// Estrae l'Authorization in modo robusto (Bearer ...)
+function extractAuthHeader(req: VercelRequest): string | undefined {
+  const h = (req.headers['authorization'] || (req.headers as any)['Authorization']) as string | undefined
+  if (!h) return undefined
+  return h
 }
 
-function getBearerToken(authHeader: string): string | undefined {
-  const match = authHeader.match(/^\s*bearer\s+(.+)$/i)
-  return match?.[1]?.trim()
-}
-
-function parseBody(req: VercelRequest): { password?: string } {
-  const body = req.body
-  if (!body) return {}
-  if (typeof body === 'string') {
-    try {
-      return JSON.parse(body)
-    } catch (error) {
-      console.error('JSON parse error:', error)
-      throw new Error('Invalid JSON body')
-    }
+function parseBody(req: VercelRequest): any {
+  if (!req.body) return {}
+  if (typeof req.body === 'string') {
+    try { return JSON.parse(req.body) } catch { return {} }
   }
-  if (typeof body === 'object') {
-    return body as { password?: string }
-  }
-  throw new Error('Unsupported body format')
+  return req.body
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  applyCors(res)
-
+  // CORS preflight (se chiami da browser)
   if (req.method === 'OPTIONS') {
+    res.setHeader('access-control-allow-origin', '*')
+    res.setHeader('access-control-allow-headers', 'content-type, authorization')
+    res.setHeader('access-control-allow-methods', 'POST, OPTIONS')
     return res.status(204).end()
   }
 
+  // Solo POST
+  if (req.method !== 'POST') return json(res, 405, { error: 'Method Not Allowed' })
+
+  // Env check
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
+    return json(res, 500, { error: 'Missing Supabase env on server' })
+  }
+
+  // Authorization: Bearer <access_token_utente>
+  const authHeader = extractAuthHeader(req)
+  if (!authHeader || !/^bearer\s+/i.test(authHeader)) {
+    return json(res, 401, { error: 'Missing bearer token' })
+  }
+
+  // Body { "password": "NuovaPassword" }
+  const body = parseBody(req)
+  const password: unknown = body?.password
+  if (typeof password !== 'string' || password.length < 8) {
+    return json(res, 400, { error: 'Password too short (min 8)' })
+  }
+
   try {
-    // 1. Verifica variabili d'ambiente
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
-      console.error('Missing env vars:', {
-        hasUrl: !!SUPABASE_URL,
-        hasAnonKey: !!SUPABASE_ANON_KEY,
-        hasServiceKey: !!SUPABASE_SERVICE_ROLE_KEY,
-      })
-      return res.status(500).json({ error: 'Server configuration error' })
-    }
-
-    // 2. Verifica metodo
-    if (req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method Not Allowed' })
-    }
-
-    // 3. Estrai e valida il token
-    const authHeader = extractAuthHeader(req.headers)
-    if (!authHeader) {
-      console.error('No auth header found')
-      return res.status(401).json({ error: 'Authorization header required' })
-    }
-
-    if (!/^bearer\s+/i.test(authHeader)) {
-      console.error('Invalid auth header format')
-      return res.status(401).json({ error: 'Bearer token required' })
-    }
-
-    const accessToken = getBearerToken(authHeader)
-    if (!accessToken) {
-      console.error('Could not extract bearer token')
-      return res.status(401).json({ error: 'Invalid bearer token format' })
-    }
-
-    console.log('Token received, length:', accessToken.length)
-
-    // 4. Parse e valida la password
-    let password: string
-    try {
-      const body = parseBody(req)
-      password = body.password || ''
-    } catch (error) {
-      console.error('Body parse error:', error)
-      return res.status(400).json({ error: 'Invalid request body' })
-    }
-
-    if (!password || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Password is required' })
-    }
-
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' })
-    }
-
-    console.log('Password validated, length:', password.length)
-
-    // 5. Verifica l'utente con il token
+    // 1) Verifica il token utente e recupera il suo id (client con anon + header Authorization)
     const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { 
-        persistSession: false, 
-        autoRefreshToken: false 
-      },
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false }
     })
 
-    console.log('Verifying user with token...')
-    const { data: userData, error: userError } = await userClient.auth.getUser(accessToken)
-
-    if (userError) {
-      console.error('User verification error:', userError)
-      return res.status(401).json({ 
-        error: 'Invalid or expired token',
-        details: userError.message 
-      })
+    const { data: getUserData, error: getUserErr } = await userClient.auth.getUser()
+    if (getUserErr || !getUserData?.user) {
+      return json(res, 401, { error: 'Invalid or expired token' })
     }
 
-    if (!userData?.user?.id) {
-      console.error('No user data returned')
-      return res.status(401).json({ error: 'Invalid session' })
-    }
+    const userId = getUserData.user.id
 
-    console.log('User verified:', userData.user.id)
-    const needsEmailConfirm = !userData.user.email_confirmed_at
-
-    // 6. Aggiorna la password usando admin client
+    // 2) Aggiorna password con il client admin (service role)
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { 
-        persistSession: false, 
-        autoRefreshToken: false 
-      },
+      auth: { persistSession: false }
     })
 
-    console.log('Updating password for user:', userData.user.id)
-    
-    const updatePayload: any = { password }
-    if (needsEmailConfirm) {
-      updatePayload.email_confirm = true
-      console.log('Will also confirm email')
-    }
-
-    const { error: updateErr } = await admin.auth.admin.updateUserById(
-      userData.user.id,
-      updatePayload
-    )
-
-    if (updateErr) {
-      console.error('Password update error:', updateErr)
-      const status = (updateErr as any).status || 400
-      return res.status(status).json({ 
-        error: 'Failed to update password',
-        details: updateErr.message 
-      })
-    }
-
-    console.log('Password updated successfully')
-
-    // 7. Successo
-    return res.status(200).json({ 
-      ok: true,
-      message: 'Password set successfully'
+    const { data: upd, error: updErr } = await admin.auth.admin.updateUserById(userId, {
+      password
     })
 
-  } catch (error: any) {
-    console.error('Unexpected error:', error)
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      details: error?.message || String(error)
-    })
+    if (updErr) return json(res, 400, { error: updErr.message })
+
+    return json(res, 200, { ok: true })
+  } catch (e: any) {
+    return json(res, 500, { error: e?.message ?? 'Unexpected error' })
   }
 }
