@@ -106,7 +106,7 @@ export default async function handler(req: any, res: any) {
     const { password } = await parseBody(req)
     if (!password || password.length < 8) return res.status(400).json({ error: 'Password too short' })
 
-    // valida il token lato server (senza chiamare anon client)
+    // valida il token lato server
     const claims = decodeJwt(accessToken)
     if (!claims?.sub || typeof claims.sub !== 'string') {
       return res.status(401).json({ error: 'Invalid session token' })
