@@ -1,15 +1,16 @@
 diff --git a/api/set_password.ts b/api/set_password.ts
-index 32e90b13ec6d7d496dcb3b6b95ab4f081e939e62..133ac730819365dfb7a2abfc55b6ed77d4540c88 100644
+index 32e90b13ec6d7d496dcb3b6b95ab4f081e939e62..1ecb602b3b4e83bffc69bd2d67b6d3331244837a 100644
 --- a/api/set_password.ts
 +++ b/api/set_password.ts
-@@ -1,45 +1,88 @@
+@@ -1,45 +1,98 @@
 - if (req.method === 'OPTIONS') return res.status(200).send('ok')
 +import type { VercelRequest, VercelResponse } from '@vercel/node'
 +import { createClient } from '@supabase/supabase-js'
 +
 +const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
 +const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
-+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
++const SUPABASE_SERVICE_ROLE_KEY =
++  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
 +
 +function applyCors(res: VercelResponse) {
 +  res.setHeader('Access-Control-Allow-Origin', '*')
@@ -22,6 +23,11 @@ index 32e90b13ec6d7d496dcb3b6b95ab4f081e939e62..133ac730819365dfb7a2abfc55b6ed77
 +  const raw = headers.authorization ?? (headers as Record<string, string | string[] | undefined>).Authorization
 +  if (!raw) return undefined
 +  return Array.isArray(raw) ? raw.find(Boolean) : raw
++}
++
++function getBearerToken(authHeader: string): string | undefined {
++  const match = authHeader.match(/^\s*bearer\s+(.+)$/i)
++  return match?.[1]?.trim()
 +}
 +
 +function parseBody(req: VercelRequest): { password?: string } {
@@ -60,6 +66,11 @@ index 32e90b13ec6d7d496dcb3b6b95ab4f081e939e62..133ac730819365dfb7a2abfc55b6ed77
 -    const { password } = (typeof req.body === 'string' ? JSON.parse(req.body) : req.body) || {}
 -    if (typeof password !== 'string' || password.length < 8) {
 +
++    const accessToken = getBearerToken(authHeader)
++    if (!accessToken) {
++      return res.status(401).json({ error: 'Invalid bearer token' })
++    }
++
 +    const { password } = parseBody(req)
 +    if (!password || password.length < 8) {
        return res.status(400).json({ error: 'Password too short' })
@@ -69,7 +80,6 @@ index 32e90b13ec6d7d496dcb3b6b95ab4f081e939e62..133ac730819365dfb7a2abfc55b6ed77
      const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 -      global: { headers: { Authorization: auth as string } },
 -      auth: { persistSession: false },
-+      global: { headers: { Authorization: authHeader } },
 +      auth: { persistSession: false, autoRefreshToken: false },
      })
 -    const { data: u, error: uerr } = await userClient.auth.getUser()
@@ -81,7 +91,7 @@ index 32e90b13ec6d7d496dcb3b6b95ab4f081e939e62..133ac730819365dfb7a2abfc55b6ed77
 -    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
 -    const { error: updateErr } = await admin.auth.admin.updateUserById(userId, {
 +
-+    const { data: userData, error: userError } = await userClient.auth.getUser()
++    const { data: userData, error: userError } = await userClient.auth.getUser(accessToken)
 +    if (userError || !userData?.user?.id) {
 +      return res.status(401).json({ error: userError?.message || 'Invalid session' })
 +    }
