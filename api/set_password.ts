@@ -1,44 +1,178 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 
-function decodeJwt(t: string){const p=t.split('.');if(p.length<2)return;try{const b=p[1].replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(p[1].length/4)*4,'=');return JSON.parse(Buffer.from(b,'base64').toString('utf8'))}catch{return}}
-function isExpired(c?:{exp?:number}){if(!c?.exp)return false;return c.exp<Math.floor(Date.now()/1000)}
-function cors(res:any){res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Methods','POST, OPTIONS');res.setHeader('Access-Control-Allow-Headers','authorization, x-client-info, apikey, content-type');res.setHeader('Access-Control-Max-Age','86400')}
-function authHeader(h:any){const r=h?.authorization??h?.Authorization;return Array.isArray(r)?r.find(Boolean):r}
-function bearer(h:string){const m=h.match(/^\s*bearer\s+(.+)$/i);return m?.[1]?.trim()}
-async function readBody(req:any){if(typeof req.body!=='undefined')return req.body;return await new Promise((ok,ko)=>{const a:Buffer[]=[];req.on('data',(c:Buffer)=>a.push(Buffer.from(c))).on('end',()=>{if(!a.length)return ok(undefined);try{ok(Buffer.concat(a).toString('utf8'))}catch(e){ko(e)}}).on('error',ko)})}
-async function parseBody(req:any){const b=await readBody(req);if(!b)return{};if(typeof b==='string'){const t=b.trim();if(!t)return{};try{return JSON.parse(t)}catch{const e:any=new Error('Invalid JSON body');e.status=400;throw e}}if(Buffer.isBuffer(b)){try{return JSON.parse(b.toString('utf8'))}catch{const e:any=new Error('Invalid JSON body');e.status=400;throw e}}if(typeof b==='object')return b as any;const e:any=new Error('Unsupported body format');e.status=400;throw e}
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || ''
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || ''
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
 
-const URL=process.env.SUPABASE_URL||process.env.VITE_SUPABASE_URL||process.env.NEXT_PUBLIC_SUPABASE_URL||''
-const ANON=process.env.SUPABASE_ANON_KEY||process.env.VITE_SUPABASE_ANON_KEY||process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY||''
-const SRK=process.env.SUPABASE_SERVICE_ROLE_KEY||process.env.SUPABASE_SERVICE_KEY||''
+function applyCors(res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type')
+  res.setHeader('Access-Control-Max-Age', '86400')
+}
 
-export default async function handler(req:any,res:any){
-  cors(res); if(req.method==='OPTIONS')return res.status(204).end()
-  try{
-    if(!URL||!ANON||!SRK) return res.status(500).json({error:'Missing Supabase env on server'})
-    if(req.method!=='POST') return res.status(405).json({error:'Method Not Allowed'})
+function extractAuthHeader(headers: VercelRequest['headers']): string | undefined {
+  const raw = headers.authorization ?? (headers as any).Authorization
+  if (!raw) return undefined
+  return Array.isArray(raw) ? raw.find(Boolean) : raw
+}
 
-    const ah=authHeader(req.headers); if(!ah||!/^\s*bearer\s+/i.test(ah)) return res.status(401).json({error:'Missing bearer token'})
-    const tok=bearer(ah); if(!tok) return res.status(401).json({error:'Invalid bearer token'})
+function getBearerToken(authHeader: string): string | undefined {
+  const match = authHeader.match(/^\s*bearer\s+(.+)$/i)
+  return match?.[1]?.trim()
+}
 
-    const {password}=await parseBody(req); if(!password||password.length<8) return res.status(400).json({error:'Password too short'})
+function parseBody(req: VercelRequest): { password?: string } {
+  const body = req.body
+  if (!body) return {}
+  if (typeof body === 'string') {
+    try {
+      return JSON.parse(body)
+    } catch (error) {
+      console.error('JSON parse error:', error)
+      throw new Error('Invalid JSON body')
+    }
+  }
+  if (typeof body === 'object') {
+    return body as { password?: string }
+  }
+  throw new Error('Unsupported body format')
+}
 
-    const c=decodeJwt(tok); if(!c?.sub||typeof c.sub!=='string') return res.status(401).json({error:'Invalid session token'})
-    if(isExpired(c)) return res.status(401).json({error:'Session token expired'})
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  applyCors(res)
 
-    const admin=createClient(URL, SRK, { auth:{persistSession:false, autoRefreshToken:false} })
-    const { data: u, error: uErr } = await admin.auth.admin.getUserById(c.sub)
-    if(uErr||!u?.user?.id){const s=typeof (uErr as any)?.status==='number'?(uErr as any).status:401;return res.status(s).json({error:uErr?.message||'User not found'})}
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end()
+  }
 
-    const { error: upErr } = await admin.auth.admin.updateUserById(u.user.id, {
-      password,
-      ...(u.user.email_confirmed_at ? {} : { email_confirm: true }),
+  try {
+    // 1. Verifica variabili d'ambiente
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
+      console.error('Missing env vars:', {
+        hasUrl: !!SUPABASE_URL,
+        hasAnonKey: !!SUPABASE_ANON_KEY,
+        hasServiceKey: !!SUPABASE_SERVICE_ROLE_KEY,
+      })
+      return res.status(500).json({ error: 'Server configuration error' })
+    }
+
+    // 2. Verifica metodo
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method Not Allowed' })
+    }
+
+    // 3. Estrai e valida il token
+    const authHeader = extractAuthHeader(req.headers)
+    if (!authHeader) {
+      console.error('No auth header found')
+      return res.status(401).json({ error: 'Authorization header required' })
+    }
+
+    if (!/^bearer\s+/i.test(authHeader)) {
+      console.error('Invalid auth header format')
+      return res.status(401).json({ error: 'Bearer token required' })
+    }
+
+    const accessToken = getBearerToken(authHeader)
+    if (!accessToken) {
+      console.error('Could not extract bearer token')
+      return res.status(401).json({ error: 'Invalid bearer token format' })
+    }
+
+    console.log('Token received, length:', accessToken.length)
+
+    // 4. Parse e valida la password
+    let password: string
+    try {
+      const body = parseBody(req)
+      password = body.password || ''
+    } catch (error) {
+      console.error('Body parse error:', error)
+      return res.status(400).json({ error: 'Invalid request body' })
+    }
+
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Password is required' })
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' })
+    }
+
+    console.log('Password validated, length:', password.length)
+
+    // 5. Verifica l'utente con il token
+    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { 
+        persistSession: false, 
+        autoRefreshToken: false 
+      },
     })
-    if(upErr){const s=typeof (upErr as any).status==='number'?((upErr as any).status??400):400;return res.status(s).json({error:upErr.message})}
 
-    return res.status(200).json({ ok: true })
-  }catch(e:any){
-    const s=typeof e?.status==='number'?e.status:500
-    return res.status(s).json({error:e?.message||String(e)})
+    console.log('Verifying user with token...')
+    const { data: userData, error: userError } = await userClient.auth.getUser(accessToken)
+
+    if (userError) {
+      console.error('User verification error:', userError)
+      return res.status(401).json({ 
+        error: 'Invalid or expired token',
+        details: userError.message 
+      })
+    }
+
+    if (!userData?.user?.id) {
+      console.error('No user data returned')
+      return res.status(401).json({ error: 'Invalid session' })
+    }
+
+    console.log('User verified:', userData.user.id)
+    const needsEmailConfirm = !userData.user.email_confirmed_at
+
+    // 6. Aggiorna la password usando admin client
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { 
+        persistSession: false, 
+        autoRefreshToken: false 
+      },
+    })
+
+    console.log('Updating password for user:', userData.user.id)
+    
+    const updatePayload: any = { password }
+    if (needsEmailConfirm) {
+      updatePayload.email_confirm = true
+      console.log('Will also confirm email')
+    }
+
+    const { error: updateErr } = await admin.auth.admin.updateUserById(
+      userData.user.id,
+      updatePayload
+    )
+
+    if (updateErr) {
+      console.error('Password update error:', updateErr)
+      const status = (updateErr as any).status || 400
+      return res.status(status).json({ 
+        error: 'Failed to update password',
+        details: updateErr.message 
+      })
+    }
+
+    console.log('Password updated successfully')
+
+    // 7. Successo
+    return res.status(200).json({ 
+      ok: true,
+      message: 'Password set successfully'
+    })
+
+  } catch (error: any) {
+    console.error('Unexpected error:', error)
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      details: error?.message || String(error)
+    })
   }
 }
