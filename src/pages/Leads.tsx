@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
 /**
- * Leads.tsx — CRUD completo (Lead + Contatti/Appunt./Proposte/Contratti)
- * (LEFT) Lista lead con filtri, ricerca, ordinamento, paginazione (10), export CSV
- * (RIGHT) Form + tab invariati
+ * Leads.tsx — Elenco (sinistra) + Scheda (destra)
+ * Sinistra: paginazione, filtri (assegnatario, stato, contattato/appuntamento/proposta/contratto),
+ * ricerca per Cognome+Nome, ordinamenti richiesti, esportazione CSV con aggregati.
+ * Destra: invariata rispetto alla tua versione.
  */
 
 // === Opzioni UI ===
@@ -83,7 +84,6 @@ type FormState = {
 }
 
 // === UI helpers ===
-const brandBlue = 'var(--brand-primary-600, #0029ae)'
 const box: React.CSSProperties = {
   background:'var(--card, #fff)',
   border:'1px solid var(--border, #eee)',
@@ -104,20 +104,32 @@ const ipt: React.CSSProperties = {
 const label: React.CSSProperties = { fontSize:12, color:'var(--muted, #666)' }
 const row: React.CSSProperties = { display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)', gap:12 }
 
-// ====== NOVITÀ LISTA SINISTRA: stati aggregati/filtri/paging ======
-type Agg = { count: number, lastTs?: string | null, lastNotes?: string | null, sumAmount?: number }
-type AggMap = Record<string, Agg>
-
+/* ---- Nuovo: ordinamenti elenco ---- */
 type SortKey =
   | 'last_name_az'
   | 'first_name_az'
   | 'created_desc'
-  | 'last_contact_desc'
+  | 'last_activity_desc'
   | 'last_appointment_desc'
   | 'last_proposal_desc'
   | 'last_contract_desc'
 
-function ensureAgg(a?: Agg): Agg { return a || { count: 0, lastTs: null, lastNotes: null, sumAmount: 0 } }
+/* ---- Aggregati per i filtri/ordinamento/esporta ---- */
+type Aggs = {
+  contactsCount: number
+  lastContactTs?: string
+  lastContactNote?: string
+  appointmentsCount: number
+  lastAppointmentTs?: string
+  lastAppointmentNote?: string
+  proposalsCount: number
+  lastProposalTs?: string
+  lastProposalNote?: string
+  contractsCount: number
+  lastContractTs?: string
+  lastContractNote?: string
+  contractsSum: number
+}
 
 export default function LeadsPage(){
   // auth/ruolo corrente
@@ -129,7 +141,7 @@ export default function LeadsPage(){
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // advisors
+  // advisors per assegnazione owner
   const [advisors, setAdvisors] = useState<AdvisorRow[]>([])
 
   // selezione + edit
@@ -137,7 +149,7 @@ export default function LeadsPage(){
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
-  // form lead
+  // form lead (destra)
   const emptyForm: FormState = {
     is_agency_client: null,
     owner_id: null,
@@ -148,40 +160,41 @@ export default function LeadsPage(){
   }
   const [form, setForm] = useState<FormState>(emptyForm)
 
-  // STEP 2: tabelle collegate (per la scheda a destra – invariato)
+  // tabelle collegate (destra)
   const [activities, setActivities] = useState<any[]>([])
   const [editingActId, setEditingActId] = useState<string|null>(null)
   const [actDraft, setActDraft] = useState<any>({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' })
+
   const [appointments, setAppointments] = useState<any[]>([])
   const [editingAppId, setEditingAppId] = useState<string|null>(null)
   const [appDraft, setAppDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
+
   const [proposals, setProposals] = useState<any[]>([])
   const [editingPropId, setEditingPropId] = useState<string|null>(null)
   const [propDraft, setPropDraft] = useState<any>({ ts:'', line:'', amount:0, notes:'' })
+
   const [contracts, setContracts] = useState<any[]>([])
   const [editingCtrId, setEditingCtrId] = useState<string|null>(null)
   const [ctrDraft, setCtrDraft] = useState<any>({ ts:'', contract_type:CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' })
+
   const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'proposte'|'contratti'>('contatti')
 
-  // ===== Aggregati per la LISTA SINISTRA =====
-  const [aggActivities, setAggActivities] = useState<AggMap>({})
-  const [aggAppointments, setAggAppointments] = useState<AggMap>({})
-  const [aggProposals, setAggProposals] = useState<AggMap>({})
-  const [aggContracts, setAggContracts] = useState<AggMap>({})
+  // ---- Nuovo: filtri elenco + ricerca + ordinamento + paginazione ----
+  const [assigneeFilter, setAssigneeFilter] = useState<string>('') // vuoto = tutti
+  const [onlyWorking, setOnlyWorking] = useState<boolean>(true)     // default: selezionato
+  const [onlyContacted, setOnlyContacted] = useState<boolean>(false)
+  const [onlyAppointment, setOnlyAppointment] = useState<boolean>(false)
+  const [onlyProposal, setOnlyProposal] = useState<boolean>(false)
+  const [onlyContract, setOnlyContract] = useState<boolean>(false)
 
-  // Filtri / ricerca / ordine
-  const [assigneeFilter, setAssigneeFilter] = useState<string>('') // user_id
-  const [fltWorking, setFltWorking] = useState<boolean>(true)       // default ON
-  const [fltContacted, setFltContacted] = useState<boolean>(false)
-  const [fltAppointment, setFltAppointment] = useState<boolean>(false)
-  const [fltProposal, setFltProposal] = useState<boolean>(false)
-  const [fltContract, setFltContract] = useState<boolean>(false)
-  const [search, setSearch] = useState<string>('')
+  const [q, setQ] = useState<string>('')
   const [sortBy, setSortBy] = useState<SortKey>('last_name_az')
 
-  // Paginazione
   const PAGE_SIZE = 10
   const [page, setPage] = useState<number>(1)
+
+  // aggregati per leadId
+  const [aggs, setAggs] = useState<Record<string, Aggs>>({})
 
   // bootstrap
   useEffect(()=>{ (async()=>{
@@ -199,92 +212,83 @@ export default function LeadsPage(){
     finally{ setLoading(false) }
   })() },[])
 
+  // carica leads
   async function loadLeads(){
     const { data, error } = await supabase
       .from('leads')
       .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
       .order('created_at', { ascending:false })
     if (error){ setErr(error.message); return }
-    const rows = (data||[]) as Lead[]
-    setLeads(rows)
-    // carico aggregati per i lead presenti
-    const ids = rows.map(r=>r.id!).filter(Boolean)
-    await loadAggregates(ids)
-  }
-
-  async function loadAggregates(leadIds: string[]){
-    if (!leadIds.length) { setAggActivities({}); setAggAppointments({}); setAggProposals({}); setAggContracts({}); return }
-    // Activities
-    const { data: acts } = await supabase
-      .from('activities')
-      .select('lead_id, ts, notes')
-      .in('lead_id', leadIds)
-    const aMap: AggMap = {}
-    ;(acts||[]).forEach(r=>{
-      const key = r.lead_id as string
-      const cur = ensureAgg(aMap[key])
-      cur.count += 1
-      if (!cur.lastTs || (r.ts && r.ts > cur.lastTs)) { cur.lastTs = r.ts; cur.lastNotes = r.notes||null }
-      aMap[key] = cur
-    })
-    setAggActivities(aMap)
-
-    // Appointments
-    const { data: apps } = await supabase
-      .from('appointments')
-      .select('lead_id, ts, notes')
-      .in('lead_id', leadIds)
-    const appMap: AggMap = {}
-    ;(apps||[]).forEach(r=>{
-      const key = r.lead_id as string
-      const cur = ensureAgg(appMap[key])
-      cur.count += 1
-      if (!cur.lastTs || (r.ts && r.ts > cur.lastTs)) { cur.lastTs = r.ts; cur.lastNotes = r.notes||null }
-      appMap[key] = cur
-    })
-    setAggAppointments(appMap)
-
-    // Proposals
-    const { data: props } = await supabase
-      .from('proposals')
-      .select('lead_id, ts, notes')
-      .in('lead_id', leadIds)
-    const propMap: AggMap = {}
-    ;(props||[]).forEach(r=>{
-      const key = r.lead_id as string
-      const cur = ensureAgg(propMap[key])
-      cur.count += 1
-      if (!cur.lastTs || (r.ts && r.ts > cur.lastTs)) { cur.lastTs = r.ts; cur.lastNotes = r.notes||null }
-      propMap[key] = cur
-    })
-    setAggProposals(propMap)
-
-    // Contracts
-    const { data: ctrs } = await supabase
-      .from('contracts')
-      .select('lead_id, ts, notes, amount')
-      .in('lead_id', leadIds)
-    const ctrMap: AggMap = {}
-    ;(ctrs||[]).forEach((r:any)=>{
-      const key = r.lead_id as string
-      const cur = ensureAgg(ctrMap[key])
-      cur.count += 1
-      cur.sumAmount = (cur.sumAmount || 0) + Number(r.amount||0)
-      if (!cur.lastTs || (r.ts && r.ts > cur.lastTs)) { cur.lastTs = r.ts; cur.lastNotes = r.notes||null }
-      ctrMap[key] = cur
-    })
-    setAggContracts(ctrMap)
+    const arr = (data || []) as Lead[]
+    setLeads(arr)
+    // carica aggregati per tutti i lead correnti
+    await loadAggregates(arr.map(x=>x.id!).filter(Boolean))
   }
 
   async function loadAdvisors(){
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('advisors')
       .select('user_id,email,full_name,role')
       .order('full_name', { ascending:true })
-    if (!error) setAdvisors((data||[]) as AdvisorRow[])
+    setAdvisors((data||[]) as AdvisorRow[])
   }
 
-  // loader tabelle collegate (per la scheda a destra – invariato)
+  // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
+  async function loadAggregates(leadIds: string[]){
+    if (!leadIds.length){ setAggs({}); return }
+    const [acts, apps, props, ctrs] = await Promise.all([
+      supabase.from('activities').select('lead_id, ts, notes').in('lead_id', leadIds),
+      supabase.from('appointments').select('lead_id, ts, notes').in('lead_id', leadIds),
+      supabase.from('proposals').select('lead_id, ts, notes').in('lead_id', leadIds),
+      supabase.from('contracts').select('lead_id, ts, notes, amount').in('lead_id', leadIds),
+    ])
+
+    const map: Record<string, Aggs> = {}
+
+    function ensure(id:string){ if (!map[id]) map[id] = { contactsCount:0, appointmentsCount:0, proposalsCount:0, contractsCount:0, contractsSum:0 } }
+
+    // activities
+    ;(acts.data||[]).forEach((r:any)=>{
+      const id = r.lead_id; ensure(id)
+      map[id].contactsCount += 1
+      if (!map[id].lastContactTs || r.ts > map[id].lastContactTs!){
+        map[id].lastContactTs = r.ts
+        map[id].lastContactNote = r.notes || ''
+      }
+    })
+    // appointments
+    ;(apps.data||[]).forEach((r:any)=>{
+      const id = r.lead_id; ensure(id)
+      map[id].appointmentsCount += 1
+      if (!map[id].lastAppointmentTs || r.ts > map[id].lastAppointmentTs!){
+        map[id].lastAppointmentTs = r.ts
+        map[id].lastAppointmentNote = r.notes || ''
+      }
+    })
+    // proposals
+    ;(props.data||[]).forEach((r:any)=>{
+      const id = r.lead_id; ensure(id)
+      map[id].proposalsCount += 1
+      if (!map[id].lastProposalTs || r.ts > map[id].lastProposalTs!){
+        map[id].lastProposalTs = r.ts
+        map[id].lastProposalNote = r.notes || ''
+      }
+    })
+    // contracts
+    ;(ctrs.data||[]).forEach((r:any)=>{
+      const id = r.lead_id; ensure(id)
+      map[id].contractsCount += 1
+      map[id].contractsSum += Number(r.amount||0)
+      if (!map[id].lastContractTs || r.ts > map[id].lastContractTs!){
+        map[id].lastContractTs = r.ts
+        map[id].lastContractNote = r.notes || ''
+      }
+    })
+
+    setAggs(map)
+  }
+
+  // loader tabelle collegate (destra)
   async function loadActivities(leadId:string){
     const { data } = await supabase
       .from('activities')
@@ -324,11 +328,13 @@ export default function LeadsPage(){
       loadProposals(leadId),
       loadContracts(leadId)
     ])
+    // aggiorna aggregati solo per questo lead
+    await loadAggregates([leadId])
   }
 
-  // helpers
+  // helpers (destra)
   function leadLabel(l: Partial<Lead>){
-    const n = [l.first_name||'', l.last_name||''].join(' ').trim()
+    const n = [l.last_name||'', l.first_name||''].join(' ').trim()
     return n || (l.company_name||l.email||l.phone||'Lead')
   }
   function clearForm(){
@@ -394,127 +400,148 @@ export default function LeadsPage(){
     await loadLeads()
   }
 
-  // filtro owners per select (solo Junior per assegnazione form destra)
+  // filtro owners per select (solo Junior per assegnazione – usata a destra)
   const juniorOptions = useMemo(()=>
     advisors.filter(a=>a.role==='Junior' && !!a.user_id)
   ,[advisors])
 
-  // ======= DERIVAZIONI LISTA (filtri/ricerca/ordinamento/paginazione) =======
-  const filteredSortedLeads = useMemo(()=>{
+  // ====== ELENCO SINISTRA: filtri + ricerca + sort + paginazione ======
+  const filteredSorted = useMemo(()=>{
     let arr = [...leads]
 
-    // filtro assegnatario (solo se scelto)
-    if (assigneeFilter) arr = arr.filter(l => (l.owner_id||'') === assigneeFilter)
+    // i. filtro assegnatario (solo se impostato)
+    if (assigneeFilter) arr = arr.filter(l => l.owner_id === assigneeFilter)
 
-    // bottoni stato
-    if (fltWorking) arr = arr.filter(l => !!(l as any).is_working)
+    // ii. toggle In Lavorazione (default true)
+    if (onlyWorking) arr = arr.filter(l => (l.is_working ?? true) === true)
 
-    // ciascun “stato” richiede presenza di almeno un record collegato
-    if (fltContacted)   arr = arr.filter(l => ensureAgg(aggActivities[l.id!]).count > 0)
-    if (fltAppointment) arr = arr.filter(l => ensureAgg(aggAppointments[l.id!]).count > 0)
-    if (fltProposal)    arr = arr.filter(l => ensureAgg(aggProposals[l.id!]).count > 0)
-    if (fltContract)    arr = arr.filter(l => ensureAgg(aggContracts[l.id!]).count > 0)
+    // ii. Contattato / Appuntamento / Proposta / Contratto
+    arr = arr.filter(l=>{
+      const A = aggs[l.id!]
+      if (onlyContacted && !(A && A.contactsCount>0)) return false
+      if (onlyAppointment && !(A && A.appointmentsCount>0)) return false
+      if (onlyProposal && !(A && A.proposalsCount>0)) return false
+      if (onlyContract && !(A && A.contractsCount>0)) return false
+      return true
+    })
 
-    // ricerca su Cognome + Nome
-    const q = search.trim().toLowerCase()
-    if (q){
-      arr = arr.filter(l => {
-        const full = `${l.last_name||''} ${l.first_name||''}`.trim().toLowerCase()
-        return full.includes(q)
+    // iii. ricerca in Cognome+Nome (case-insensitive, contiene)
+    if (q.trim()){
+      const s = q.trim().toLowerCase()
+      arr = arr.filter(l=>{
+        const name = `${l.last_name||''} ${l.first_name||''}`.trim().toLowerCase()
+        return name.includes(s)
       })
     }
 
-    // ordinamento
-    const getDate = (s?: string|null) => s ? new Date(s).getTime() : -1
+    // iv. ordinamenti
     arr.sort((a,b)=>{
       switch (sortBy){
-        case 'last_name_az':
-          return (a.last_name||'').localeCompare(b.last_name||'') || (a.first_name||'').localeCompare(b.first_name||'')
-        case 'first_name_az':
-          return (a.first_name||'').localeCompare(b.first_name||'') || (a.last_name||'').localeCompare(b.last_name||'')
+        case 'first_name_az': {
+          const A = (a.first_name||'').localeCompare(b.first_name||'')
+          if (A!==0) return A
+          return (a.last_name||'').localeCompare(b.last_name||'')
+        }
         case 'created_desc':
-          return getDate(b.created_at) - getDate(a.created_at)
-        case 'last_contact_desc':
-          return getDate(ensureAgg(aggActivities[b.id!]).lastTs) - getDate(ensureAgg(aggActivities[a.id!]).lastTs)
-        case 'last_appointment_desc':
-          return getDate(ensureAgg(aggAppointments[b.id!]).lastTs) - getDate(ensureAgg(aggAppointments[a.id!]).lastTs)
-        case 'last_proposal_desc':
-          return getDate(ensureAgg(aggProposals[b.id!]).lastTs) - getDate(ensureAgg(aggProposals[a.id!]).lastTs)
-        case 'last_contract_desc':
-          return getDate(ensureAgg(aggContracts[b.id!]).lastTs) - getDate(ensureAgg(aggContracts[a.id!]).lastTs)
+          return (b.created_at||'').localeCompare(a.created_at||'')
+        case 'last_activity_desc': {
+          const ta = aggs[a.id!]?.lastContactTs||''
+          const tb = aggs[b.id!]?.lastContactTs||''
+          return tb.localeCompare(ta)
+        }
+        case 'last_appointment_desc': {
+          const ta = aggs[a.id!]?.lastAppointmentTs||''
+          const tb = aggs[b.id!]?.lastAppointmentTs||''
+          return tb.localeCompare(ta)
+        }
+        case 'last_proposal_desc': {
+          const ta = aggs[a.id!]?.lastProposalTs||''
+          const tb = aggs[b.id!]?.lastProposalTs||''
+          return tb.localeCompare(ta)
+        }
+        case 'last_contract_desc': {
+          const ta = aggs[a.id!]?.lastContractTs||''
+          const tb = aggs[b.id!]?.lastContractTs||''
+          return tb.localeCompare(ta)
+        }
+        case 'last_name_az':
         default:
-          return 0
+          return (a.last_name||'').localeCompare(b.last_name||'')
       }
     })
+
     return arr
-  }, [leads, assigneeFilter, fltWorking, fltContacted, fltAppointment, fltProposal, fltContract, search, sortBy, aggActivities, aggAppointments, aggProposals, aggContracts])
+  }, [leads, assigneeFilter, onlyWorking, onlyContacted, onlyAppointment, onlyProposal, onlyContract, q, sortBy, aggs])
 
-  const total = filteredSortedLeads.length
-  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const pageSafe = Math.min(Math.max(1, page), lastPage)
-  const pageSlice = filteredSortedLeads.slice((pageSafe-1)*PAGE_SIZE, pageSafe*PAGE_SIZE)
+  // paginazione: 10 per pagina
+  const totalPages = Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const pageItems = filteredSorted.slice((safePage-1)*PAGE_SIZE, safePage*PAGE_SIZE)
 
-  useEffect(()=>{ setPage(1) }, [assigneeFilter, fltWorking, fltContacted, fltAppointment, fltProposal, fltContract, search, sortBy])
+  // reset pagina quando cambiano i filtri/ricerca
+  useEffect(()=>{ setPage(1) }, [assigneeFilter, onlyWorking, onlyContacted, onlyAppointment, onlyProposal, onlyContract, q, sortBy])
 
-  // ======= EXPORT CSV dei lead filtrati (tutti i filtrati, non solo la pagina) =======
-  function toCsvValue(v:any){ if (v===null || v===undefined) return ''; const s = String(v); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
-  function fmtDate(s?:string|null){ return s ? new Date(s).toLocaleString('it-IT') : '' }
-
+  // ====== EXPORT CSV ======
   function exportCsv(){
-    const rows = filteredSortedLeads
-    const headers = [
-      'ID','Assegnatario','Cliente Agenzia','Nome','Cognome','Ragione Sociale',
-      'Email','Telefono','Citta','Indirizzo','Fonte','Data Caricamento','In Lavorazione',
-      'Numero Contatti','Data Ultimo Contatto','Note Ultimo Contatto',
-      'Numero Appuntamenti','Data Ultimo Appuntamento','Note Ultimo Appuntamento',
-      'Numero Proposte','Data Ultima Proposta','Note Ultima Proposta',
-      'Numero Contratti','Data Ultimo Contratto','Note Ultimo Contratto','Somma Premi Contratti'
-    ]
-    const lines = [headers.map(toCsvValue).join(';')]
+    const rows = filteredSorted.map(l=>{
+      const A = aggs[l.id!]
+      return {
+        ID: l.id||'',
+        Assegnatario: advisors.find(a=>a.user_id===l.owner_id)?.full_name || advisors.find(a=>a.user_id===l.owner_id)?.email || '',
+        'Gia cliente agenzia': l.is_agency_client ? 'Sì' : 'No',
+        Nome: l.first_name||'',
+        Cognome: l.last_name||'',
+        'Ragione sociale': l.company_name||'',
+        Email: l.email||'',
+        Telefono: l.phone||'',
+        Citta: l.city||'',
+        Indirizzo: l.address||'',
+        Fonte: l.source||'',
+        'In lavorazione': (l.is_working??true) ? 'Sì' : 'No',
+        'Creato il': l.created_at||'',
 
-    rows.forEach(l=>{
-      const a = ensureAgg(aggActivities[l.id!])
-      const ap = ensureAgg(aggAppointments[l.id!])
-      const p = ensureAgg(aggProposals[l.id!])
-      const c = ensureAgg(aggContracts[l.id!])
-      const ownerName = advisors.find(x=>x.user_id===l.owner_id)?.full_name || advisors.find(x=>x.user_id===l.owner_id)?.email || ''
-      const line = [
-        l.id||'',
-        ownerName,
-        l.is_agency_client? 'Si':'No',
-        l.first_name||'',
-        l.last_name||'',
-        l.company_name||'',
-        l.email||'',
-        l.phone||'',
-        l.city||'',
-        l.address||'',
-        l.source||'',
-        fmtDate(l.created_at),
-        (l as any).is_working ? 'Si':'No',
-        a.count, fmtDate(a.lastTs||null), a.lastNotes||'',
-        ap.count, fmtDate(ap.lastTs||null), ap.lastNotes||'',
-        p.count, fmtDate(p.lastTs||null), p.lastNotes||'',
-        c.count, fmtDate(c.lastTs||null), c.lastNotes||'', Number(c.sumAmount||0).toLocaleString('it-IT',{style:'currency',currency:'EUR'})
-      ]
-      lines.push(line.map(toCsvValue).join(';'))
+        // Aggregati
+        'Numero Contatti': A?.contactsCount || 0,
+        'Data Ultimo Contatto': A?.lastContactTs || '',
+        'Note Ultimo Contatto': A?.lastContactNote || '',
+        'Numero Appuntamenti': A?.appointmentsCount || 0,
+        'Data Ultimo Appuntamento': A?.lastAppointmentTs || '',
+        'Note Ultimo Appuntamento': A?.lastAppointmentNote || '',
+        'Numero Proposte': A?.proposalsCount || 0,
+        'Data Ultima Proposta': A?.lastProposalTs || '',
+        'Note Ultima Proposta': A?.lastProposalNote || '',
+        'Numero Contratti': A?.contractsCount || 0,
+        'Data Ultimo Contratto': A?.lastContractTs || '',
+        'Note Ultimo Contratto': A?.lastContractNote || '',
+        'Somma Premi Contratti': A?.contractsSum || 0,
+      }
     })
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const headers = Object.keys(rows[0] || {a:''})
+    const csv = [
+      headers.join(';'),
+      ...rows.map(r => headers.map(h => {
+        let v:any = (r as any)[h]
+        if (typeof v === 'string'){
+          // escape doppi apici + separatore ;  → uso apici doppi + rimpiazzo
+          v = `"${v.replace(/"/g,'""')}"`
+        }
+        return v
+      }).join(';'))
+    ].join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
-    const aEl = document.createElement('a')
-    aEl.href = url
-    aEl.download = `leads_filtrati_${new Date().toISOString().slice(0,19).replaceAll(':','-')}.csv`
-    document.body.appendChild(aEl)
-    aEl.click()
-    document.body.removeChild(aEl)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `leads_export_${new Date().toISOString().slice(0,10)}.csv`
+    a.click()
     URL.revokeObjectURL(url)
   }
 
-  // ===================== RENDER =====================
   return (
     <div style={{ display:'grid', gridTemplateColumns:'340px minmax(0,1fr)', gap:16 }}>
-      {/* ==================== Lista Lead (SINISTRA) — AGGIORNATA ==================== */}
+      {/* ===================== LISTA / FILTRI / PAGINAZIONE ===================== */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
           <div style={{ fontSize:16, fontWeight:700 }}>Leads</div>
@@ -529,55 +556,85 @@ export default function LeadsPage(){
           {(meRole==='Admin' || meRole==='Team Lead') && (
             <div>
               <div style={label}>Assegnatario</div>
-              <select value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)} style={ipt}>
-                <option value="">— Tutti —</option>
-                {advisors.filter(a=>!!a.user_id).map(a=>(
-                  <option key={a.user_id||a.email} value={a.user_id||''}>{a.full_name || a.email}</option>
-                ))}
+              <select style={ipt} value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)}>
+                <option value="">Tutti</option>
+                {advisors
+                  .filter(a=>a.role==='Junior' && a.user_id)
+                  .map(a => (
+                    <option key={a.user_id!} value={a.user_id!}>{a.full_name || a.email}</option>
+                  ))}
               </select>
             </div>
           )}
 
-          {/* Bottoni stato */}
-          <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-            <Toggle label="In Lavorazione"  active={fltWorking}    onClick={()=>setFltWorking(v=>!v)} />
-            <Toggle label="Contattato"       active={fltContacted}  onClick={()=>setFltContacted(v=>!v)} />
-            <Toggle label="Fissato/Fatto Appuntamento" active={fltAppointment} onClick={()=>setFltAppointment(v=>!v)} />
-            <Toggle label="Presentata Proposta" active={fltProposal} onClick={()=>setFltProposal(v=>!v)} />
-            <Toggle label="Firmato Contratto" active={fltContract} onClick={()=>setFltContract(v=>!v)} />
+          {/* Toggle filtri come bottoni blu/bianco */}
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <button
+              className="brand-btn"
+              onClick={()=>setOnlyWorking(v=>!v)}
+              style={ onlyWorking ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+            >
+              In Lavorazione
+            </button>
+            <button
+              className="brand-btn"
+              onClick={()=>setOnlyContacted(v=>!v)}
+              style={ onlyContacted ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+            >
+              Contattato
+            </button>
+            <button
+              className="brand-btn"
+              onClick={()=>setOnlyAppointment(v=>!v)}
+              style={ onlyAppointment ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+            >
+              Fissato/Fatto Appuntamento
+            </button>
+            <button
+              className="brand-btn"
+              onClick={()=>setOnlyProposal(v=>!v)}
+              style={ onlyProposal ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+            >
+              Presentata Proposta
+            </button>
+            <button
+              className="brand-btn"
+              onClick={()=>setOnlyContract(v=>!v)}
+              style={ onlyContract ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+            >
+              Firmato Contratto
+            </button>
           </div>
 
-          {/* Ricerca e Ordina per */}
-          <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)', gap:8 }}>
-            <div>
-              <div style={label}>Cerca (Cognome + Nome)</div>
-              <input placeholder="es. Rossi Mario" value={search} onChange={e=>setSearch(e.target.value)} style={ipt} />
-            </div>
-            <div>
-              <div style={label}>Ordina per</div>
-              <select value={sortBy} onChange={e=>setSortBy(e.target.value as SortKey)} style={ipt}>
-                <option value="last_name_az">Cognome A→Z (default)</option>
-                <option value="first_name_az">Nome A→Z</option>
-                <option value="created_desc">Data Caricamento (↓)</option>
-                <option value="last_contact_desc">Data Contatto (↓)</option>
-                <option value="last_appointment_desc">Data Appuntamento (↓)</option>
-                <option value="last_proposal_desc">Data Proposta (↓)</option>
-                <option value="last_contract_desc">Data Contratto (↓)</option>
-              </select>
-            </div>
+          {/* Ricerca + Ordina per */}
+          <div>
+            <div style={label}>Cerca (Cognome + Nome)</div>
+            <input style={ipt} placeholder="es. Rossi Ma" value={q} onChange={e=>setQ(e.target.value)} />
+          </div>
+          <div>
+            <div style={label}>Ordina per</div>
+            <select style={ipt} value={sortBy} onChange={e=>setSortBy(e.target.value as SortKey)}>
+              <option value="last_name_az">Cognome A→Z</option>
+              <option value="first_name_az">Nome A→Z</option>
+              <option value="created_desc">Data Caricamento (recenti)</option>
+              <option value="last_activity_desc">Data Contatto (recenti)</option>
+              <option value="last_appointment_desc">Data Appuntamento (recenti)</option>
+              <option value="last_proposal_desc">Data Proposta (recenti)</option>
+              <option value="last_contract_desc">Data Contratto (recenti)</option>
+            </select>
           </div>
         </div>
 
-        {/* Elenco + paginazione */}
+        {/* Lista + paginazione */}
         {loading ? 'Caricamento...' : (
           <>
-            <div style={{ display:'grid', gap:8 }}>
-              {pageSlice.map(l => (
+            <div style={{ display:'grid', gap:8, minHeight:200 }}>
+              {pageItems.map(l => (
                 <div
                   key={l.id}
                   style={{
                     border:'1px solid',
-                    borderColor: selectedId===l.id ? brandBlue : 'var(--border, #eee)',
+                    borderColor: selectedId===l.id ? 'var(--brand-primary-600, #0029ae)' : 'var(--border, #eee)',
                     background: selectedId===l.id ? '#F0F6FF' : '#fff',
                     borderRadius:12,
                     padding:10
@@ -586,61 +643,59 @@ export default function LeadsPage(){
                     <div
                       onClick={()=>{ setSelectedId(l.id!); setEditingLeadId(l.id!); loadLeadIntoForm(l) }}
                       style={{ cursor:'pointer' }}>
-                      <div style={{ fontWeight:600 }}>{leadLabel(l)}</div>
+                      <div style={{ fontWeight:600 }}>
+                        {leadLabel(l)}
+                      </div>
                       <div style={{ fontSize:12, color:'var(--muted, #666)' }}>
                         {l.email || l.phone || '—'} {l.is_agency_client? ' · Gia cliente' : ''}
                       </div>
-                      {/* Pill di stato rapida (facoltativa, utile in lista) */}
-                      <div style={{ display:'flex', gap:6, marginTop:4, flexWrap:'wrap' }}>
-                        {ensureAgg(aggActivities[l.id!]).count>0 && <Pill>Contattato</Pill>}
-                        {ensureAgg(aggAppointments[l.id!]).count>0 && <Pill>Appuntamento</Pill>}
-                        {ensureAgg(aggProposals[l.id!]).count>0 && <Pill>Proposta</Pill>}
-                        {ensureAgg(aggContracts[l.id!]).count>0 && <Pill>Contratto</Pill>}
+                      {/* pillole mini con aggregati */}
+                      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:6, fontSize:11 }}>
+                        {Boolean(aggs[l.id!]?.contactsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>Contatti: {aggs[l.id!]?.contactsCount}</span>}
+                        {Boolean(aggs[l.id!]?.appointmentsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>App.: {aggs[l.id!]?.appointmentsCount}</span>}
+                        {Boolean(aggs[l.id!]?.proposalsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>Prop.: {aggs[l.id!]?.proposalsCount}</span>}
+                        {Boolean(aggs[l.id!]?.contractsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>Contr.: {aggs[l.id!]?.contractsCount}</span>}
                       </div>
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingLeadId(l.id!); setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={()=>{ setConfirmDeleteId(l.id!); }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={()=>{ void deleteLead(l.id!) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 </div>
               ))}
-              {pageSlice.length===0 && (
-                <div style={{ fontSize:13, color:'#666' }}>Nessun lead con i filtri impostati.</div>
-              )}
+              {!pageItems.length && <div style={{ color:'#777' }}>Nessun lead trovato con i filtri correnti.</div>}
             </div>
 
-            {/* Pagination controls */}
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:10 }}>
+            {/* Paginazione */}
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:10 }}>
               <div style={{ fontSize:12, color:'#666' }}>
-                {total} risultati · Pagina {pageSafe} di {lastPage}
+                {filteredSorted.length} risultati · Pag. {safePage}/{totalPages}
               </div>
-              <div style={{ display:'inline-flex', gap:6 }}>
-                <button className="brand-btn" disabled={pageSafe<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>Prec.</button>
-                <button className="brand-btn" disabled={pageSafe>=lastPage} onClick={()=>setPage(p=>Math.min(lastPage,p+1))}>Succ.</button>
+              <div style={{ display:'flex', gap:6 }}>
+                <button className="brand-btn" onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={safePage<=1}>‹</button>
+                <button className="brand-btn" onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={safePage>=totalPages}>›</button>
               </div>
             </div>
           </>
         )}
       </div>
 
-      {/* ==================== Form Lead + TAB (DESTRA) — INVARIATO ==================== */}
+      {/* ===================== SCHEDA (DESTRA) — invariata ===================== */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
-          {/* i) Titolo dinamico con nome lead */}
           <div style={{ fontSize:16, fontWeight:700 }}>
             {editingLeadId ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
           </div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button className="brand-btn" onClick={saveLead}>{editingLeadId? 'Salva' : 'Crea'}</button>
             <button className="brand-btn" onClick={()=>clearForm()}>Reset</button>
-            {/* v) In Lavorazione / Stop Lavorazione */}
             <button
               className="brand-btn"
               onClick={()=> setForm(f=>({ ...f, is_working: !f.is_working }))}
               style={
                 form?.is_working
-                  ? { background:brandBlue, color:'#fff', borderColor:brandBlue }
+                  ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff', borderColor:'var(--brand-primary-600, #0029ae)' }
                   : { background:'#c1121f', color:'#fff', borderColor:'#c1121f' }
               }>
               {form?.is_working ? 'In Lavorazione' : 'Stop Lavorazione'}
@@ -648,15 +703,13 @@ export default function LeadsPage(){
           </div>
         </div>
 
-        {/* ======= (tutto il resto della parte destra rimane IDENTICO al tuo codice) ======= */}
-
         <div style={{ display:'grid', gap:12 }}>
           {(meRole==='Admin' || meRole==='Team Lead') && (
             <div>
               <div style={label}>Assegna a Junior</div>
               <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
                 <option value="">— Scegli —</option>
-                {juniorOptions.map(a => (
+                {advisors.filter(a=>a.role==='Junior' && a.user_id).map(a => (
                   <option key={a.user_id||a.email} value={a.user_id||''}>{a.full_name || a.email}</option>
                 ))}
               </select>
@@ -722,14 +775,13 @@ export default function LeadsPage(){
         {/* TAB */}
         <div style={{ marginTop:16 }}>
           <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
-            <button className="brand-btn" style={{ ...(activeTab==='contatti'? { background:brandBlue, color:'#fff' } : {}) }} onClick={()=>setActiveTab('contatti')}>Contatti</button>
-            <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:brandBlue, color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
-            <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:brandBlue, color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
-            <button className="brand-btn" style={{ ...(activeTab==='contratti'? { background:brandBlue, color:'#fff' } : {}) }} onClick={()=>setActiveTab('contratti')}>Contratti</button>
+            <button className="brand-btn" style={{ ...(activeTab==='contatti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contatti')}>Contatti</button>
+            <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
+            <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
+            <button className="brand-btn" style={{ ...(activeTab==='contratti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contratti')}>Contratti</button>
           </div>
 
-          {/* (SEZIONI CONTATTI / APPUNTAMENTI / PROPOSTE / CONTRATTI) — lasciate identiche al tuo codice */}
-          {/* -------- CONTATTI -------- */}
+          {/* CONTATTI */}
           {activeTab==='contatti' && (
             <div style={{ display:'grid', gap:12 }}>
               <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)', gap:12 }}>
@@ -761,7 +813,7 @@ export default function LeadsPage(){
                       if (!selectedId) return
                       const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                       const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
-                      if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId); await loadLeads() }
+                      if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                     }}>Salva</button>
                     <button className="brand-btn" onClick={()=>{ setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }) }}>Annulla</button>
                   </div>
@@ -770,7 +822,7 @@ export default function LeadsPage(){
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
                     const payload = { lead_id: selectedId, ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                     const { error } = await supabase.from('activities').insert(payload)
-                    if (error) alert(error.message); else { setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId); await loadLeads() }
+                    if (error) alert(error.message); else { setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                   }}>Aggiungi contatto</button>
                 )}
               </div>
@@ -785,7 +837,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingActId(r.id); setActDraft({ ts: r.ts? r.ts.slice(0,16):'', channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contatto?'); if (!ok) return; const { error } = await supabase.from('activities').delete().eq('id', r.id); if (error) alert(error.message); else { await loadActivities(selectedId); await loadLeads() } }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contatto?'); if (!ok) return; const { error } = await supabase.from('activities').delete().eq('id', r.id); if (error) alert(error.message); else await loadActivities(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -793,7 +845,7 @@ export default function LeadsPage(){
             </div>
           )}
 
-          {/* -------- APPUNTAMENTI -------- */}
+          {/* APPUNTAMENTI */}
           {activeTab==='appuntamenti' && (
             <div style={{ display:'grid', gap:12 }}>
               <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,2fr)', gap:12 }}>
@@ -819,7 +871,7 @@ export default function LeadsPage(){
                       if (!selectedId) return
                       const payload = { ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                       const { error } = await supabase.from('appointments').update(payload).eq('id', editingAppId)
-                      if (error) alert(error.message); else { setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId); await loadLeads() }
+                      if (error) alert(error.message); else { setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
                     }}>Salva</button>
                     <button className="brand-btn" onClick={()=>{ setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }) }}>Annulla</button>
                   </div>
@@ -828,7 +880,7 @@ export default function LeadsPage(){
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
                     const payload = { lead_id: selectedId, ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                     const { error } = await supabase.from('appointments').insert(payload)
-                    if (error) alert(error.message); else { setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId); await loadLeads() }
+                    if (error) alert(error.message); else { setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
                   }}>Aggiungi appuntamento</button>
                 )}
               </div>
@@ -843,7 +895,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingAppId(r.id); setAppDraft({ ts: r.ts? r.ts.slice(0,16):'', mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return; const { error } = await supabase.from('appointments').delete().eq('id', r.id); if (error) alert(error.message); else { await loadAppointments(selectedId); await loadLeads() } }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return; const { error } = await supabase.from('appointments').delete().eq('id', r.id); if (error) alert(error.message); else await loadAppointments(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -851,7 +903,7 @@ export default function LeadsPage(){
             </div>
           )}
 
-          {/* -------- PROPOSTE -------- */}
+          {/* PROPOSTE */}
           {activeTab==='proposte' && (
             <div style={{ display:'grid', gap:12 }}>
               <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr) minmax(0,1fr)', gap:12 }}>
@@ -880,7 +932,7 @@ export default function LeadsPage(){
                       if (!selectedId) return
                       const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, amount: propDraft.amount||0, notes: propDraft.notes||null }
                       const { error } = await supabase.from('proposals').update(payload).eq('id', editingPropId)
-                      if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId); await loadLeads() }
+                      if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                     }}>Salva</button>
                     <button className="brand-btn" onClick={()=>{ setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }) }}>Annulla</button>
                   </div>
@@ -889,7 +941,7 @@ export default function LeadsPage(){
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
                     const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, amount: propDraft.amount||0, notes: propDraft.notes||null }
                     const { error } = await supabase.from('proposals').insert(payload)
-                    if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId); await loadLeads() }
+                    if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                   }}>Aggiungi proposta</button>
                 )}
               </div>
@@ -904,7 +956,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingPropId(r.id); setPropDraft({ ts: r.ts? r.ts.slice(0,16):'', line: r.line||'', amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare la proposta?'); if (!ok) return; const { error } = await supabase.from('proposals').delete().eq('id', r.id); if (error) alert(error.message); else { await loadProposals(selectedId); await loadLeads() } }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare la proposta?'); if (!ok) return; const { error } = await supabase.from('proposals').delete().eq('id', r.id); if (error) alert(error.message); else await loadProposals(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -912,7 +964,7 @@ export default function LeadsPage(){
             </div>
           )}
 
-          {/* -------- CONTRATTI -------- */}
+          {/* CONTRATTI */}
           {activeTab==='contratti' && (
             <div style={{ display:'grid', gap:12 }}>
               <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)', gap:12 }}>
@@ -943,7 +995,7 @@ export default function LeadsPage(){
                       if (!selectedId) return
                       const payload = { ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
                       const { error } = await supabase.from('contracts').update(payload).eq('id', editingCtrId)
-                      if (error) alert(error.message); else { setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId); await loadLeads() }
+                      if (error) alert(error.message); else { setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                     }}>Salva</button>
                     <button className="brand-btn" onClick={()=>{ setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }) }}>Annulla</button>
                   </div>
@@ -952,7 +1004,7 @@ export default function LeadsPage(){
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
                     const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
                     const { error } = await supabase.from('contracts').insert(payload)
-                    if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId); await loadLeads() }
+                    if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                   }}>Aggiungi contratto</button>
                 )}
               </div>
@@ -967,7 +1019,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id); setCtrDraft({ ts: r.ts? r.ts.slice(0,16):'', contract_type: r.contract_type, amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contratto?'); if (!ok) return; const { error } = await supabase.from('contracts').delete().eq('id', r.id); if (error) alert(error.message); else { await loadContracts(selectedId); await loadLeads() } }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contratto?'); if (!ok) return; const { error } = await supabase.from('contracts').delete().eq('id', r.id); if (error) alert(error.message); else await loadContracts(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -992,21 +1044,4 @@ export default function LeadsPage(){
       )}
     </div>
   )
-}
-
-// === piccoli componenti UI per la lista sinistra ===
-function Toggle({ label, active, onClick }:{ label:string, active:boolean, onClick:()=>void }){
-  return (
-    <button
-      className="brand-btn"
-      onClick={onClick}
-      style={ active
-        ? { background: 'var(--brand-primary-600, #0029ae)', color:'#fff', borderColor:'var(--brand-primary-600, #0029ae)' }
-        : { background:'#fff', color:'#111', borderColor:'var(--border, #ddd)' }
-      }
-    >{label}</button>
-  )
-}
-function Pill({ children }:{ children: React.ReactNode }){
-  return <span style={{ fontSize:11, padding:'2px 8px', borderRadius:999, border:'1px solid #e5e7eb' }}>{children}</span>
 }
