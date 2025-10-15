@@ -53,7 +53,6 @@ function outcomeDbFromLabel(label: string){
 }
 
 // === Tipi base ===
-
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 
 type Lead = {
@@ -69,6 +68,7 @@ type Lead = {
   address?: string | null
   source?: 'Provided' | 'Self' | null
   created_at?: string
+  is_working?: boolean | null
 }
 
 type AdvisorRow = { user_id: string | null, email: string, full_name: string | null, role: Role }
@@ -85,13 +85,30 @@ type FormState = {
   city: string
   address: string
   source: 'Provided' | 'Self' | ''
+  is_working?: boolean
 }
 
 // === UI helpers ===
-const box: React.CSSProperties = { background:'var(--card, #fff)', border:'1px solid var(--border, #eee)', borderRadius:16, padding:16 }
-const ipt: React.CSSProperties = { padding:'6px 10px', border:'1px solid var(--border, #ddd)', borderRadius:8, background:'#fff' }
+const box: React.CSSProperties = {
+  background:'var(--card, #fff)',
+  border:'1px solid var(--border, #eee)',
+  borderRadius:16,
+  padding:16,
+  maxWidth:'100%',
+  overflow:'hidden'
+}
+const ipt: React.CSSProperties = {
+  width:'100%',
+  padding:'6px 10px',
+  border:'1px solid var(--border, #ddd)',
+  borderRadius:8,
+  background:'#fff',
+  boxSizing:'border-box',
+  minWidth:0
+}
 const label: React.CSSProperties = { fontSize:12, color:'var(--muted, #666)' }
-const row: React.CSSProperties = { display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }
+/* minmax(0,1fr) evita overflow nelle colonne */
+const row: React.CSSProperties = { display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)', gap:12 }
 
 export default function LeadsPage(){
   // auth/ruolo corrente
@@ -117,7 +134,8 @@ export default function LeadsPage(){
     owner_id: null,
     first_name: '', last_name: '', company_name: '',
     email: '', phone: '', city: '', address: '',
-    source: ''
+    source: '',
+    is_working: true
   }
   const [form, setForm] = useState<FormState>(emptyForm)
 
@@ -164,7 +182,7 @@ export default function LeadsPage(){
   async function loadLeads(){
     const { data, error } = await supabase
       .from('leads')
-      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at')
+      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
       .order('created_at', { ascending:false })
     if (error){ setErr(error.message); return }
     setLeads(data as Lead[])
@@ -179,36 +197,36 @@ export default function LeadsPage(){
 
   // loader tabelle collegate
   async function loadActivities(leadId:string){
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('activities')
       .select('id,ts,channel,outcome,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
-    if (!error) setActivities(data||[])
+    setActivities(data||[])
   }
   async function loadAppointments(leadId:string){
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('appointments')
       .select('id,ts,mode,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
-    if (!error) setAppointments(data||[])
+    setAppointments(data||[])
   }
   async function loadProposals(leadId:string){
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('proposals')
       .select('id,ts,line,amount,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
-    if (!error) setProposals(data||[])
+    setProposals(data||[])
   }
   async function loadContracts(leadId:string){
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('contracts')
       .select('id,ts,contract_type,amount,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
-    if (!error) setContracts(data||[])
+    setContracts(data||[])
   }
   async function reloadAllChildren(leadId:string){
     await Promise.all([
@@ -220,11 +238,15 @@ export default function LeadsPage(){
   }
 
   // helpers
-  function leadLabel(l: Lead){
+  function leadLabel(l: Partial<Lead>){
     const n = [l.first_name||'', l.last_name||''].join(' ').trim()
     return n || (l.company_name||l.email||l.phone||'Lead')
   }
-  function clearForm(){ setForm(emptyForm); setEditingLeadId(null) }
+  function clearForm(){
+    setForm(emptyForm)
+    setEditingLeadId(null)
+    setActiveTab('contatti')
+  }
   function loadLeadIntoForm(l: Lead){
     setForm({
       id: l.id,
@@ -233,6 +255,7 @@ export default function LeadsPage(){
       first_name: l.first_name||'', last_name: l.last_name||'', company_name: l.company_name||'',
       email: l.email||'', phone: l.phone||'', city: l.city||'', address: l.address||'',
       source: (l.source||'') as any,
+      is_working: (l as any).is_working ?? true,
     })
     if (l.id) { void reloadAllChildren(l.id) }
   }
@@ -259,6 +282,7 @@ export default function LeadsPage(){
       city: form.city||null,
       address: form.address||null,
       source: (form.source||null) as any,
+      is_working: form.is_working ?? true,
     }
     if (editingLeadId){
       const { error } = await supabase.from('leads').update(payload).eq('id', editingLeadId)
@@ -287,7 +311,7 @@ export default function LeadsPage(){
   ,[advisors])
 
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'340px 1fr', gap:16 }}>
+    <div style={{ display:'grid', gridTemplateColumns:'340px minmax(0,1fr)', gap:16 }}>
       {/* Lista Lead */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
@@ -299,9 +323,19 @@ export default function LeadsPage(){
         {loading ? 'Caricamento...' : (
           <div style={{ display:'grid', gap:8 }}>
             {leads.map(l => (
-              <div key={l.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:12, padding:10 }}>
+              <div
+                key={l.id}
+                style={{
+                  border:'1px solid',
+                  borderColor: selectedId===l.id ? 'var(--brand-primary-600, #0029ae)' : 'var(--border, #eee)',
+                  background: selectedId===l.id ? '#F0F6FF' : '#fff',
+                  borderRadius:12,
+                  padding:10
+                }}>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
-                  <div onClick={()=>{ setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ cursor:'pointer' }}>
+                  <div
+                    onClick={()=>{ setSelectedId(l.id!); setEditingLeadId(l.id!); loadLeadIntoForm(l) }}
+                    style={{ cursor:'pointer' }}>
                     <div style={{ fontWeight:600 }}>{leadLabel(l)}</div>
                     <div style={{ fontSize:12, color:'var(--muted, #666)' }}>{l.email || l.phone || '—'} {l.is_agency_client? ' · Gia cliente' : ''}</div>
                   </div>
@@ -318,11 +352,25 @@ export default function LeadsPage(){
 
       {/* Form Lead + TAB */}
       <div className="brand-card" style={{ ...box }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-          <div style={{ fontSize:16, fontWeight:700 }}>{editingLeadId? 'Modifica Lead' : 'Nuovo Lead'}</div>
-          <div style={{ display:'flex', gap:8 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
+          {/* i) Titolo dinamico con nome lead */}
+          <div style={{ fontSize:16, fontWeight:700 }}>
+            {editingLeadId ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
+          </div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button className="brand-btn" onClick={saveLead}>{editingLeadId? 'Salva' : 'Crea'}</button>
             <button className="brand-btn" onClick={()=>clearForm()}>Reset</button>
+            {/* v) In Lavorazione / Stop Lavorazione */}
+            <button
+              className="brand-btn"
+              onClick={()=> setForm(f=>({ ...f, is_working: !f.is_working }))}
+              style={
+                form?.is_working
+                  ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff', borderColor:'var(--brand-primary-600, #0029ae)' }
+                  : { background:'#c1121f', color:'#fff', borderColor:'#c1121f' }
+              }>
+              {form?.is_working ? 'In Lavorazione' : 'Stop Lavorazione'}
+            </button>
           </div>
         </div>
 
@@ -398,7 +446,7 @@ export default function LeadsPage(){
 
         {/* TAB: Contatti / Appuntamenti / Proposte / Contratti */}
         <div style={{ marginTop:16 }}>
-          <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
             <button className="brand-btn" style={{ ...(activeTab==='contatti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contatti')}>Contatti</button>
             <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
             <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
@@ -409,7 +457,7 @@ export default function LeadsPage(){
           {activeTab==='contatti' && (
             <div style={{ display:'grid', gap:12 }}>
               {/* form nuovo/edita contatto */}
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:12 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)', gap:12 }}>
                 <div>
                   <div style={label}>Data/Ora</div>
                   <input type="datetime-local" style={ipt} value={actDraft.ts} onChange={e=>setActDraft((d:any)=>({ ...d, ts: e.target.value }))} />
@@ -426,14 +474,15 @@ export default function LeadsPage(){
                     {OUTCOME_OPTIONS_UI.map(o=> <option key={o.db} value={o.label}>{o.label}</option>)}
                   </select>
                 </div>
-                <div>
+                {/* iv) Note a tutta riga, textarea 2 righe con limite */}
+                <div style={{ gridColumn:'1 / span 4' }}>
                   <div style={label}>Note</div>
-                  <input style={ipt} value={actDraft.notes||''} onChange={e=>setActDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={actDraft.notes||''} onChange={e=>setActDraft((d:any)=>({ ...d, notes:e.target.value }))} />
                 </div>
               </div>
               <div>
                 {editingActId ? (
-                  <div style={{ display:'flex', gap:8 }}>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
                       const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
@@ -474,7 +523,7 @@ export default function LeadsPage(){
           {/* APPUNTAMENTI */}
           {activeTab==='appuntamenti' && (
             <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 2fr', gap:12 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,2fr)', gap:12 }}>
                 <div>
                   <div style={label}>Data/Ora</div>
                   <input type="datetime-local" style={ipt} value={appDraft.ts} onChange={e=>setAppDraft((d:any)=>({ ...d, ts: e.target.value }))} />
@@ -485,14 +534,14 @@ export default function LeadsPage(){
                     {MODE_OPTIONS_UI.map(o=> <option key={o.db} value={o.label}>{o.label}</option>)}
                   </select>
                 </div>
-                <div>
+                <div style={{ gridColumn:'1 / span 3' }}>
                   <div style={label}>Note</div>
-                  <input style={ipt} value={appDraft.notes||''} onChange={e=>setAppDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={appDraft.notes||''} onChange={e=>setAppDraft((d:any)=>({ ...d, notes:e.target.value }))} />
                 </div>
               </div>
               <div>
                 {editingAppId ? (
-                  <div style={{ display:'flex', gap:8 }}>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
                       const payload = { ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
@@ -532,7 +581,7 @@ export default function LeadsPage(){
           {/* PROPOSTE */}
           {activeTab==='proposte' && (
             <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr 1fr', gap:12 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr) minmax(0,1fr)', gap:12 }}>
                 <div>
                   <div style={label}>Data/Ora</div>
                   <input type="datetime-local" style={ipt} value={propDraft.ts} onChange={e=>setPropDraft((d:any)=>({ ...d, ts: e.target.value }))} />
@@ -545,15 +594,15 @@ export default function LeadsPage(){
                   <div style={label}>Importo (EUR)</div>
                   <input type="number" style={ipt} value={propDraft.amount||0} onChange={e=>setPropDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
                 </div>
-              </div>
-              <div>
-                <div style={label}>Note</div>
-                <input style={ipt} value={propDraft.notes||''} onChange={e=>setPropDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                <div style={{ gridColumn:'1 / span 3' }}>
+                  <div style={label}>Note</div>
+                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={propDraft.notes||''} onChange={e=>setPropDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                </div>
               </div>
 
               <div>
                 {editingPropId ? (
-                  <div style={{ display:'flex', gap:8 }}>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
                       const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, amount: propDraft.amount||0, notes: propDraft.notes||null }
@@ -593,7 +642,7 @@ export default function LeadsPage(){
           {/* CONTRATTI */}
           {activeTab==='contratti' && (
             <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)', gap:12 }}>
                 <div>
                   <div style={label}>Data/Ora</div>
                   <input type="datetime-local" style={ipt} value={ctrDraft.ts} onChange={e=>setCtrDraft((d:any)=>({ ...d, ts: e.target.value }))} />
@@ -608,15 +657,15 @@ export default function LeadsPage(){
                   <div style={label}>Importo (EUR)</div>
                   <input type="number" style={ipt} value={ctrDraft.amount||0} onChange={e=>setCtrDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
                 </div>
-              </div>
-              <div>
-                <div style={label}>Note</div>
-                <input style={ipt} value={ctrDraft.notes||''} onChange={e=>setCtrDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                <div style={{ gridColumn:'1 / span 3' }}>
+                  <div style={label}>Note</div>
+                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={ctrDraft.notes||''} onChange={e=>setCtrDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                </div>
               </div>
 
               <div>
                 {editingCtrId ? (
-                  <div style={{ display:'flex', gap:8 }}>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
                       const payload = { ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
