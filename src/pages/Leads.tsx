@@ -540,7 +540,7 @@ export default function LeadsPage(){
   }
 
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'420px minmax(0,0.9fr)', gap:20 }}>
+    <div style={{ display:'grid', gridTemplateColumns:'340px minmax(0,1fr)', gap:16 }}>
       {/* ===================== LISTA / FILTRI / PAGINAZIONE ===================== */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
