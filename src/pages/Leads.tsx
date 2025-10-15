@@ -551,7 +551,7 @@ export default function LeadsPage(){
           </div>
         </div>
 
-        {/* === FILTRI (3 righe) === */}
+       {/* === FILTRI (3 righe) === */}
 <div style={{ display:'grid', gap:8, marginBottom:10 }}>
 
   {/* Riga 1: Assegnatario + In Lavorazione */}
@@ -584,7 +584,7 @@ export default function LeadsPage(){
         </select>
       </div>
     ) : (
-      <div /> /* se non Admin/TL, lasciamo spazio vuoto per mantenere l'allineamento */
+      <div>{/* placeholder per allineamento quando non sei Admin/TL */}</div>
     )}
 
     <div>
