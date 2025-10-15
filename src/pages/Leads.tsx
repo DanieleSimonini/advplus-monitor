@@ -13,48 +13,7 @@ import { supabase } from '@/supabaseClient'
  *   contracts.contract_type ∈ {'Danni Non Auto','Vita Protection','Vita Premi Ricorrenti','Vita Premi Unici'}
  */
 
-// === Opzioni UI ===
-const CHANNEL_OPTIONS_UI = [
-  { label: 'Telefono', db: 'phone' },
-  { label: 'Email', db: 'email' },
-  { label: 'WhatsApp', db: 'phone' }, // mapped → phone
-  { label: 'SMS', db: 'phone' },       // mapped → phone
-  { label: 'Altro', db: 'phone' },     // mapped → phone
-] as const
-
-const MODE_OPTIONS_UI = [
-  { label: 'In presenza', db: 'inperson' },
-  { label: 'Video', db: 'video' },
-  { label: 'Telefono', db: 'phone' },
-] as const
-
-const OUTCOME_OPTIONS_UI = [
-  { label: 'Parlato', db: 'spoke' },
-  { label: 'Nessuna risposta', db: 'noanswer' },
-  { label: 'Rifiutato', db: 'refused' },
-] as const
-
-const CONTRACT_TYPE_OPTIONS = [
-  { label: 'Danni Non Auto', value: 'Danni Non Auto' },
-  { label: 'Vita Protection', value: 'Vita Protection' },
-  { label: 'Vita Premi Ricorrenti', value: 'Vita Premi Ricorrenti' },
-  { label: 'Vita Premi Unici', value: 'Vita Premi Unici' },
-] as const
-
-// === Mapping UI label -> DB literal ===
-function channelDbFromLabel(label: string){
-  const o = CHANNEL_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'phone') as 'phone'|'email'|'inperson'|'video'
-}
-function modeDbFromLabel(label: string){
-  const o = MODE_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'inperson') as 'inperson'|'phone'|'video'
-}
-function outcomeDbFromLabel(label: string){
-  const o = OUTCOME_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'spoke') as 'spoke'|'noanswer'|'refused'
-}
-
-// === Tipi base ===
-
-type Role = 'Admin' | 'Team Lead' | 'Junior'
+type Role = 'Admin' | 'Team Lead' | 'Senior' | 'Junior'
 
 type Lead = {
   id?: string
@@ -68,10 +27,13 @@ type Lead = {
   city?: string | null
   address?: string | null
   source?: 'Provided' | 'Self' | null
-  created_at?: string
+  is_working?: boolean | null
 }
 
-type AdvisorRow = { user_id: string | null, email: string, full_name: string | null, role: Role }
+type Activity = { id?: string, ts: string, channel: 'phone'|'email'|'inperson'|'video', outcome: 'spoke'|'noanswer'|'refused', notes?: string|null }
+type Appointment = { id?: string, ts: string, mode: 'inperson'|'phone'|'video', notes?: string|null }
+type Proposal = { id?: string, ts: string, line: string, amount: number, notes?: string|null }
+type Contract = { id?: string, ts: string, contract_type: string, amount: number, notes?: string|null }
 
 type FormState = {
   id?: string
@@ -85,26 +47,25 @@ type FormState = {
   city: string
   address: string
   source: 'Provided' | 'Self' | ''
+  is_working?: boolean
 }
 
 // === UI helpers ===
-const box: React.CSSProperties = { background:'var(--card, #fff)', border:'1px solid var(--border, #eee)', borderRadius:16, padding:16 }
-const ipt: React.CSSProperties = { padding:'6px 10px', border:'1px solid var(--border, #ddd)', borderRadius:8, background:'#fff' }
+const box: React.CSSProperties = { padding:'6px 10px', border:'1px solid var(--border, #ddd)', borderRadius:8, background:'#fff' }
 const label: React.CSSProperties = { fontSize:12, color:'var(--muted, #666)' }
 const row: React.CSSProperties = { display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }
 
 export default function LeadsPage(){
   // auth/ruolo corrente
   const [meRole, setMeRole] = useState<Role>('Junior')
-  const [meUid, setMeUid] = useState<string>('')
+  const [meUid, setMeUid] = useState<string | null>(null)
 
-  // elenco lead
+  // dati lookup
+  const [users, setUsers] = useState<{ id:string, email:string }[]>([])
+
+  // lista leads
   const [leads, setLeads] = useState<Lead[]>([])
-  const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
-
-  // advisors per assegnazione owner
-  const [advisors, setAdvisors] = useState<AdvisorRow[]>([])
+  const [loading, setLoading] = useState<boolean>(true)
 
   // selezione + edit
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -117,67 +78,96 @@ export default function LeadsPage(){
     owner_id: null,
     first_name: '', last_name: '', company_name: '',
     email: '', phone: '', city: '', address: '',
-    source: ''
+    source: '',
+    is_working: true
   }
   const [form, setForm] = useState<FormState>(emptyForm)
 
-  // === STEP 2: stati tabelle collegate ===
-  // Activities (Contatti)
-  const [activities, setActivities] = useState<any[]>([])
-  const [editingActId, setEditingActId] = useState<string|null>(null)
-  const [actDraft, setActDraft] = useState<any>({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' })
-
-  // Appointments (Appuntamenti)
-  const [appointments, setAppointments] = useState<any[]>([])
-  const [editingAppId, setEditingAppId] = useState<string|null>(null)
-  const [appDraft, setAppDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
-
-  // Proposals (Proposte)
-  const [proposals, setProposals] = useState<any[]>([])
-  const [editingPropId, setEditingPropId] = useState<string|null>(null)
-  const [propDraft, setPropDraft] = useState<any>({ ts:'', line:'', amount:0, notes:'' })
-
-  // Contracts (Contratti)
-  const [contracts, setContracts] = useState<any[]>([])
-  const [editingCtrId, setEditingCtrId] = useState<string|null>(null)
-  const [ctrDraft, setCtrDraft] = useState<any>({ ts:'', contract_type:CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' })
-
-  // Tab corrente
+  // tabs e sotto CRUD
   const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'proposte'|'contratti'>('contatti')
 
-  // bootstrap
-  useEffect(()=>{ (async()=>{
-    setLoading(true); setErr('')
-    try{
-      const { data: s } = await supabase.auth.getUser()
-      const uid = s.user?.id || ''
-      setMeUid(uid)
-      if (uid){
-        const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
-        if (me?.role) setMeRole(me.role as Role)
-      }
-      await Promise.all([loadLeads(), loadAdvisors()])
-    } catch(ex:any){ setErr(ex.message || 'Errore inizializzazione') }
-    finally{ setLoading(false) }
-  })() },[])
+  // Contatti
+  const [activities, setActivities] = useState<Activity[]>([])
+  const [editingActId, setEditingActId] = useState<string | null>(null)
+  const [actDraft, setActDraft] = useState<any>({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' })
 
+  // Appuntamenti
+  const [appointments, setAppointments] = useState<Appointment[]>([])
+  const [editingAppId, setEditingAppId] = useState<string | null>(null)
+  const [appDraft, setAppDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
+
+  // Proposte
+  const [proposals, setProposals] = useState<Proposal[]>([])
+  const [editingPropId, setEditingPropId] = useState<string | null>(null)
+  const [propDraft, setPropDraft] = useState<any>({ ts:'', line:'', amount:0, notes:'' })
+
+  // Contratti
+  const [contracts, setContracts] = useState<Contract[]>([])
+  const [editingCtrId, setEditingCtrId] = useState<string | null>(null)
+  const [ctrDraft, setCtrDraft] = useState<any>({ ts:'', contract_type:'Danni Non Auto', amount:0, notes:'' })
+
+  // === Opzioni UI
+  const CHANNEL_OPTIONS_UI = [
+    { label:'Telefono', db:'phone' },
+    { label:'Email', db:'email' },
+    { label:'Di persona', db:'inperson' },
+    { label:'Video', db:'video' },
+  ] as const
+
+  const OUTCOME_OPTIONS_UI = [
+    { label:'Parlato', db:'spoke' },
+    { label:'Nessuna risposta', db:'noanswer' },
+    { label:'Rifiutato', db:'refused' },
+  ] as const
+
+  const MODE_OPTIONS_UI = [
+    { label:'In presenza', db:'inperson' },
+    { label:'Telefono', db:'phone' },
+    { label:'Video', db:'video' },
+  ] as const
+
+  const CONTRACT_TYPE_OPTIONS = [
+    { label: 'Danni Non Auto', value: 'Danni Non Auto' },
+    { label: 'Vita Protection', value: 'Vita Protection' },
+    { label: 'Vita Premi Ricorrenti', value: 'Vita Premi Ricorrenti' },
+    { label: 'Vita Premi Unici', value: 'Vita Premi Unici' },
+  ] as const
+
+  // === Mapping UI label -> DB literal ===
+  function channelDbFromLabel(label: string){
+    const o = CHANNEL_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'phone') as 'phone'|'email'|'inperson'|'video'
+  }
+  function modeDbFromLabel(label: string){
+    const o = MODE_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'inperson') as 'inperson'|'phone'|'video'
+  }
+  function outcomeDbFromLabel(label: string){
+    const o = OUTCOME_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'spoke') as 'spoke'|'noanswer'|'refused'
+  }
+
+  // boot
+  useEffect(()=>{
+    ;(async()=>{
+      const me = await supabase.auth.getSession()
+      setMeUid(me.data.session?.user?.id || null)
+      // (se hai una tabella ruoli collegata, qui setti meRole)
+      await loadUsers()
+      await loadLeads()
+    })()
+  },[])
+
+  async function loadUsers(){
+    const { data, error } = await supabase.from('profiles').select('id,email').order('email')
+    if (!error && data) setUsers(data as any)
+  }
   async function loadLeads(){
-    const { data, error } = await supabase
-      .from('leads')
-      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at')
+    setLoading(true)
+    const { data, error } = await supabase.from('leads')
+      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,is_working')
       .order('created_at', { ascending:false })
-    if (error){ setErr(error.message); return }
-    setLeads(data as Lead[])
-  }
-  async function loadAdvisors(){
-    const { data, error } = await supabase
-      .from('advisors')
-      .select('user_id,email,full_name,role')
-      .order('full_name', { ascending:true })
-    if (!error) setAdvisors((data||[]) as AdvisorRow[])
+    if (!error && data) setLeads(data as any)
+    setLoading(false)
   }
 
-  // loader tabelle collegate
   async function loadActivities(leadId:string){
     const { data, error } = await supabase
       .from('activities')
@@ -233,6 +223,7 @@ export default function LeadsPage(){
       first_name: l.first_name||'', last_name: l.last_name||'', company_name: l.company_name||'',
       email: l.email||'', phone: l.phone||'', city: l.city||'', address: l.address||'',
       source: (l.source||'') as any,
+      is_working: (l as any).is_working ?? true,
     })
     if (l.id) { void reloadAllChildren(l.id) }
   }
@@ -259,6 +250,7 @@ export default function LeadsPage(){
       city: form.city||null,
       address: form.address||null,
       source: (form.source||null) as any,
+      is_working: (form as any).is_working ?? true,
     }
     if (editingLeadId){
       const { error } = await supabase.from('leads').update(payload).eq('id', editingLeadId)
@@ -271,24 +263,10 @@ export default function LeadsPage(){
     clearForm()
   }
 
-  async function deleteLead(id: string){
-    const ok = confirm('Eliminare definitivamente il lead?')
-    if (!ok) return
-    const { error } = await supabase.from('leads').delete().eq('id', id)
-    if (error){ alert(error.message); return }
-    if (selectedId===id) setSelectedId(null)
-    if (editingLeadId===id) setEditingLeadId(null)
-    await loadLeads()
-  }
-
-  // filtro owners per select (solo Junior per assegnazione)
-  const juniorOptions = useMemo(()=>
-    advisors.filter(a=>a.role==='Junior' && !!a.user_id)
-  ,[advisors])
-
+  // === render
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'340px 1fr', gap:16 }}>
-      {/* Lista Lead */}
+    <div style={{ display:'grid', gridTemplateColumns:'360px 1fr', gap:12 }}>
+      {/* Lista */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
           <div style={{ fontSize:16, fontWeight:700 }}>Leads</div>
@@ -299,15 +277,22 @@ export default function LeadsPage(){
         {loading ? 'Caricamento...' : (
           <div style={{ display:'grid', gap:8 }}>
             {leads.map(l => (
-              <div key={l.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:12, padding:10 }}>
+              <div key={l.id}
+                   style={{
+                     border:'1px solid',
+                     borderColor: selectedId===l.id ? 'var(--brand-primary-600, #0029ae)' : 'var(--border, #eee)',
+                     background: selectedId===l.id ? '#F0F6FF' : '#fff',
+                     borderRadius:12,
+                     padding:10
+                   }}>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
-                  <div onClick={()=>{ setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ cursor:'pointer' }}>
+                  <div onClick={()=>{ setSelectedId(l.id!); setEditingLeadId(l.id!); loadLeadIntoForm(l) }} style={{ cursor:'pointer' }}>
                     <div style={{ fontWeight:600 }}>{leadLabel(l)}</div>
-                    <div style={{ fontSize:12, color:'var(--muted, #666)' }}>{l.email || l.phone || '—'} {l.is_agency_client? ' · Gia cliente' : ''}</div>
+                    <div style={{ fontSize:12, color:'var(--muted,#666)' }}>{l.email || l.phone || '—'} {l.is_agency_client? ' · Gia cliente' : ''}</div>
                   </div>
                   <div style={{ display:'inline-flex', gap:6 }}>
-                    <button title="Modifica" onClick={()=>{ setEditingLeadId(l.id!); setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                    <button title="Elimina" onClick={()=>{ void deleteLead(l.id!) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                    <button title="Modifica" onClick={()=>{ setSelectedId(l.id!); setEditingLeadId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                    <button title="Elimina" onClick={()=>setConfirmDeleteId(l.id!)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                   </div>
                 </div>
               </div>
@@ -319,10 +304,22 @@ export default function LeadsPage(){
       {/* Form Lead + TAB */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-          <div style={{ fontSize:16, fontWeight:700 }}>{editingLeadId? 'Modifica Lead' : 'Nuovo Lead'}</div>
+          <div style={{ fontSize:16, fontWeight:700 }}>
+            {editingLeadId ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
+          </div>
           <div style={{ display:'flex', gap:8 }}>
             <button className="brand-btn" onClick={saveLead}>{editingLeadId? 'Salva' : 'Crea'}</button>
             <button className="brand-btn" onClick={()=>clearForm()}>Reset</button>
+            <button
+              className="brand-btn"
+              onClick={()=> setForm(f=>({ ...f, is_working: !f.is_working }))}
+              style={
+                form?.is_working
+                  ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff', borderColor:'var(--brand-primary-600, #0029ae)' }
+                  : { background:'#c1121f', color:'#fff', borderColor:'#c1121f' }
+              }>
+              {form?.is_working ? 'In Lavorazione' : 'Stop Lavorazione'}
+            </button>
           </div>
         </div>
 
@@ -331,18 +328,17 @@ export default function LeadsPage(){
           {(meRole==='Admin' || meRole==='Team Lead') && (
             <div>
               <div style={label}>Assegna a Junior</div>
-              <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
+              <select style={{ ...ipt }} value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id:e.target.value||null }))}>
                 <option value="">— Scegli —</option>
-                {juniorOptions.map(a => (
-                  <option key={a.user_id||a.email} value={a.user_id||''}>{a.full_name || a.email}</option>
-                ))}
+                {users.map(u=> <option key={u.id} value={u.id}>{u.email}</option>)}
               </select>
             </div>
           )}
 
+          {/* cliente di agenzia */}
           <div>
             <div style={label}>Gia cliente di agenzia?</div>
-            <div style={{ display:'flex', gap:12 }}>
+            <div style={{ display:'inline-flex', gap:12, fontSize:14 }}>
               <label><input type="radio" checked={form.is_agency_client===true} onChange={()=>setForm(f=>({ ...f, is_agency_client:true }))}/> Si</label>
               <label><input type="radio" checked={form.is_agency_client===false} onChange={()=>setForm(f=>({ ...f, is_agency_client:false }))}/> No</label>
             </div>
@@ -388,17 +384,15 @@ export default function LeadsPage(){
 
           <div>
             <div style={label}>Fonte</div>
-            <select style={ipt} value={form.source} onChange={e=>setForm(f=>({ ...f, source: e.target.value as any }))}>
+            <select style={ipt} value={form.source} onChange={e=>setForm(f=>({ ...f, source: (e.target.value as any) }))}>
               <option value="">—</option>
               <option value="Provided">Fornito</option>
               <option value="Self">Autonomo</option>
             </select>
           </div>
-        </div>
 
-        {/* TAB: Contatti / Appuntamenti / Proposte / Contratti */}
-        <div style={{ marginTop:16 }}>
-          <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+          {/* Tabs */}
+          <div style={{ display:'flex', gap:8 }}>
             <button className="brand-btn" style={{ ...(activeTab==='contatti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contatti')}>Contatti</button>
             <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
             <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
@@ -426,9 +420,15 @@ export default function LeadsPage(){
                     {OUTCOME_OPTIONS_UI.map(o=> <option key={o.db} value={o.label}>{o.label}</option>)}
                   </select>
                 </div>
-                <div>
+                <div style={{ gridColumn:'1 / span 4' }}>
                   <div style={label}>Note</div>
-                  <input style={ipt} value={actDraft.notes||''} onChange={e=>setActDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                  <textarea
+                    rows={2}
+                    maxLength={240}
+                    style={{ ...ipt, width:'100%' }}
+                    value={actDraft.notes||''}
+                    onChange={e=>setActDraft((d:any)=>({ ...d, notes:e.target.value }))}
+                  />
                 </div>
               </div>
               <div>
@@ -452,18 +452,17 @@ export default function LeadsPage(){
                 )}
               </div>
 
-              {/* lista contatti */}
               <div>
                 {activities.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                  <div key={r.id} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:10, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
                       <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Canale: {CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || r.channel} · Esito: {OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || r.outcome}</div>
+                      <div style={{ fontSize:12, color:'var(--muted,#666)' }}>{CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || r.channel} · {OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || r.outcome}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingActId(r.id); setActDraft({ ts: r.ts? r.ts.slice(0,16):'', channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contatto?'); if (!ok) return; const { error } = await supabase.from('activities').delete().eq('id', r.id); if (error) alert(error.message); else await loadActivities(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingActId(r.id!); setActDraft({ ts: r.ts?.slice(0,16), channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Elimina" onClick={async()=>{ await supabase.from('activities').delete().eq('id', r.id!); if (selectedId) await loadActivities(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -485,9 +484,9 @@ export default function LeadsPage(){
                     {MODE_OPTIONS_UI.map(o=> <option key={o.db} value={o.label}>{o.label}</option>)}
                   </select>
                 </div>
-                <div>
+                <div style={{ gridColumn:'1 / span 3' }}>
                   <div style={label}>Note</div>
-                  <input style={ipt} value={appDraft.notes||''} onChange={e=>setAppDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={appDraft.notes||''} onChange={e=>setAppDraft((d:any)=>({ ...d, notes:e.target.value }))} />
                 </div>
               </div>
               <div>
@@ -513,15 +512,15 @@ export default function LeadsPage(){
 
               <div>
                 {appointments.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                  <div key={r.id} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:10, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
                       <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Modalita: {MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || r.mode}</div>
+                      <div style={{ fontSize:12, color:'var(--muted,#666)' }}>{MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || r.mode}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingAppId(r.id); setAppDraft({ ts: r.ts? r.ts.slice(0,16):'', mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return; const { error } = await supabase.from('appointments').delete().eq('id', r.id); if (error) alert(error.message); else await loadAppointments(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingAppId(r.id!); setAppDraft({ ts: r.ts?.slice(0,16), mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Elimina" onClick={async()=>{ await supabase.from('appointments').delete().eq('id', r.id!); if (selectedId) await loadAppointments(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -538,17 +537,17 @@ export default function LeadsPage(){
                   <input type="datetime-local" style={ipt} value={propDraft.ts} onChange={e=>setPropDraft((d:any)=>({ ...d, ts: e.target.value }))} />
                 </div>
                 <div>
-                  <div style={label}>Linea/Descrizione</div>
-                  <input style={ipt} value={propDraft.line} onChange={e=>setPropDraft((d:any)=>({ ...d, line:e.target.value }))} />
+                  <div style={label}>Linea</div>
+                  <input style={ipt} value={propDraft.line} onChange={e=>setPropDraft((d:any)=>({ ...d, line: e.target.value }))} />
                 </div>
                 <div>
                   <div style={label}>Importo (EUR)</div>
-                  <input type="number" style={ipt} value={propDraft.amount||0} onChange={e=>setPropDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
+                  <input type="number" style={ipt} value={propDraft.amount} onChange={e=>setPropDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
                 </div>
-              </div>
-              <div>
-                <div style={label}>Note</div>
-                <input style={ipt} value={propDraft.notes||''} onChange={e=>setPropDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                <div style={{ gridColumn:'1 / span 3' }}>
+                  <div style={label}>Note</div>
+                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={propDraft.notes||''} onChange={e=>setPropDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                </div>
               </div>
 
               <div>
@@ -574,15 +573,15 @@ export default function LeadsPage(){
 
               <div>
                 {proposals.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                  <div key={r.id} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:10, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
                       <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Linea: {r.line} · Importo: {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
+                      <div style={{ fontSize:12, color:'var(--muted,#666)' }}>{r.line} · {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingPropId(r.id); setPropDraft({ ts: r.ts? r.ts.slice(0,16):'', line: r.line||'', amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare la proposta?'); if (!ok) return; const { error } = await supabase.from('proposals').delete().eq('id', r.id); if (error) alert(error.message); else await loadProposals(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingPropId(r.id!); setPropDraft({ ts: r.ts?.slice(0,16), line: r.line, amount: r.amount, notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Elimina" onClick={async()=>{ await supabase.from('proposals').delete().eq('id', r.id!); if (selectedId) await loadProposals(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -606,12 +605,12 @@ export default function LeadsPage(){
                 </div>
                 <div>
                   <div style={label}>Importo (EUR)</div>
-                  <input type="number" style={ipt} value={ctrDraft.amount||0} onChange={e=>setCtrDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
+                  <input type="number" style={ipt} value={ctrDraft.amount} onChange={e=>setCtrDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
                 </div>
               </div>
               <div>
                 <div style={label}>Note</div>
-                <input style={ipt} value={ctrDraft.notes||''} onChange={e=>setCtrDraft((d:any)=>({ ...d, notes:e.target.value }))} />
+                <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={ctrDraft.notes||''} onChange={e=>setCtrDraft((d:any)=>({ ...d, notes:e.target.value }))} />
               </div>
 
               <div>
@@ -628,7 +627,13 @@ export default function LeadsPage(){
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
+                    const payload = { 
+                      lead_id: selectedId,
+                      ts: ctrDraft.ts || new Date().toISOString(),
+                      contract_type: ctrDraft.contract_type,
+                      amount: Number(ctrDraft.amount||0),
+                      notes: ctrDraft.notes||null
+                    }
                     const { error } = await supabase.from('contracts').insert(payload)
                     if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                   }}>Aggiungi contratto</button>
@@ -637,15 +642,15 @@ export default function LeadsPage(){
 
               <div>
                 {contracts.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                  <div key={r.id} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:10, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
                       <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Tipo: {r.contract_type} · Importo: {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
+                      <div style={{ fontSize:12, color:'var(--muted,#666)' }}>{r.contract_type} · {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id); setCtrDraft({ ts: r.ts? r.ts.slice(0,16):'', contract_type: r.contract_type, amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contratto?'); if (!ok) return; const { error } = await supabase.from('contracts').delete().eq('id', r.id); if (error) alert(error.message); else await loadContracts(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id!); setCtrDraft({ ts: r.ts?.slice(0,16), contract_type: r.contract_type, amount: r.amount, notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Elimina" onClick={async()=>{ await supabase.from('contracts').delete().eq('id', r.id!); if (selectedId) await loadContracts(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -655,7 +660,7 @@ export default function LeadsPage(){
         </div>
       </div>
 
-      {/* Confirm Delete Modal semplice */}
+      {/* Conferma cancellazione */}
       {confirmDeleteId && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center' }}>
           <div style={{ background:'#fff', padding:16, borderRadius:12, width:320 }}>
@@ -663,11 +668,22 @@ export default function LeadsPage(){
             <div style={{ fontSize:13, color:'#555', marginBottom:12 }}>L'operazione non e reversibile.</div>
             <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
               <button onClick={()=>setConfirmDeleteId(null)} className="brand-btn">Annulla</button>
-              <button onClick={()=>{ void deleteLead(confirmDeleteId) }} className="brand-btn" style={{ background:'#c00', borderColor:'#c00', color:'#fff' }}>Elimina</button>
+              <button onClick={async()=>{
+                const { error } = await supabase.from('leads').delete().eq('id', confirmDeleteId)
+                if (error) alert(error.message)
+                await loadLeads()
+                setConfirmDeleteId(null)
+                if (selectedId===confirmDeleteId){ setSelectedId(null); clearForm() }
+              }} className="brand-btn" style={{ background:'#c00', borderColor:'#c00', color:'#fff' }}>Elimina</button>
             </div>
           </div>
         </div>
       )}
     </div>
   )
+}
+
+// input stile base
+const ipt: React.CSSProperties = {
+  width:'100%', padding:'8px 10px', border:'1px solid var(--border,#ddd)', borderRadius:8, outline:'none'
 }
