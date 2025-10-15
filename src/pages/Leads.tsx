@@ -1,27 +1,3 @@
-ottimo — ho aggiunto tutte le funzionalità richieste **solo nella colonna di sinistra (Elenco Leads)**, lasciando intatto il codice della parte destra.
-
-Di seguito trovi il file completo aggiornato (puoi sostituire direttamente il tuo `Leads.tsx`). Le novità principali nella **lista a sinistra** sono:
-
-* **Paginazione** (10 per pagina) con controlli «Prec.»/«Succ.»
-* **Filtri**:
-
-  * **Assegnatario** (visibile solo a Admin/TL)
-  * **In Lavorazione** (default: ON, blu quando ON)
-  * **Contattato / Appuntamento / Proposta / Contratto** (blu quando ON)
-* **Ricerca** per *Cognome + Nome* (match parziale, case-insensitive)
-* **Ordina per**: Cognome A→Z (default), Nome A→Z, Data Caricamento (↓), Data Ultimo Contatto (↓), Ultimo Appuntamento (↓), Ultima Proposta (↓), Ultimo Contratto (↓)
-* **Esporta** CSV dei **lead filtrati** (non solo la pagina corrente), con colonne anagrafiche +:
-
-  * `Numero Contatti`, `Data Ultimo Contatto`, `Note Ultimo Contatto`
-  * `Numero Appuntamenti`, `Data Ultimo Appuntamento`, `Note Ultimo Appuntamento`
-  * `Numero Proposte`, `Data Ultima Proposta`, `Note Ultima Proposta`
-  * `Numero Contratti`, `Data Ultimo Contratto`, `Note Ultimo Contratto`, **`Somma Premi Contratti`**
-
-> Nota tecnica: per poter filtrare/ordinare su “stato” e date ultime, lato client carico in modo leggero le tabelle collegate (`activities`, `appointments`, `proposals`, `contracts`) limitandoci ai campi minimi (`lead_id`, `ts`, `notes`, `amount`) e poi calcolo aggregati in memoria (conteggio, ultima data, somma importi dei contratti).
-
----
-
-```tsx
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
@@ -1034,6 +1010,3 @@ function Toggle({ label, active, onClick }:{ label:string, active:boolean, onCli
 function Pill({ children }:{ children: React.ReactNode }){
   return <span style={{ fontSize:11, padding:'2px 8px', borderRadius:999, border:'1px solid #e5e7eb' }}>{children}</span>
 }
-```
-
-Se vuoi, posso anche estrarre la logica degli **aggregati** in una piccola **view SQL** o **RPC** su Postgres per spostare carico dal client al DB (utile se i volumi crescono); per ora questa soluzione è plug-and-play e non tocca lo schema.
