@@ -551,66 +551,93 @@ export default function LeadsPage(){
           </div>
         </div>
 
-        {/* Filtri */}
-        <div style={{ display:'grid', gap:8, marginBottom:10 }}>
-          {(meRole==='Admin' || meRole==='Team Lead') && (
-            <div>
-              <div style={label}>Assegnatario</div>
-              <select style={ipt} value={assigneeFilter} onChange={e=>setAssigneeFilter(e.target.value)}>
-                <option value="">Tutti</option>
-                {advisors
-                  .filter(a=>a.role==='Junior' && a.user_id)
-                  .map(a => (
-                    <option key={a.user_id!} value={a.user_id!}>{a.full_name || a.email}</option>
-                  ))}
-              </select>
-            </div>
-          )}
+        {/* === FILTRI (3 righe) === */}
+<div style={{ display:'grid', gap:8, marginBottom:10 }}>
 
-          {/* Toggle filtri come bottoni blu/bianco */}
-<div
-  style={{
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-    gap: 8,
-  }}
->
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyWorking(v=>!v)}
-              style={ onlyWorking ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              In Lavorazione
-            </button>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyContacted(v=>!v)}
-              style={ onlyContacted ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Contattato
-            </button>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyAppointment(v=>!v)}
-              style={ onlyAppointment ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Fissato/Fatto Appuntamento
-            </button>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyProposal(v=>!v)}
-              style={ onlyProposal ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Presentata Proposta
-            </button>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyContract(v=>!v)}
-              style={ onlyContract ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Firmato Contratto
-            </button>
-          </div>
+  {/* Riga 1: Assegnatario + In Lavorazione */}
+  <div
+    style={{
+      display:'grid',
+      gridTemplateColumns: (meRole==='Admin' || meRole==='Team Lead')
+        ? 'minmax(180px,1fr) 170px'   // select più corto, bottone a destra
+        : '1fr 170px',
+      alignItems:'end',
+      gap:8
+    }}
+  >
+    {(meRole==='Admin' || meRole==='Team Lead') ? (
+      <div>
+        <div style={label}>Assegnatario</div>
+        <select
+          style={{ ...ipt, width:'100%' }}
+          value={assigneeFilter}
+          onChange={e=>setAssigneeFilter(e.target.value)}
+        >
+          <option value="">Tutti</option>
+          {advisors
+            .filter(a=>a.role==='Junior' && a.user_id)
+            .map(a=>(
+              <option key={a.user_id!} value={a.user_id!}>
+                {a.full_name || a.email}
+              </option>
+            ))}
+        </select>
+      </div>
+    ) : (
+      <div /> /* se non Admin/TL, lasciamo spazio vuoto per mantenere l'allineamento */
+    )}
+
+    <div>
+      <div style={{ visibility:'hidden', height:14 }}>.</div>
+      <button
+        className="brand-btn"
+        onClick={()=>setOnlyWorking(v=>!v)}
+        style={ onlyWorking
+          ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' }
+          : {} }
+      >
+        In Lavorazione
+      </button>
+    </div>
+  </div>
+
+  {/* Riga 2: Contattato + Fissato/Fatto Appuntamento */}
+  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyContacted(v=>!v)}
+      style={ onlyContacted ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Contattato
+    </button>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyAppointment(v=>!v)}
+      style={ onlyAppointment ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Fissato/Fatto Appuntamento
+    </button>
+  </div>
+
+  {/* Riga 3: Presentata Proposta + Firmato Contratto */}
+  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyProposal(v=>!v)}
+      style={ onlyProposal ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Presentata Proposta
+    </button>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyContract(v=>!v)}
+      style={ onlyContract ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Firmato Contratto
+    </button>
+  </div>
+
+</div>
 
           {/* Ricerca + Ordina per */}
           <div>
