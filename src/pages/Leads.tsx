@@ -568,7 +568,13 @@ export default function LeadsPage(){
           )}
 
           {/* Toggle filtri come bottoni blu/bianco */}
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+<div
+  style={{
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+    gap: 8,
+  }}
+>
             <button
               className="brand-btn"
               onClick={()=>setOnlyWorking(v=>!v)}
