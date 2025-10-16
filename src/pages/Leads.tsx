@@ -50,17 +50,6 @@ function outcomeDbFromLabel(label: string){
 // === Tipi base ===
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 
-// 🔧 PATCH: normalizzazione ruoli (gestisce 'TeamLead', 'team_lead', ecc.)
-const normalizeRole = (r?: string | null): Role => {
-  const key = String(r || '').toLowerCase().replace(/\s+/g, '');
-  if (key === 'admin') return 'Admin';
-  if (key === 'teamlead' || key === 'team_lead' || key === 'tl' || key === 'lead') return 'Team Lead';
-  return 'Junior';
-};
-const isAdmin    = (r?: string | null) => normalizeRole(r) === 'Admin';
-const isTeamLead = (r?: string | null) => normalizeRole(r) === 'Team Lead';
-const isJunior   = (r?: string | null) => normalizeRole(r) === 'Junior';
-
 type Lead = {
   id?: string
   owner_id?: string | null
@@ -77,14 +66,7 @@ type Lead = {
   is_working?: boolean | null
 }
 
-// 🔧 PATCH: aggiunto team_lead_user_id per calcolare il team
-type AdvisorRow = {
-  user_id: string | null,
-  email: string,
-  full_name: string | null,
-  role: Role | string,            // può arrivare grezzo dal DB
-  team_lead_user_id?: string | null
-}
+type AdvisorRow = { user_id: string | null, email: string, full_name: string | null, role: Role }
 
 type FormState = {
   id?: string
@@ -161,8 +143,6 @@ export default function LeadsPage(){
 
   // advisors per assegnazione owner
   const [advisors, setAdvisors] = useState<AdvisorRow[]>([])
-  // 🔧 PATCH: owner del team per visibilità TL
-  const [teamOwnerIds, setTeamOwnerIds] = useState<string[]>([])
 
   // selezione + edit
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -216,7 +196,7 @@ export default function LeadsPage(){
   // aggregati per leadId
   const [aggs, setAggs] = useState<Record<string, Aggs>>({})
 
-  // bootstrap (sequenziale per calcolare prima il team)
+  // bootstrap
   useEffect(()=>{ (async()=>{
     setLoading(true); setErr('')
     try{
@@ -225,19 +205,12 @@ export default function LeadsPage(){
       setMeUid(uid)
       if (uid){
         const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
-        if (me?.role) setMeRole(normalizeRole(me.role))
+        if (me?.role) setMeRole(me.role as Role)
       }
-      // carico advisors (calcola teamOwnerIds) e poi i leads filtrati
-      await loadAdvisors()
-      await loadLeads()
+      await Promise.all([loadLeads(), loadAdvisors()])
     } catch(ex:any){ setErr(ex.message || 'Errore inizializzazione') }
     finally{ setLoading(false) }
   })() },[])
-
-  // 🔧 ricarica leads se cambia la composizione del team (es. TL)
-  useEffect(()=>{
-    if (isTeamLead(meRole)){ void loadLeads() }
-  }, [teamOwnerIds, meRole])
 
   // carica leads
   async function loadLeads(){
@@ -246,46 +219,18 @@ export default function LeadsPage(){
       .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
       .order('created_at', { ascending:false })
     if (error){ setErr(error.message); return }
-    let arr = (data || []) as Lead[]
-
-    // 🔧 PATCH: visibilità per ruolo (usando helper)
-    if (isJunior(meRole) && meUid){
-      arr = arr.filter(l => l.owner_id === meUid)
-    } else if (isTeamLead(meRole)){
-      const owners = teamOwnerIds.length ? teamOwnerIds : (meUid ? [meUid] : [])
-      if (owners.length){
-        const setOwners = new Set(owners)
-        arr = arr.filter(l => l.owner_id && setOwners.has(l.owner_id))
-      }
-      // Admin → nessun filtro; se owners vuoto, lascio tutto (fallback RLS)
-    }
-
+    const arr = (data || []) as Lead[]
     setLeads(arr)
-    // carica aggregati per i lead visibili
+    // carica aggregati per tutti i lead correnti
     await loadAggregates(arr.map(x=>x.id!).filter(Boolean))
   }
 
   async function loadAdvisors(){
     const { data } = await supabase
       .from('advisors')
-      .select('user_id,email,full_name,role,team_lead_user_id')
+      .select('user_id,email,full_name,role')
       .order('full_name', { ascending:true })
-    // normalizzo il ruolo qui per coerenza del resto della UI
-    const rawList = (data||[]) as AdvisorRow[]
-    const list = rawList.map(a => ({ ...a, role: normalizeRole(a.role as string) as Role }))
-    setAdvisors(list)
-
-    // 🔧 PATCH: calcolo owner del team per TL (usando helper)
-    if (isTeamLead(meRole) && meUid){
-      const juniors = list
-        .filter(a => isJunior(a.role) && a.team_lead_user_id === meUid && !!a.user_id)
-        .map(a => a.user_id!)
-      setTeamOwnerIds(Array.from(new Set([...juniors, meUid])))
-    } else if (isAdmin(meRole)){
-      setTeamOwnerIds([]) // non serve filtro (tutti)
-    } else {
-      setTeamOwnerIds(meUid ? [meUid] : [])
-    }
+    setAdvisors((data||[]) as AdvisorRow[])
   }
 
   // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
@@ -457,7 +402,7 @@ export default function LeadsPage(){
 
   // filtro owners per select (solo Junior per assegnazione – usata a destra)
   const juniorOptions = useMemo(()=>
-    advisors.filter(a=>isJunior(a.role) && !!a.user_id)
+    advisors.filter(a=>a.role==='Junior' && !!a.user_id)
   ,[advisors])
 
   // ====== ELENCO SINISTRA: filtri + ricerca + sort + paginazione ======
@@ -613,14 +558,14 @@ export default function LeadsPage(){
   <div
     style={{
       display:'grid',
-      gridTemplateColumns: (isAdmin(meRole) || isTeamLead(meRole))
+      gridTemplateColumns: (meRole==='Admin' || meRole==='Team Lead')
         ? 'minmax(180px,1fr) 170px'
-        : '1fr 170px',
+        : '1fr 170px',               // se non Admin/TL lo lasciamo vuoto a sinistra per allineare il bottone
       alignItems:'end',
       gap:8
     }}
   >
-    {(isAdmin(meRole) || isTeamLead(meRole)) ? (
+    {(meRole==='Admin' || meRole==='Team Lead') ? (
       <div>
         <div style={label}>Assegnatario</div>
         <select
@@ -630,7 +575,7 @@ export default function LeadsPage(){
         >
           <option value="">Tutti</option>
           {advisors
-            .filter(a=>isJunior(a.role) && a.user_id)
+            .filter(a=>a.role==='Junior' && a.user_id)
             .map(a => (
               <option key={a.user_id!} value={a.user_id!}>
                 {a.full_name || a.email}
@@ -801,12 +746,12 @@ export default function LeadsPage(){
         </div>
 
         <div style={{ display:'grid', gap:12 }}>
-          {(isAdmin(meRole) || isTeamLead(meRole)) && (
+          {(meRole==='Admin' || meRole==='Team Lead') && (
             <div>
               <div style={label}>Assegna a Junior</div>
               <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
                 <option value="">— Scegli —</option>
-                {advisors.filter(a=>isJunior(a.role) && a.user_id).map(a => (
+                {advisors.filter(a=>a.role==='Junior' && a.user_id).map(a => (
                   <option key={a.user_id||a.email} value={a.user_id||''}>{a.full_name || a.email}</option>
                 ))}
               </select>
