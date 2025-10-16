@@ -66,7 +66,7 @@ type Lead = {
   is_working?: boolean | null
 }
 
-type AdvisorRow = { user_id: string | null, email: string, full_name: string | null, role: Role }
+type AdvisorRow = { user_id: string | null, email: string, full_name: string | null, role: Role, team_lead_user_id?: string | null }
 
 type FormState = {
   id?: string
@@ -144,6 +144,9 @@ export default function LeadsPage(){
   // advisors per assegnazione owner
   const [advisors, setAdvisors] = useState<AdvisorRow[]>([])
 
+  // owner ids visibili (per TL: i junior del proprio team + sé stesso)
+  const [teamOwnerIds, setTeamOwnerIds] = useState<string[]>([])
+
   // selezione + edit
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingLeadId, setEditingLeadId] = useState<string | null>(null)
@@ -205,23 +208,31 @@ export default function LeadsPage(){
       setMeUid(uid)
       if (uid){
         const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
-        if (me?.role) {
-          // Elevazione locale: in questa pagina il Team Lead ha i permessi dell'Admin
-          const elevated = (me.role === 'Team Lead') ? 'Admin' : me.role
-          setMeRole(elevated as Role)
-        }
+        if (me?.role) setMeRole(me.role as Role)
       }
       await Promise.all([loadLeads(), loadAdvisors()])
     } catch(ex:any){ setErr(ex.message || 'Errore inizializzazione') }
     finally{ setLoading(false) }
   })() },[])
+},[])
+
+  // ricarica i lead quando cambia il ruolo/uid o la lista di owner visibili
+  useEffect(()=>{ void loadLeads() }, [meRole, meUid, teamOwnerIds.join(',')])
 
   // carica leads
   async function loadLeads(){
-    const { data, error } = await supabase
+    // costruisci query con filtro per ruolo
+    let q = supabase
       .from('leads')
       .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
       .order('created_at', { ascending:false })
+    if (meRole === 'Junior' && meUid){
+      q = q.eq('owner_id', meUid)
+    } else if (meRole === 'Team Lead'){
+      const owners = teamOwnerIds.length ? teamOwnerIds : (meUid ? [meUid] : [])
+      if (owners.length) q = q.in('owner_id', owners)
+    }
+    const { data, error } = await q)
     if (error){ setErr(error.message); return }
     const arr = (data || []) as Lead[]
     setLeads(arr)
@@ -232,9 +243,21 @@ export default function LeadsPage(){
   async function loadAdvisors(){
     const { data } = await supabase
       .from('advisors')
-      .select('user_id,email,full_name,role')
+      .select('user_id,email,full_name,role,team_lead_user_id')
       .order('full_name', { ascending:true })
     setAdvisors((data||[]) as AdvisorRow[])
+    // calcola owners visibili
+    const list = (data||[]) as AdvisorRow[]
+    if (meRole === 'Admin'){ 
+      setTeamOwnerIds([]) 
+    } else if (meRole === 'Team Lead' && meUid){ 
+      const ids = list.filter(a => (a.role === 'Junior' && a.team_lead_user_id === meUid) || a.user_id === meUid)
+                     .map(a => a.user_id||'')
+                     .filter(Boolean)
+      setTeamOwnerIds(Array.from(new Set(ids)))
+    } else if (meRole === 'Junior' && meUid){ 
+      setTeamOwnerIds([meUid]) 
+    }
   }
 
   // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
@@ -579,8 +602,7 @@ export default function LeadsPage(){
         >
           <option value="">Tutti</option>
           {advisors
-            // TL/Admin: mostrali tutti (non solo Junior)
-            .filter(a=>a.user_id)
+            .filter(a=>a.role==='Junior' && a.user_id)
             .map(a => (
               <option key={a.user_id!} value={a.user_id!}>
                 {a.full_name || a.email}
