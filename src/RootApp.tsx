@@ -33,7 +33,7 @@ export default function RootApp(){
     ;(async () => {
       const { data: s } = await supabase.auth.getSession()
       if (s?.session) {
-        await loadMe(s.session.user.id)
+        await loadMe(s.session.user.id) // iniziale: mostra loading
       } else {
         // tentativo di refresh se c'è traccia nel localStorage
         try {
@@ -52,9 +52,15 @@ export default function RootApp(){
         }
       }
 
-      const sub = supabase.auth.onAuthStateChange(async (_evt, session) => {
+      // ⬇️ Patch: non rimettiamo loading durante i refresh del token
+      const sub = supabase.auth.onAuthStateChange(async (evt, session) => {
         if (!session) { setMe(null); setLoading(false); return }
-        await loadMe(session.user.id)
+
+        // refresh periodico del token: non toccare la UI
+        if (evt === 'TOKEN_REFRESHED') return
+
+        // altri eventi rilevanti (login, update profilo): ricarica anagrafica
+        await loadMe(session.user.id, { silent: false })
       })
       unsub = sub.data.subscription
     })()
@@ -62,8 +68,10 @@ export default function RootApp(){
     return () => { if (unsub) unsub.unsubscribe() }
   }, [])
 
-  async function loadMe(uid: string){
-    setLoading(true)
+  // ⬇️ Patch: possibilità di caricare in modo “silenzioso” (senza mostrare Caricamento…)
+  async function loadMe(uid: string, opts?: { silent?: boolean }){
+    const silent = !!opts?.silent
+    if (!silent) setLoading(true)
     try{
       // 1) prova per user_id
       let { data, error } = await supabase
@@ -93,7 +101,9 @@ export default function RootApp(){
 
       if (data) setMe({ id: data.id, user_id: data.user_id, email: data.email, full_name: data.full_name, role: data.role })
       else setMe(null)
-    } finally { setLoading(false) }
+    } finally {
+      if (!silent) setLoading(false)
+    }
   }
 
   // ====== RENDER ======
