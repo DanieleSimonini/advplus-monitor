@@ -648,7 +648,13 @@ async function saveAnnual(g: AnnualGoals, opts?: { signal?: AbortSignal }) {
   }
 }
 
+/** PATCH: valorizza ym (NOT NULL) in insert/update */
 async function saveMonthly(g: MonthlyGoals, opts?: { signal?: AbortSignal }) {
+  // Se la colonna 'ym' è stringa "YYYY-MM"
+  const ym = `${g.year}-${String(g.month).padStart(2, '0')}`
+  // Se invece nel tuo schema 'ym' è intero tipo 202510, sostituisci con:
+  // const ym = Number(`${g.year}${String(g.month).padStart(2, '0')}`)
+
   const { data: exists } = await supabase
     .from('goals_monthly')
     .select('advisor_user_id,year,month')
@@ -663,6 +669,7 @@ async function saveMonthly(g: MonthlyGoals, opts?: { signal?: AbortSignal }) {
       .from('goals_monthly')
       .update(
         {
+          ym, // manteniamo valorizzato anche in update
           target_consulenze: g.target_consulenze,
           target_contratti: g.target_contratti,
           target_prod_danni: g.target_prod_danni,
@@ -681,7 +688,23 @@ async function saveMonthly(g: MonthlyGoals, opts?: { signal?: AbortSignal }) {
   } else {
     await supabase
       .from('goals_monthly')
-      .insert({ ...g }, { returning: 'minimal' } as any)
+      .insert(
+        [
+          {
+            advisor_user_id: g.advisor_user_id,
+            year: g.year,
+            month: g.month,
+            ym, // <-- NOT NULL: ora lo inviamo
+            target_consulenze: g.target_consulenze,
+            target_contratti: g.target_contratti,
+            target_prod_danni: g.target_prod_danni,
+            target_prod_vprot: g.target_prod_vprot,
+            target_prod_vpr: g.target_prod_vpr,
+            target_prod_vpu: g.target_prod_vpu,
+          },
+        ],
+        { returning: 'minimal' } as any
+      )
       // @ts-ignore
       .abortSignal(opts?.signal)
       .throwOnError()
