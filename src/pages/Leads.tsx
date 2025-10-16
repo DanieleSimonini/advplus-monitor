@@ -213,16 +213,22 @@ export default function LeadsPage(){
   })() },[])
 
   // carica leads
-  async function loadLeads(){
-    const { data, error } = await supabase
+    async function loadLeads(){
+    let query = supabase
       .from('leads')
-      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
+      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at')
       .order('created_at', { ascending:false })
+
+    // 🔹 Equipara Team Lead ad Admin: mostra tutti i lead
+    if (meRole === 'Admin' || meRole === 'Team Lead') {
+      // nessun filtro
+    } else {
+      query = query.eq('owner_id', meUid)
+    }
+
+    const { data, error } = await query
     if (error){ setErr(error.message); return }
-    const arr = (data || []) as Lead[]
-    setLeads(arr)
-    // carica aggregati per tutti i lead correnti
-    await loadAggregates(arr.map(x=>x.id!).filter(Boolean))
+    setLeads(data as Lead[])
   }
 
   async function loadAdvisors(){
