@@ -4,18 +4,13 @@ import { supabase } from '../supabaseClient'
 /**
  * Obiettivi — pagina unica per Admin / Team Lead / Junior
  *
- * - Titolo pagina: "Obiettivi"
- * - "Nr. Consulenze" → "Nr. Appuntamenti" (solo label; dati su stessa colonna target_consulenze)
- * - Annuale/Mensile: prima riga = Nr. Appuntamenti + Nr. Contratti; seconda riga = produzione
- * - Junior: visualizzazione sola lettura (campi read-only, Reset/Salva nascosti)
- * - Team Lead: non può modificare i propri obiettivi; può modificare i Junior del proprio team
- * - Admin: può modificare tutti (nel filtro non compaiono Admin)
- * - Default: Admin → un Team Lead; Team Lead/Junior → se stessi
- *
- * Patch salvataggio:
- * - Niente upsert(); check esistenza → update/insert
- * - throwOnError() per chiudere sempre l’await (successo/errore)
- * - abortSignal + timeout difensivo
+ * - "Nr. Consulenze" → "Nr. Appuntamenti" (solo label; stesso campo target_consulenze)
+ * - Layout: riga 1 = Appuntamenti/Contratti; riga 2 = produzione
+ * - Permessi:
+ *    • Junior: solo lettura (niente Reset/Salva)
+ *    • Team Lead: non modifica i propri obiettivi, solo quelli dei Junior del suo team
+ *    • Admin: può modificare tutti; nel filtro non compaiono Admin
+ * - Salvataggio robusto: niente upsert(); check → update/insert, throwOnError(), abortSignal + timeout
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -83,7 +78,7 @@ const ipt: React.CSSProperties = {
   background: '#fff',
   color: '#111',
 }
-const gridTwoRows: React.CSSProperties = {
+const gridTwoCols: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))',
   gap: 12,
@@ -195,8 +190,8 @@ export default function GoalsTLPage() {
   const canEdit = useMemo(() => {
     if (!me) return false
     if (me.role === 'Admin') return true
-    if (me.role === 'Team Lead') return advisorUserId !== me.user_id
-    return false
+    if (me.role === 'Team Lead') return advisorUserId !== me.user_id // TL non modifica i propri
+    return false // Junior solo lettura
   }, [me, advisorUserId])
 
   const isJuniorView = me?.role === 'Junior'
@@ -212,6 +207,7 @@ export default function GoalsTLPage() {
     setMonthly(mon)
   }
 
+  // Salvataggio robusto (no upsert)
   const onSave = async () => {
     if (!canEdit) return alert('Non autorizzato')
     if (!advisorUserId) return alert('Seleziona un advisor')
@@ -220,7 +216,7 @@ export default function GoalsTLPage() {
     setError('')
     try {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15000)
+      const timer = setTimeout(() => controller.abort(), 15000) // timeout 15s
 
       if (annual) await saveAnnual(annual, { signal: controller.signal })
       if (monthly) await saveMonthly(monthly, { signal: controller.signal })
@@ -253,6 +249,7 @@ export default function GoalsTLPage() {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={title}>Obiettivi</div>
+
       {error && <div style={{ color: '#c00' }}>{error}</div>}
       {loading && <div>Caricamento…</div>}
 
@@ -273,7 +270,7 @@ export default function GoalsTLPage() {
                 <>
                   <option value="">—</option>
                   {list
-                    .filter((a) => a.role !== 'Admin')
+                    .filter((a) => a.role !== 'Admin') // sicurezza extra
                     .map((a) => (
                       <option key={a.user_id} value={a.user_id}>
                         {a.full_name || a.email} {a.role !== 'Junior' ? `(${a.role})` : ''}
@@ -315,16 +312,66 @@ export default function GoalsTLPage() {
           )}
         </div>
 
-        <div style={gridTwoRows}>
-          {annualInput('Nr. Appuntamenti', annual?.target_consulenze ?? 0, v => setAnnual(p => p ? { ...p, target_consulenze: v } : makeAnnual(advisorUserId, year, { target_consulenze: v })), ro)}
-          {annualInput('Nr. Contratti', annual?.target_contratti ?? 0, v => setAnnual(p => p ? { ...p, target_contratti: v } : makeAnnual(advisorUserId, year, { target_contratti: v })), ro)}
+        {/* Riga 1: Appuntamenti + Contratti */}
+        <div style={gridTwoCols}>
+          {annualInput(
+            'Nr. Appuntamenti',
+            annual?.target_consulenze ?? 0,
+            (v) =>
+              setAnnual((p) =>
+                p ? { ...p, target_consulenze: v } : makeAnnual(advisorUserId, year, { target_consulenze: v })
+              ),
+            ro
+          )}
+          {annualInput(
+            'Nr. Contratti',
+            annual?.target_contratti ?? 0,
+            (v) =>
+              setAnnual((p) =>
+                p ? { ...p, target_contratti: v } : makeAnnual(advisorUserId, year, { target_contratti: v })
+              ),
+            ro
+          )}
         </div>
 
+        {/* Riga 2: Produzione */}
         <div style={{ ...gridWide, marginTop: 12 }}>
-          {annualInput('Produzione Danni Non Auto (€)', annual?.target_prod_danni ?? 0, v => setAnnual(p => p ? { ...p, target_prod_danni: v } : makeAnnual(advisorUserId, year, { target_prod_danni: v })), ro)}
-          {annualInput('Produzione Vita Protection (€)', annual?.target_prod_vprot ?? 0, v => setAnnual(p => p ? { ...p, target_prod_vprot: v } : makeAnnual(advisorUserId, year, { target_prod_vprot: v })), ro)}
-          {annualInput('Produzione Vita Premi Ricorrenti (€)', annual?.target_prod_vpr ?? 0, v => setAnnual(p => p ? { ...p, target_prod_vpr: v } : makeAnnual(advisorUserId, year, { target_prod_vpr: v })), ro)}
-          {annualInput('Produzione Vita Premi Unici (€)', annual?.target_prod_vpu ?? 0, v => setAnnual(p => p ? { ...p, target_prod_vpu: v } : makeAnnual(advisorUserId, year, { target_prod_vpu: v })), ro)}
+          {annualInput(
+            'Produzione Danni Non Auto (€)',
+            annual?.target_prod_danni ?? 0,
+            (v) =>
+              setAnnual((p) =>
+                p ? { ...p, target_prod_danni: v } : makeAnnual(advisorUserId, year, { target_prod_danni: v })
+              ),
+            ro
+          )}
+          {annualInput(
+            'Produzione Vita Protection (€)',
+            annual?.target_prod_vprot ?? 0,
+            (v) =>
+              setAnnual((p) =>
+                p ? { ...p, target_prod_vprot: v } : makeAnnual(advisorUserId, year, { target_prod_vprot: v })
+              ),
+            ro
+          )}
+          {annualInput(
+            'Produzione Vita Premi Ricorrenti (€)',
+            annual?.target_prod_vpr ?? 0,
+            (v) =>
+              setAnnual((p) =>
+                p ? { ...p, target_prod_vpr: v } : makeAnnual(advisorUserId, year, { target_prod_vpr: v })
+              ),
+            ro
+          )}
+          {annualInput(
+            'Produzione Vita Premi Unici (€)',
+            annual?.target_prod_vpu ?? 0,
+            (v) =>
+              setAnnual((p) =>
+                p ? { ...p, target_prod_vpu: v } : makeAnnual(advisorUserId, year, { target_prod_vpu: v })
+              ),
+            ro
+          )}
         </div>
       </div>
 
@@ -332,26 +379,80 @@ export default function GoalsTLPage() {
       <div style={box}>
         <div style={{ fontWeight: 700, marginBottom: 12 }}>Obiettivi Mensili — {monthKey}</div>
 
-        <div style={gridTwoRows}>
-          {monthlyInput('Nr. Appuntamenti', monthly?.target_consulenze ?? 0, v => setMonthly(p => p ? { ...p, target_consulenze: v } : makeMonthly(advisorUserId, year, month, { target_consulenze: v })), ro)}
-          {monthlyInput('Nr. Contratti', monthly?.target_contratti ?? 0, v => setMonthly(p => p ? { ...p, target_contratti: v } : makeMonthly(advisorUserId, year, month, { target_contratti: v })), ro)}
+        {/* Riga 1: Appuntamenti + Contratti */}
+        <div style={gridTwoCols}>
+          {monthlyInput(
+            'Nr. Appuntamenti',
+            monthly?.target_consulenze ?? 0,
+            (v) =>
+              setMonthly((p) =>
+                p ? { ...p, target_consulenze: v } : makeMonthly(advisorUserId, year, month, { target_consulenze: v })
+              ),
+            ro
+          )}
+          {monthlyInput(
+            'Nr. Contratti',
+            monthly?.target_contratti ?? 0,
+            (v) =>
+              setMonthly((p) =>
+                p ? { ...p, target_contratti: v } : makeMonthly(advisorUserId, year, month, { target_contratti: v })
+              ),
+            ro
+          )}
         </div>
 
+        {/* Riga 2: Produzione */}
         <div style={{ ...gridWide, marginTop: 12 }}>
-          {monthlyInput('Produzione Danni Non Auto (€)', monthly?.target_prod_danni ?? 0, v => setMonthly(p => p ? { ...p, target_prod_danni: v } : makeMonthly(advisorUserId, year, month, { target_prod_danni: v })), ro)}
-          {monthlyInput('Produzione Vita Protection (€)', monthly?.target_prod_vprot ?? 0, v => setMonthly(p => p ? { ...p, target_prod_vprot: v } : makeMonthly(advisorUserId, year, month, { target_prod_vprot: v })), ro)}
-          {monthlyInput('Produzione Vita Premi Ricorrenti (€)', monthly?.target_prod_vpr ?? 0, v => setMonthly(p => p ? { ...p, target_prod_vpr: v } : makeMonthly(advisorUserId, year, month, { target_prod_vpr: v })), ro)}
-          {monthlyInput('Produzione Vita Premi Unici (€)', monthly?.target_prod_vpu ?? 0, v => setMonthly(p => p ? { ...p, target_prod_vpu: v } : makeMonthly(advisorUserId, year, month, { target_prod_vpu: v })), ro)}
+          {monthlyInput(
+            'Produzione Danni Non Auto (€)',
+            monthly?.target_prod_danni ?? 0,
+            (v) =>
+              setMonthly((p) =>
+                p ? { ...p, target_prod_danni: v } : makeMonthly(advisorUserId, year, month, { target_prod_danni: v })
+              ),
+            ro
+          )}
+          {monthlyInput(
+            'Produzione Vita Protection (€)',
+            monthly?.target_prod_vprot ?? 0,
+            (v) =>
+              setMonthly((p) =>
+                p ? { ...p, target_prod_vprot: v } : makeMonthly(advisorUserId, year, month, { target_prod_vprot: v })
+              ),
+            ro
+          )}
+          {monthlyInput(
+            'Produzione Vita Premi Ricorrenti (€)',
+            monthly?.target_prod_vpr ?? 0,
+            (v) =>
+              setMonthly((p) =>
+                p ? { ...p, target_prod_vpr: v } : makeMonthly(advisorUserId, year, month, { target_prod_vpr: v })
+              ),
+            ro
+          )}
+          {monthlyInput(
+            'Produzione Vita Premi Unici (€)',
+            monthly?.target_prod_vpu ?? 0,
+            (v) =>
+              setMonthly((p) =>
+                p ? { ...p, target_prod_vpu: v } : makeMonthly(advisorUserId, year, month, { target_prod_vpu: v })
+              ),
+            ro
+          )}
         </div>
       </div>
 
-      {/* PROGRESS */}
+      {/* PROGRESSO ANNO */}
       <div style={box}>
         <div style={{ fontWeight: 700, marginBottom: 8 }}>Andamento {year}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px,1fr))', gap: 12 }}>
-          <SparkCard label="Appuntamenti" data={progress.map(p => p.consulenze)} />
-          <SparkCard label="Contratti" data={progress.map(p => p.contratti)} />
-          <SparkCard label="Produzione (€)" data={progress.map(p => (p.prod_danni + p.prod_vprot + p.prod_vpr + p.prod_vpu))} fmt="€" />
+          <SparkCard label="Appuntamenti" data={progress.map((p) => p.consulenze)} />
+          <SparkCard label="Contratti" data={progress.map((p) => p.contratti)} />
+          <SparkCard
+            label="Produzione (€)"
+            data={progress.map((p) => p.prod_danni + p.prod_vprot + p.prod_vpr + p.prod_vpu)}
+            fmt="€"
+          />
         </div>
       </div>
     </div>
@@ -363,7 +464,14 @@ function annualInput(label: string, value: number, onChange: (v: number) => void
   return (
     <div>
       <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{label}</div>
-      <input type="number" value={value} onChange={e => onChange(Number(e.target.value || 0))} style={ro.style || ipt} disabled={ro.disabled} readOnly={ro.readOnly} />
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value || 0))}
+        style={ro.style || ipt}
+        disabled={ro.disabled}
+        readOnly={ro.readOnly}
+      />
     </div>
   )
 }
@@ -371,4 +479,243 @@ function monthlyInput(label: string, value: number, onChange: (v: number) => voi
   return (
     <div>
       <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{label}</div>
-      <input type="number" value={value
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value || 0))}
+        style={ro.style || ipt}
+        disabled={ro.disabled}
+        readOnly={ro.readOnly}
+      />
+    </div>
+  )
+}
+
+function toMonthKey(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  return `${y}-${m}`
+}
+
+/* ===== Data access ===== */
+async function getAnnual(advisor_user_id: string, year: number): Promise<AnnualGoals> {
+  const { data, error } = await supabase
+    .from('goals')
+    .select(
+      'advisor_user_id,year,target_consulenze,target_contratti,target_prod_danni,target_prod_vprot,target_prod_vpr,target_prod_vpu'
+    )
+    .eq('advisor_user_id', advisor_user_id)
+    .eq('year', year)
+    .maybeSingle()
+  if (error && (error as any).code !== 'PGRST116') throw error
+  if (!data)
+    return {
+      advisor_user_id,
+      year,
+      target_consulenze: 0,
+      target_contratti: 0,
+      target_prod_danni: 0,
+      target_prod_vprot: 0,
+      target_prod_vpr: 0,
+      target_prod_vpu: 0,
+    }
+  return data as AnnualGoals
+}
+
+async function getMonthly(advisor_user_id: string, year: number, month: number): Promise<MonthlyGoals> {
+  const { data, error } = await supabase
+    .from('goals_monthly')
+    .select(
+      'advisor_user_id,year,month,target_consulenze,target_contratti,target_prod_danni,target_prod_vprot,target_prod_vpr,target_prod_vpu'
+    )
+    .eq('advisor_user_id', advisor_user_id)
+    .eq('year', year)
+    .eq('month', month)
+    .maybeSingle()
+  if (error && (error as any).code !== 'PGRST116') throw error
+  if (!data)
+    return {
+      advisor_user_id,
+      year,
+      month,
+      target_consulenze: 0,
+      target_contratti: 0,
+      target_prod_danni: 0,
+      target_prod_vprot: 0,
+      target_prod_vpr: 0,
+      target_prod_vpu: 0,
+    }
+  return data as MonthlyGoals
+}
+
+async function getProgress(advisor_user_id: string, year: number): Promise<MonthlyProgress[]> {
+  const { data, error } = await supabase
+    .from('v_progress_monthly')
+    .select('month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+    .eq('advisor_user_id', advisor_user_id)
+    .eq('year', year)
+    .order('month', { ascending: true })
+  if (error) throw error
+  const arr = (data || []) as any[]
+  const byMonth: Record<number, MonthlyProgress> = {}
+  for (let m = 1; m <= 12; m++)
+    byMonth[m] = { month: m, consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0 }
+  for (const r of arr) {
+    byMonth[r.month] = {
+      month: r.month,
+      consulenze: r.consulenze,
+      contratti: r.contratti,
+      prod_danni: r.prod_danni,
+      prod_vprot: r.prod_vprot,
+      prod_vpr: r.prod_vpr,
+      prod_vpu: r.prod_vpu,
+    }
+  }
+  return Object.values(byMonth).sort((a, b) => a.month - b.month)
+}
+
+/* ===== Helpers per costruire stato "vuoto" ===== */
+function makeAnnual(advisor_user_id: string, year: number, patch: Partial<AnnualGoals> = {}): AnnualGoals {
+  return {
+    advisor_user_id,
+    year,
+    target_consulenze: 0,
+    target_contratti: 0,
+    target_prod_danni: 0,
+    target_prod_vprot: 0,
+    target_prod_vpr: 0,
+    target_prod_vpu: 0,
+    ...patch,
+  }
+}
+
+function makeMonthly(
+  advisor_user_id: string,
+  year: number,
+  month: number,
+  patch: Partial<MonthlyGoals> = {}
+): MonthlyGoals {
+  return {
+    advisor_user_id,
+    year,
+    month,
+    target_consulenze: 0,
+    target_contratti: 0,
+    target_prod_danni: 0,
+    target_prod_vprot: 0,
+    target_prod_vpr: 0,
+    target_prod_vpu: 0,
+    ...patch,
+  }
+}
+
+/* ===== Salvataggio robusto (no upsert) ===== */
+async function saveAnnual(g: AnnualGoals, opts?: { signal?: AbortSignal }) {
+  const { data: exists } = await supabase
+    .from('goals')
+    .select('advisor_user_id,year')
+    .eq('advisor_user_id', g.advisor_user_id)
+    .eq('year', g.year)
+    .maybeSingle()
+    .throwOnError()
+
+  if (exists) {
+    await supabase
+      .from('goals')
+      .update(
+        {
+          target_consulenze: g.target_consulenze,
+          target_contratti: g.target_contratti,
+          target_prod_danni: g.target_prod_danni,
+          target_prod_vprot: g.target_prod_vprot,
+          target_prod_vpr: g.target_prod_vpr,
+          target_prod_vpu: g.target_prod_vpu,
+        },
+        { returning: 'minimal' } as any
+      )
+      .eq('advisor_user_id', g.advisor_user_id)
+      .eq('year', g.year)
+      // @ts-ignore
+      .abortSignal(opts?.signal)
+      .throwOnError()
+  } else {
+    await supabase
+      .from('goals')
+      .insert({ ...g }, { returning: 'minimal' } as any)
+      // @ts-ignore
+      .abortSignal(opts?.signal)
+      .throwOnError()
+  }
+}
+
+async function saveMonthly(g: MonthlyGoals, opts?: { signal?: AbortSignal }) {
+  const { data: exists } = await supabase
+    .from('goals_monthly')
+    .select('advisor_user_id,year,month')
+    .eq('advisor_user_id', g.advisor_user_id)
+    .eq('year', g.year)
+    .eq('month', g.month)
+    .maybeSingle()
+    .throwOnError()
+
+  if (exists) {
+    await supabase
+      .from('goals_monthly')
+      .update(
+        {
+          target_consulenze: g.target_consulenze,
+          target_contratti: g.target_contratti,
+          target_prod_danni: g.target_prod_danni,
+          target_prod_vprot: g.target_prod_vprot,
+          target_prod_vpr: g.target_prod_vpr,
+          target_prod_vpu: g.target_prod_vpu,
+        },
+        { returning: 'minimal' } as any
+      )
+      .eq('advisor_user_id', g.advisor_user_id)
+      .eq('year', g.year)
+      .eq('month', g.month)
+      // @ts-ignore
+      .abortSignal(opts?.signal)
+      .throwOnError()
+  } else {
+    await supabase
+      .from('goals_monthly')
+      .insert({ ...g }, { returning: 'minimal' } as any)
+      // @ts-ignore
+      .abortSignal(opts?.signal)
+      .throwOnError()
+  }
+}
+
+/* ===== Spark mini-chart ===== */
+function SparkCard({ label, data, fmt }: { label: string; data: number[]; fmt?: '€' }) {
+  return (
+    <div style={{ ...box }}>
+      <div style={{ fontSize: 12, color: '#666' }}>{label}</div>
+      <Sparkline data={data} />
+      <div style={{ marginTop: 8, fontWeight: 700 }}>{fmt === '€' ? formatCurrency(sum(data)) : sum(data)}</div>
+    </div>
+  )
+}
+function Sparkline({ data }: { data: number[] }) {
+  if (!data || data.length === 0) return null
+  const max = Math.max(1, ...data)
+  const pts = data.map((v, i) => ({ x: i * (100 / (data.length - 1 || 1)), y: 30 - (v / max) * 30 }))
+  const d = pts.map((p, i) => (i === 0 ? `M ${p.x},${p.y}` : ` L ${p.x},${p.y}`)).join('')
+  return (
+    <svg viewBox="0 0 100 30" preserveAspectRatio="none" style={{ width: '100%', height: 40, marginTop: 8 }}>
+      <path d={d} fill="none" stroke="currentColor" strokeWidth={1.5} />
+    </svg>
+  )
+}
+function sum(arr: number[]) {
+  return arr.reduce((a, b) => a + b, 0)
+}
+function formatCurrency(n: number) {
+  try {
+    return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
+  } catch {
+    return `€ ${n.toFixed(0)}`
+  }
+}
