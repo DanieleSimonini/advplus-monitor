@@ -1,21 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
-/**
- * AdminUsers.tsx — Gestione Utenti (solo Admin)
- *
- * Funzioni chiave:
- * - Lista utenti (Nome | Email | Ruolo | Responsabile | Azioni)
- * - Nuovo utente → invio invito: prova Edge Function `invite`,
- *   se non raggiungibile/fa errore usa fallback `smtp_invite` (altra Edge Function)
- * - Modifica: full_name, email (anagrafica), ruolo, team_lead_user_id
- * - Cancella: se user_id mancante → delete by email; se presente e possiede lead → modale di riassegnazione
- *
- * Note SMTP (per la Edge Function fallback `smtp_invite`):
- *   Configurare su Supabase (Function Secrets) o Vercel (Serverless) le env:
- *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_SECURE ("true"/"false").
- */
-
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 
 type Advisor = {
@@ -79,17 +64,25 @@ export default function AdminUsersPage(){
   function nameOf(a: Advisor){ return (a.full_name && a.full_name.trim()) || a.email }
   function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
 
-  // ====== INVITES ======
+  // ====== INVITES (con alias multipli per il ruolo) ======
   async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
     const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
     const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
     if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
 
-    // PATCH: normalizza "Team Lead" → "TeamLead" per l'Edge Function
-    const roleForEdge = payload.role === 'Team Lead' ? ('TeamLead' as Role) : payload.role;
+    // alias possibili attesi dal backend
+    const roleAliases: Record<Role, string[]> = {
+      'Admin':  ['Admin','admin','ADMIN'],
+      'Junior': ['Junior','junior','JUNIOR'],
+      'Team Lead': [
+        'TeamLead', 'team_lead', 'TEAM_LEAD', 'TL', 'Tl', 'teamLead', 'Teamlead'
+      ],
+    };
 
-    // 1) Direct fetch (mostra il body d'errore completo)
-    try{
+    const aliases = roleAliases[payload.role] || [payload.role];
+
+    async function tryPost(roleValue: string){
+      const body = { email: payload.email, role: roleValue, full_name: payload.full_name };
       const resp = await fetch(`${url}/functions/v1/invite`, {
         method: 'POST',
         headers: {
@@ -97,25 +90,46 @@ export default function AdminUsersPage(){
           'apikey': anon,
           'authorization': `Bearer ${anon}`,
         },
-        body: JSON.stringify({ email: payload.email, role: roleForEdge, full_name: payload.full_name }),
+        body: JSON.stringify(body),
       });
       if (!resp.ok){
         const txt = await resp.text();
-        throw new Error(`HTTP ${resp.status} — ${txt}`);
+        const err = new Error(`HTTP ${resp.status} — ${txt}`);
+        // se 400 (validazione) continuiamo a provare altri alias
+        // altrimenti interrompiamo subito (es. 401/403/500)
+        if (resp.status === 400) throw Object.assign(err, { retryable:true });
+        throw err;
       }
-      return 'direct';
-    }catch(e1:any){
-      // 2) Fallback SDK (se per qualche motivo la route diretta non va)
+      return true;
+    }
+
+    // 1) Prova alias in direct fetch
+    let lastErr:any = null;
+    for (const alias of aliases){
       try{
-        const { error } = await supabase.functions.invoke('invite', {
-          body: { email: payload.email, role: roleForEdge, full_name: payload.full_name }
-        });
-        if (error) throw error;
-        return 'edge';
-      }catch(e2:any){
-        throw new Error(`Invio invito fallito. direct: ${e1?.message||e1}; edge: ${e2?.message||e2}`);
+        await tryPost(alias);
+        return 'direct';
+      }catch(e:any){
+        lastErr = e;
+        if (!e?.retryable) break; // errori non di validazione → stop
       }
     }
+
+    // 2) Fallback SDK (ripeti il giro alias)
+    for (const alias of aliases){
+      try{
+        const { error } = await supabase.functions.invoke('invite', {
+          body: { email: payload.email, role: alias, full_name: payload.full_name }
+        });
+        if (error) throw Object.assign(new Error(error.message||'Edge error'), { retryable: /ruolo/i.test(error.message||'') });
+        return 'edge';
+      }catch(e:any){
+        lastErr = e;
+        if (!e?.retryable) break;
+      }
+    }
+
+    throw new Error(`Invio invito fallito. Ultimo errore: ${lastErr?.message||lastErr}`);
   }
 
   async function inviteNew(){
