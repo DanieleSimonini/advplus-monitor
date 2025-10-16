@@ -80,39 +80,43 @@ export default function AdminUsersPage(){
   function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
 
   // ====== INVITES ======
-async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
-  const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
-  const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-  if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
+  async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
+    const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
+    const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+    if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
 
-  // 1) Direct fetch (mostra il body d'errore completo)
-  try{
-    const resp = await fetch(`${url}/functions/v1/invite`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': anon,
-        'authorization': `Bearer ${anon}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!resp.ok){
-      const txt = await resp.text();
-      throw new Error(`HTTP ${resp.status} — ${txt}`);
-    }
-    return 'direct';
-  }catch(e1:any){
-    // 2) Fallback SDK (se per qualche motivo la route diretta non va)
+    // PATCH: normalizza "Team Lead" → "TeamLead" per l'Edge Function
+    const roleForEdge = payload.role === 'Team Lead' ? ('TeamLead' as Role) : payload.role;
+
+    // 1) Direct fetch (mostra il body d'errore completo)
     try{
-      const { error } = await supabase.functions.invoke('invite', { body: payload });
-      if (error) throw error;
-      return 'edge';
-    }catch(e2:any){
-      throw new Error(`Invio invito fallito. direct: ${e1?.message||e1}; edge: ${e2?.message||e2}`);
+      const resp = await fetch(`${url}/functions/v1/invite`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': anon,
+          'authorization': `Bearer ${anon}`,
+        },
+        body: JSON.stringify({ email: payload.email, role: roleForEdge, full_name: payload.full_name }),
+      });
+      if (!resp.ok){
+        const txt = await resp.text();
+        throw new Error(`HTTP ${resp.status} — ${txt}`);
+      }
+      return 'direct';
+    }catch(e1:any){
+      // 2) Fallback SDK (se per qualche motivo la route diretta non va)
+      try{
+        const { error } = await supabase.functions.invoke('invite', {
+          body: { email: payload.email, role: roleForEdge, full_name: payload.full_name }
+        });
+        if (error) throw error;
+        return 'edge';
+      }catch(e2:any){
+        throw new Error(`Invio invito fallito. direct: ${e1?.message||e1}; edge: ${e2?.message||e2}`);
+      }
     }
   }
-}
-
 
   async function inviteNew(){
     if (!canAdmin()) return alert('Accesso negato: solo Admin')
