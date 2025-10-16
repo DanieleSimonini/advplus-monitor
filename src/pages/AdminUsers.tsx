@@ -3,6 +3,17 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * AdminUsers.tsx — Gestione Utenti (solo Admin)
+ *
+ * Funzioni chiave:
+ * - Lista utenti (Nome | Email | Ruolo | Responsabile | Azioni)
+ * - Nuovo utente → invio invito: prova Edge Function `invite`,
+ *   se non raggiungibile/fa errore usa fallback `smtp_invite` (altra Edge Function)
+ * - Modifica: full_name, email (anagrafica), ruolo, team_lead_user_id
+ * - Cancella: se user_id mancante → delete by email; se presente e possiede lead → modale di riassegnazione
+ *
+ * Note SMTP (per la Edge Function fallback `smtp_invite`):
+ *   Configurare su Supabase (Function Secrets) o Vercel (Serverless) le env:
+ *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_SECURE ("true"/"false").
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -68,111 +79,47 @@ export default function AdminUsersPage(){
   function nameOf(a: Advisor){ return (a.full_name && a.full_name.trim()) || a.email }
   function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
 
-  // ====== INVITES con retry + fallback + “promozione” a TL ======
-  const sleep = (ms:number)=>new Promise(res=>setTimeout(res, ms))
-  const attempts = [600, 1200, 2400] // backoff ms
+  // ====== INVITES ======
+async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
+  const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
+  const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+  if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
 
-  function normalizeRole(r: Role){ return r === 'Team Lead' ? 'TeamLead' : r }
-
-  function buildBody(email:string, role:Role, full_name?:string){
-    const r = normalizeRole(role)
-    return { email, role: r, role_id: r, full_name }
-  }
-
-  function isRetryableStatus(status:number){
-    return [425,429,500,503,504].includes(status)
-  }
-
-  async function postFixPromoteToTL(email:string, full_name?:string){
-    // prova update → se non esiste la riga, fai upsert
-    const upd = await supabase.from('advisors').update({ role: 'Team Lead' as Role, full_name: full_name || null }).eq('email', email)
-    if (upd.error){
-      // tenta upsert come fallback
-      const ups = await supabase.from('advisors').upsert({ email, full_name: full_name || null, role: 'Team Lead' as Role }, { onConflict: 'email' })
-      if (ups.error) throw new Error(ups.error.message)
-    }
-  }
-
-  async function sendViaFetch(funcName:string, body:any){
-    const url  = (import.meta as any).env?.VITE_SUPABASE_URL
-    const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY
-    const resp = await fetch(`${url}/functions/v1/${funcName}`,{
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'apikey':anon, 'authorization':`Bearer ${anon}`},
-      body: JSON.stringify(body),
-      keepalive:true,
-    })
+  // 1) Direct fetch (mostra il body d'errore completo)
+  try{
+    const resp = await fetch(`${url}/functions/v1/invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': anon,
+        'authorization': `Bearer ${anon}`,
+      },
+      body: JSON.stringify(payload),
+    });
     if (!resp.ok){
-      if (resp.status === 409) return { ok:true, note:'exists' } // utente già presente
-      const txt = await resp.text()
-      const err:any = new Error(`HTTP ${resp.status} — ${txt}`)
-      err.retryable = isRetryableStatus(resp.status)
-      throw err
+      const txt = await resp.text();
+      throw new Error(`HTTP ${resp.status} — ${txt}`);
     }
-    return { ok:true }
-  }
-
-  async function sendViaInvoke(funcName:string, body:any){
-    const { error } = await supabase.functions.invoke(funcName, { body })
-    if (error){
-      const err:any = new Error(error.message || 'Edge error')
-      err.retryable = /timeout|too\s*many|earlydrop|temporar|fetch failed/i.test(err.message)
-      throw err
-    }
-    return { ok:true }
-  }
-
-  async function tryInvite(funcName:string, body:any){
-    // 1) direct fetch con retry
-    let lastErr:any = null
-    for (let i=0;i<attempts.length;i++){
-      try{ return await sendViaFetch(funcName, body) }catch(e:any){
-        lastErr = e; if (!e?.retryable) break; await sleep(attempts[i])
-      }
-    }
-    // 2) invoke con retry
-    for (let i=0;i<attempts.length;i++){
-      try{ return await sendViaInvoke(funcName, body) }catch(e:any){
-        lastErr = e; if (!e?.retryable) break; await sleep(attempts[i])
-      }
-    }
-    throw lastErr || new Error('Failed to send a request to the Edge Function.')
-  }
-
-  /**
-   * Invio invito “robusto”:
-   * - prova invito con il ruolo richiesto
-   * - se ruolo = Team Lead e fallisce l’invio → invia come Junior
-   *   e poi aggiorna/crea riga advisors a “Team Lead”
-   */
-  async function sendInviteRobust(email:string, role:Role, full_name?:string){
-    const wantTL = role === 'Team Lead'
-    const bodyWanted = buildBody(email, role, full_name)
-
+    return 'direct';
+  }catch(e1:any){
+    // 2) Fallback SDK (se per qualche motivo la route diretta non va)
     try{
-      await tryInvite('invite', bodyWanted)
-      return wantTL ? 'direct-TL' : 'direct'
-    }catch(_firstErr){
-      if (!wantTL){
-        // non TL: rilancia subito
-        throw _firstErr
-      }
-      // fallback: invia come Junior
-      const bodyJunior = buildBody(email, 'Junior', full_name)
-      await tryInvite('invite', bodyJunior) // se fallisce qui, esplode
-      // promuovi la riga advisors a Team Lead
-      await postFixPromoteToTL(email, full_name)
-      return 'fallback-junior-then-promoted'
+      const { error } = await supabase.functions.invoke('invite', { body: payload });
+      if (error) throw error;
+      return 'edge';
+    }catch(e2:any){
+      throw new Error(`Invio invito fallito. direct: ${e1?.message||e1}; edge: ${e2?.message||e2}`);
     }
   }
+}
+
 
   async function inviteNew(){
     if (!canAdmin()) return alert('Accesso negato: solo Admin')
     if (!newUser.email.trim()) return alert('Email obbligatoria')
     try{
-      const mode = await sendInviteRobust(newUser.email, newUser.role, newUser.full_name || undefined)
-      const note = mode.includes('exists') ? ' (utente già presente)' : ''
-      alert(`Invito inviato${note} (${mode}).`)
+      const mode = await sendInvite({ email:newUser.email, role:newUser.role, full_name: newUser.full_name || undefined })
+      alert(`Invito inviato (${mode}).`)
       setNewUser({ full_name:'', email:'', role:'Junior', team_lead_user_id:'' })
       await loadAdvisors()
     } catch(e:any){ alert(e.message||'Errore invito') }
@@ -182,7 +129,7 @@ export default function AdminUsersPage(){
     if (!canAdmin()) return alert('Accesso negato: solo Admin')
     if (!a?.email) return alert('Email non valida')
     try{
-      const mode = await sendInviteRobust(a.email, a.role, a.full_name || undefined)
+      const mode = await sendInvite({ email:a.email, role:a.role, full_name: a.full_name||undefined })
       alert(`Invito inviato a ${a.email} (${mode}).`)
     } catch(e:any){ alert(e.message||'Errore invio invito') }
   }
@@ -210,6 +157,7 @@ export default function AdminUsersPage(){
   async function requestDelete(a: Advisor){
     if (!canAdmin()) return alert('Accesso negato: solo Admin')
 
+    // Utente mai loggato: niente user_id → elimina per email
     if (!a.user_id){
       const ok = confirm(`Confermi l'eliminazione di ${nameOf(a)}?`)
       if (!ok) return
@@ -219,6 +167,7 @@ export default function AdminUsersPage(){
       return
     }
 
+    // Conta lead posseduti
     const { count, error } = await supabase
       .from('leads')
       .select('id', { count:'exact', head:true })
