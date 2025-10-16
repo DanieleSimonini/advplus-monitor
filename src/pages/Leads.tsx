@@ -50,6 +50,17 @@ function outcomeDbFromLabel(label: string){
 // === Tipi base ===
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 
+const normalizeRole = (r?: string | null): Role => {
+  const key = String(r || '').toLowerCase().replace(/\s+/g, '');
+  if (key === 'admin') return 'Admin';
+  if (key === 'teamlead' || key === 'team_lead' || key === 'tl' || key === 'lead') return 'Team Lead';
+  return 'Junior';
+};
+
+const isAdmin = (r?: string | null) => normalizeRole(r) === 'Admin';
+const isTeamLead = (r?: string | null) => normalizeRole(r) === 'Team Lead';
+const isJunior = (r?: string | null) => normalizeRole(r) === 'Junior';
+
 type Lead = {
   id?: string
   owner_id?: string | null
@@ -228,6 +239,12 @@ export default function LeadsPage(){
     if (meRole === 'Team Lead'){ void loadLeads() }
   }, [teamOwnerIds, meRole])
 
+  useEffect(()=>{ 
+  // ricarica i lead quando cambia il ruolo, il mio uid o il team calcolato
+  void loadLeads()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [meRole, meUid, teamOwnerIds.join(',')])
+
   // carica leads
   async function loadLeads(){
     const { data, error } = await supabase
@@ -236,6 +253,17 @@ export default function LeadsPage(){
       .order('created_at', { ascending:false })
     if (error){ setErr(error.message); return }
     let arr = (data || []) as Lead[]
+
+    if (isJunior(meRole) && meUid){
+  arr = arr.filter(l => l.owner_id === meUid);
+} else if (isTeamLead(meRole)){
+  const owners = teamOwnerIds.length ? teamOwnerIds : (meUid ? [meUid] : []);
+  if (owners.length){
+    const setOwners = new Set(owners);
+    arr = arr.filter(l => l.owner_id && setOwners.has(l.owner_id));
+  }
+}
+// Admin → nessun filtro
 
     // 🔧 PATCH: visibilità per ruolo
     if (meRole === 'Junior' && meUid){
