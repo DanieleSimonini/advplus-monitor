@@ -2,17 +2,29 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
 /**
- * GoalsTL.tsx — Schermata Team Lead per assegnare obiettivi
- * - Selettore Advisor (solo il tuo team) + mese (YYYY-MM)
- * - Pannello Obiettivi Annuali + Mensili
- * - Pulsanti Reset/Salva (con conferma)
- * - Mini-grafico di andamento mensile (consulenze/contratti/produzione)
+ * Obiettivi — pagina unica per Admin / Team Lead / Junior
  *
- * Requisiti DB: tabelle public.goals, public.goals_monthly, viste v_progress_monthly / v_progress_annual
- * RLS: Team Lead può scrivere sugli advisor del proprio team; Admin ovunque; Junior lettura (ma non accede qui)
+ * Requisiti implementati:
+ * a) Titolo pagina: "Obiettivi"
+ * b) "Nr. Consulenze" → "Nr. Appuntamenti" (solo label; dati su stessa colonna target_consulenze)
+ * c) Annuale/Mensile: prima riga = Nr. Appuntamenti + Nr. Contratti; seconda riga = produzione
+ * d) Junior: possono vedere i propri Obiettivi (campi read-only, Reset/Salva nascosti)
+ * e) Team Lead: non può modificare i propri obiettivi (solo quelli dei Junior del proprio team)
+ * f) Filtro Advisor: NO Admin tra le opzioni; Admin/TL possono scegliere solo TL e Junior;
+ *    i Junior vedono solo se stessi (select disabilitata con singola opzione)
+ * g) Default: Admin vede un Team Lead; Team Lead e Junior vedono i propri obiettivi
  */
 
-type Advisor = { id: string; user_id: string; full_name: string | null; email: string; role: 'Admin'|'Team Lead'|'Junior'; team_lead_user_id?: string | null }
+type Role = 'Admin'|'Team Lead'|'Junior'
+
+type Advisor = {
+  id: string
+  user_id: string
+  full_name: string | null
+  email: string
+  role: Role
+  team_lead_user_id?: string | null
+}
 
 type AnnualGoals = {
   advisor_user_id: string
@@ -29,116 +41,144 @@ type MonthlyGoals = AnnualGoals & { month: number }
 
 type MonthlyProgress = { month:number; consulenze:number; contratti:number; prod_danni:number; prod_vprot:number; prod_vpr:number; prod_vpu:number }
 
-const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
-const btn: React.CSSProperties = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
-const cta: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }
-const ipt: React.CSSProperties = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', width:'100%', boxSizing:'border-box' }
-const grid: React.CSSProperties = { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12 }
+const box: React.CSSProperties  = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
+const btn: React.CSSProperties  = { padding:'8px 10px', borderRadius:10, border:'1px solid #ddd', background:'#fff', cursor:'pointer' }
+const cta: React.CSSProperties  = { padding:'10px 12px', borderRadius:10, border:'1px solid #111', background:'#111', color:'#fff', cursor:'pointer' }
+const ipt: React.CSSProperties  = { padding:'10px 12px', borderRadius:10, border:'1px solid #ddd', width:'100%', boxSizing:'border-box', background:'#fff', color:'#111' }
+const gridTwoRows: React.CSSProperties = { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:12 }
 const title: React.CSSProperties = { fontWeight:700, marginBottom:12 }
 
 export default function GoalsTLPage(){
   const [me, setMe] = useState<Advisor | null>(null)
-  const [team, setTeam] = useState<Advisor[]>([])
+  const [list, setList] = useState<Advisor[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
   const [advisorUserId, setAdvisorUserId] = useState<string>('')
   const [monthKey, setMonthKey] = useState<string>(toMonthKey(new Date())) // YYYY-MM
 
-  const year = useMemo(()=> Number(monthKey.slice(0,4)), [monthKey])
+  const year  = useMemo(()=> Number(monthKey.slice(0,4)), [monthKey])
   const month = useMemo(()=> Number(monthKey.slice(5,7)), [monthKey])
 
-  const [annual, setAnnual] = useState<AnnualGoals | null>(null)
+  const [annual, setAnnual]   = useState<AnnualGoals | null>(null)
   const [monthly, setMonthly] = useState<MonthlyGoals | null>(null)
   const [progress, setProgress] = useState<MonthlyProgress[]>([])
-
   const [saving, setSaving] = useState(false)
 
-  // bootstrap: utente corrente + team
+  // ===== Bootstrap: me + lista advisors filtrata per ruolo (no Admin in lista selezionabile) =====
   useEffect(()=>{ (async()=>{
     setLoading(true); setError('')
-    const u = await supabase.auth.getUser()
-    const email = u.data.user?.email
-    if (!email){ setError('Utente non autenticato'); setLoading(false); return }
+    try{
+      const u = await supabase.auth.getUser()
+      const email = u.data.user?.email
+      if (!email) throw new Error('Utente non autenticato')
 
-    const { data: arow, error: aerr } = await supabase
-      .from('advisors')
-      .select('id,user_id,full_name,email,role,team_lead_user_id')
-      .eq('email', email)
-      .maybeSingle()
-    if (aerr || !arow){ setError(aerr?.message || 'Advisor non trovato'); setLoading(false); return }
-    const meAdv: Advisor = { id: arow.id, user_id: arow.user_id, full_name: arow.full_name, email: arow.email, role: arow.role as any, team_lead_user_id: arow.team_lead_user_id }
-    setMe(meAdv)
-
-    if (meAdv.role === 'Team Lead'){
-      const { data, error } = await supabase
+      const { data: meRow, error: meErr } = await supabase
         .from('advisors')
         .select('id,user_id,full_name,email,role,team_lead_user_id')
-        .or(`user_id.eq.${meAdv.user_id},team_lead_user_id.eq.${meAdv.user_id}`)
-        .order('role', { ascending:false })
-        .order('full_name', { ascending:true })
-      if (error){ setError(error.message); setLoading(false); return }
-      const list = (data||[]) as Advisor[]
-      setTeam(list)
-      setAdvisorUserId(meAdv.user_id) // default su TL stesso
-    } else if (meAdv.role === 'Admin'){
-      const { data, error } = await supabase
-        .from('advisors')
-        .select('id,user_id,full_name,email,role,team_lead_user_id')
-        .order('full_name', { ascending:true })
-      if (error){ setError(error.message); setLoading(false); return }
-      const list = (data||[]) as Advisor[]
-      setTeam(list)
-      setAdvisorUserId(list[0]?.user_id || '')
-    } else {
-      setError('Accesso negato: solo Admin/Team Lead possono impostare obiettivi.')
-    }
-    setLoading(false)
+        .eq('email', email)
+        .maybeSingle()
+      if (meErr || !meRow) throw new Error(meErr?.message || 'Advisor non trovato')
+
+      const meAdv: Advisor = {
+        id: meRow.id, user_id: meRow.user_id, full_name: meRow.full_name,
+        email: meRow.email, role: meRow.role as Role, team_lead_user_id: meRow.team_lead_user_id
+      }
+      setMe(meAdv)
+
+      let selectable: Advisor[] = []
+
+      if (meAdv.role === 'Admin'){
+        // Solo Team Lead + Junior, no Admin
+        const { data, error } = await supabase
+          .from('advisors')
+          .select('id,user_id,full_name,email,role,team_lead_user_id')
+          .in('role', ['Team Lead','Junior'] as Role[])
+          .order('role', { ascending:false }) // TL prima
+          .order('full_name', { ascending:true })
+        if (error) throw error
+        selectable = (data||[]) as Advisor[]
+
+        // Default: mostra un Team Lead (se c'è), altrimenti un Junior
+        const firstTL = selectable.find(a=>a.role==='Team Lead')
+        setAdvisorUserId(firstTL?.user_id || selectable[0]?.user_id || '')
+      }
+      else if (meAdv.role === 'Team Lead'){
+        // TL può vedere se stesso + i Junior del suo team; no Admin
+        const { data, error } = await supabase
+          .from('advisors')
+          .select('id,user_id,full_name,email,role,team_lead_user_id')
+          .or(`user_id.eq.${meAdv.user_id},team_lead_user_id.eq.${meAdv.user_id}`)
+          .not('role','eq','Admin')
+          .order('role', { ascending:false })
+          .order('full_name', { ascending:true })
+        if (error) throw error
+        selectable = (data||[]) as Advisor[]
+
+        // Default: i propri obiettivi
+        setAdvisorUserId(meAdv.user_id)
+      }
+      else {
+        // Junior: solo se stesso (read-only)
+        selectable = [meAdv]
+        setAdvisorUserId(meAdv.user_id)
+      }
+
+      setList(selectable)
+    } catch(e:any){ setError(e.message || 'Errore inizializzazione') }
+    finally{ setLoading(false) }
   })() },[])
 
-  // carica obiettivi/progresso quando cambiano advisor o mese
+  // ===== Caricamento dati (annual/monthly/progress) =====
   useEffect(()=>{ (async()=>{
     if (!advisorUserId || !year) return
     setError('')
     const ann = await getAnnual(advisorUserId, year)
     const mon = await getMonthly(advisorUserId, year, month)
     const prog = await getProgress(advisorUserId, year)
-    setAnnual(ann)
-    setMonthly(mon)
-    setProgress(prog)
+    setAnnual(ann); setMonthly(mon); setProgress(prog)
   })() }, [advisorUserId, year, month])
 
-  const canEdit = me?.role === 'Admin' || me?.role === 'Team Lead'
+  // ===== Permessi =====
+  const canEdit = useMemo(()=>{
+    if (!me) return false
+    if (me.role === 'Admin') return true
+    if (me.role === 'Team Lead') return advisorUserId !== me.user_id // non può modificare i propri
+    return false // Junior solo lettura
+  }, [me, advisorUserId])
 
+  const isJuniorView = me?.role === 'Junior'
+  const advisorSelectDisabled = isJuniorView // i Junior vedono solo se stessi
+
+  // ===== Azioni =====
   const onReset = async ()=>{
     if (!advisorUserId) return
-    if (!window.confirm('Sicuro di voler resettare i campi alla situazione attuale in DB?')) return
+    if (!canEdit) return
+    if (!window.confirm('Resettare i campi alla situazione salvata?')) return
     const ann = await getAnnual(advisorUserId, year)
     const mon = await getMonthly(advisorUserId, year, month)
-    setAnnual(ann)
-    setMonthly(mon)
+    setAnnual(ann); setMonthly(mon)
   }
 
   const onSave = async ()=>{
     try{
-      if (!canEdit) { alert('Non autorizzato'); return }
-      if (!advisorUserId) { alert('Seleziona un advisor'); return }
+      if (!canEdit) return alert('Non autorizzato')
+      if (!advisorUserId) return alert('Seleziona un advisor')
       setSaving(true)
-      // annual
-      if (annual){ await upsertAnnual(annual) }
-      // monthly
-      if (monthly){ await upsertMonthly(monthly) }
+      if (annual)  await upsertAnnual(annual)
+      if (monthly) await upsertMonthly(monthly)
       alert('Obiettivi salvati')
-    }catch(e:any){
-      setError(e.message || String(e))
-    }finally{ setSaving(false) }
+    }catch(e:any){ setError(e.message || String(e)) }
+    finally{ setSaving(false) }
   }
 
-  const selectedAdv = useMemo(()=> team.find(t=>t.user_id===advisorUserId) || null, [team, advisorUserId])
+  const selectedAdv = useMemo(()=> list.find(t=>t.user_id===advisorUserId) || null, [list, advisorUserId])
+  const ro = !canEdit ? { disabled:true, readOnly:true, style:{ ...ipt, background:'#f8fafc', color:'#555', cursor:'not-allowed' } as React.CSSProperties } : {}
 
   return (
     <div style={{ display:'grid', gap:16 }}>
-      <div style={title}>Obiettivi — Team Lead</div>
+      <div style={title}>Obiettivi</div>
+
       {error && <div style={{ color:'#c00' }}>{error}</div>}
 
       {/* FILTRI */}
@@ -146,61 +186,92 @@ export default function GoalsTLPage(){
         <div style={{ display:'flex', gap:12, flexWrap:'wrap', alignItems:'end' }}>
           <div>
             <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Advisor</div>
-            <select value={advisorUserId} onChange={e=>setAdvisorUserId(e.target.value)} style={ipt}>
-              <option value="">—</option>
-              {team.map(a=> (
-                <option key={a.user_id} value={a.user_id}>{a.full_name || a.email} {a.role!=='Junior' ? `(${a.role})` : ''}</option>
-              ))}
+            <select value={advisorUserId} onChange={e=>setAdvisorUserId(e.target.value)} style={ipt} disabled={advisorSelectDisabled}>
+              {isJuniorView ? (
+                <option value={me?.user_id || ''}>{me?.full_name || me?.email}</option>
+              ) : (
+                <>
+                  <option value="">—</option>
+                  {list
+                    .filter(a => a.role !== 'Admin') // sicurezza extra
+                    .map(a => (
+                      <option key={a.user_id} value={a.user_id}>
+                        {a.full_name || a.email} {a.role!=='Junior' ? `(${a.role})` : ''}
+                      </option>
+                    ))
+                  }
+                </>
+              )}
             </select>
           </div>
+
           <div>
             <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>Mese</div>
             <input type="month" value={monthKey} onChange={(e)=>setMonthKey(e.target.value)} style={ipt} />
           </div>
-          <div>
-            <button style={btn} onClick={()=>setMonthKey(toMonthKey(new Date()))}>Mese corrente</button>
-          </div>
+
+          {!isJuniorView && (
+            <div>
+              <button style={btn} onClick={()=>setMonthKey(toMonthKey(new Date()))}>Mese corrente</button>
+            </div>
+          )}
         </div>
       </div>
 
       {/* ANNUALE */}
       <div style={box}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-          <div style={{ fontWeight:700 }}>Obiettivi Annuali — {selectedAdv ? (selectedAdv.full_name || selectedAdv.email) : '—'} — {year}</div>
-          <div style={{ display:'flex', gap:8 }}>
-            <button style={btn} onClick={onReset}>Reset</button>
-            <button style={cta} onClick={onSave} disabled={!canEdit || saving}>{saving?'Salvataggio…':'Salva'}</button>
+          <div style={{ fontWeight:700 }}>
+            Obiettivi Annuali — {selectedAdv ? (selectedAdv.full_name || selectedAdv.email) : '—'} — {year}
           </div>
+          {canEdit && (
+            <div style={{ display:'flex', gap:8 }}>
+              <button style={btn} onClick={onReset}>Reset</button>
+              <button style={cta} onClick={onSave} disabled={saving}>{saving?'Salvataggio…':'Salva'}</button>
+            </div>
+          )}
         </div>
-        <div style={grid}>
-          {annualInput('Nr. consulenze', annual?.target_consulenze ?? 0, v=>setAnnual(p=>p?{...p,target_consulenze:v}:makeAnnual(advisorUserId,year,{target_consulenze:v})))}
-          {annualInput('Nr. contratti', annual?.target_contratti ?? 0, v=>setAnnual(p=>p?{...p,target_contratti:v}:makeAnnual(advisorUserId,year,{target_contratti:v})))}
-          {annualInput('Produzione Danni Non Auto (€)', annual?.target_prod_danni ?? 0, v=>setAnnual(p=>p?{...p,target_prod_danni:v}:makeAnnual(advisorUserId,year,{target_prod_danni:v})))}
-          {annualInput('Produzione Vita Protection (€)', annual?.target_prod_vprot ?? 0, v=>setAnnual(p=>p?{...p,target_prod_vprot:v}:makeAnnual(advisorUserId,year,{target_prod_vprot:v})))}
-          {annualInput('Produzione Vita Premi Ricorrenti (€)', annual?.target_prod_vpr ?? 0, v=>setAnnual(p=>p?{...p,target_prod_vpr:v}:makeAnnual(advisorUserId,year,{target_prod_vpr:v})))}
-          {annualInput('Produzione Vita Premi Unici (€)', annual?.target_prod_vpu ?? 0, v=>setAnnual(p=>p?{...p,target_prod_vpu:v}:makeAnnual(advisorUserId,year,{target_prod_vpu:v})))}
+
+        {/* Riga 1: Nr. Appuntamenti + Nr. Contratti */}
+        <div style={gridTwoRows}>
+          {annualInput('Nr. Appuntamenti', annual?.target_consulenze ?? 0, v=>setAnnual(p=>p?{...p,target_consulenze:v}:makeAnnual(advisorUserId,year,{target_consulenze:v})), ro)}
+          {annualInput('Nr. Contratti',   annual?.target_contratti ?? 0, v=>setAnnual(p=>p?{...p,target_contratti:v}:makeAnnual(advisorUserId,year,{target_contratti:v})), ro)}
+        </div>
+
+        {/* Riga 2: Produzione */}
+        <div style={{ ...gridTwoRows, marginTop:12 }}>
+          {annualInput('Produzione Danni Non Auto (€)',      annual?.target_prod_danni ?? 0, v=>setAnnual(p=>p?{...p,target_prod_danni:v}:makeAnnual(advisorUserId,year,{target_prod_danni:v})), ro)}
+          {annualInput('Produzione Vita Protection (€)',     annual?.target_prod_vprot ?? 0, v=>setAnnual(p=>p?{...p,target_prod_vprot:v}:makeAnnual(advisorUserId,year,{target_prod_vprot:v})), ro)}
+          {annualInput('Produzione Vita Premi Ricorrenti (€)', annual?.target_prod_vpr ?? 0, v=>setAnnual(p=>p?{...p,target_prod_vpr:v}:makeAnnual(advisorUserId,year,{target_prod_vpr:v})), ro)}
+          {annualInput('Produzione Vita Premi Unici (€)',    annual?.target_prod_vpu ?? 0, v=>setAnnual(p=>p?{...p,target_prod_vpu:v}:makeAnnual(advisorUserId,year,{target_prod_vpu:v})), ro)}
         </div>
       </div>
 
       {/* MENSILE */}
       <div style={box}>
         <div style={{ fontWeight:700, marginBottom:12 }}>Obiettivi Mensili — {monthKey}</div>
-        <div style={grid}>
-          {monthlyInput('Nr. consulenze', monthly?.target_consulenze ?? 0, v=>setMonthly(p=>p?{...p,target_consulenze:v}:makeMonthly(advisorUserId,year,month,{target_consulenze:v})))}
-          {monthlyInput('Nr. contratti', monthly?.target_contratti ?? 0, v=>setMonthly(p=>p?{...p,target_contratti:v}:makeMonthly(advisorUserId,year,month,{target_contratti:v})))}
-          {monthlyInput('Produzione Danni Non Auto (€)', monthly?.target_prod_danni ?? 0, v=>setMonthly(p=>p?{...p,target_prod_danni:v}:makeMonthly(advisorUserId,year,month,{target_prod_danni:v})))}
-          {monthlyInput('Produzione Vita Protection (€)', monthly?.target_prod_vprot ?? 0, v=>setMonthly(p=>p?{...p,target_prod_vprot:v}:makeMonthly(advisorUserId,year,month,{target_prod_vprot:v})))}
-          {monthlyInput('Produzione Vita Premi Ricorrenti (€)', monthly?.target_prod_vpr ?? 0, v=>setMonthly(p=>p?{...p,target_prod_vpr:v}:makeMonthly(advisorUserId,year,month,{target_prod_vpr:v})))}
-          {monthlyInput('Produzione Vita Premi Unici (€)', monthly?.target_prod_vpu ?? 0, v=>setMonthly(p=>p?{...p,target_prod_vpu:v}:makeMonthly(advisorUserId,year,month,{target_prod_vpu:v})))}
+
+        {/* Riga 1: Nr. Appuntamenti + Nr. Contratti */}
+        <div style={gridTwoRows}>
+          {monthlyInput('Nr. Appuntamenti', monthly?.target_consulenze ?? 0, v=>setMonthly(p=>p?{...p,target_consulenze:v}:makeMonthly(advisorUserId,year,month,{target_consulenze:v})), ro)}
+          {monthlyInput('Nr. Contratti',   monthly?.target_contratti ?? 0, v=>setMonthly(p=>p?{...p,target_contratti:v}:makeMonthly(advisorUserId,year,month,{target_contratti:v})), ro)}
+        </div>
+
+        {/* Riga 2: Produzione */}
+        <div style={{ ...gridTwoRows, marginTop:12 }}>
+          {monthlyInput('Produzione Danni Non Auto (€)',      monthly?.target_prod_danni ?? 0, v=>setMonthly(p=>p?{...p,target_prod_danni:v}:makeMonthly(advisorUserId,year,month,{target_prod_danni:v})), ro)}
+          {monthlyInput('Produzione Vita Protection (€)',     monthly?.target_prod_vprot ?? 0, v=>setMonthly(p=>p?{...p,target_prod_vprot:v}:makeMonthly(advisorUserId,year,month,{target_prod_vprot:v})), ro)}
+          {monthlyInput('Produzione Vita Premi Ricorrenti (€)', monthly?.target_prod_vpr ?? 0, v=>setMonthly(p=>p?{...p,target_prod_vpr:v}:makeMonthly(advisorUserId,year,month,{target_prod_vpr:v})), ro)}
+          {monthlyInput('Produzione Vita Premi Unici (€)',    monthly?.target_prod_vpu ?? 0, v=>setMonthly(p=>p?{...p,target_prod_vpu:v}:makeMonthly(advisorUserId,year,month,{target_prod_vpu:v})), ro)}
         </div>
       </div>
 
-      {/* PROGRESSO ANNO (mini grafico) */}
+      {/* PROGRESSO ANNO (spark) */}
       <div style={box}>
         <div style={{ fontWeight:700, marginBottom:8 }}>Andamento {year}</div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px,1fr))', gap:12 }}>
-          <SparkCard label="Consulenze" data={progress.map(p=>p.consulenze)} />
-          <SparkCard label="Contratti" data={progress.map(p=>p.contratti)} />
+          <SparkCard label="Appuntamenti" data={progress.map(p=>p.consulenze)} />
+          <SparkCard label="Contratti"    data={progress.map(p=>p.contratti)} />
           <SparkCard label="Produzione (€)" data={progress.map(p=> (p.prod_danni+p.prod_vprot+p.prod_vpr+p.prod_vpu))} fmt="€" />
         </div>
       </div>
@@ -208,25 +279,28 @@ export default function GoalsTLPage(){
   )
 }
 
-function annualInput(label:string, value:number, onChange:(v:number)=>void){
+/* ====== UI helpers ====== */
+
+function annualInput(label:string, value:number, onChange:(v:number)=>void, ro:any){
   return (
     <div>
       <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>{label}</div>
-      <input type="number" value={value} onChange={e=>onChange(Number(e.target.value||0))} style={ipt} />
+      <input type="number" value={value} onChange={e=>onChange(Number(e.target.value||0))} style={ro.style||ipt} disabled={ro.disabled} readOnly={ro.readOnly}/>
     </div>
   )
 }
-function monthlyInput(label:string, value:number, onChange:(v:number)=>void){
+function monthlyInput(label:string, value:number, onChange:(v:number)=>void, ro:any){
   return (
     <div>
       <div style={{ fontSize:12, color:'#666', marginBottom:4 }}>{label}</div>
-      <input type="number" value={value} onChange={e=>onChange(Number(e.target.value||0))} style={ipt} />
+      <input type="number" value={value} onChange={e=>onChange(Number(e.target.value||0))} style={ro.style||ipt} disabled={ro.disabled} readOnly={ro.readOnly}/>
     </div>
   )
 }
 
 function toMonthKey(d: Date){ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,'0'); return `${y}-${m}` }
 
+/* ====== Data access (uguali alla versione precedente) ====== */
 async function getAnnual(advisor_user_id:string, year:number): Promise<AnnualGoals>{
   const { data, error } = await supabase
     .from('goals')
@@ -234,7 +308,7 @@ async function getAnnual(advisor_user_id:string, year:number): Promise<AnnualGoa
     .eq('advisor_user_id', advisor_user_id)
     .eq('year', year)
     .maybeSingle()
-  if (error && error.code!=='PGRST116') throw error // ignora no rows
+  if (error && error.code!=='PGRST116') throw error
   if (!data) return { advisor_user_id, year, target_consulenze:0, target_contratti:0, target_prod_danni:0, target_prod_vprot:0, target_prod_vpr:0, target_prod_vpu:0 }
   return data as AnnualGoals
 }
@@ -261,7 +335,6 @@ async function getProgress(advisor_user_id:string, year:number): Promise<Monthly
     .order('month', { ascending:true })
   if (error) throw error
   const arr = (data||[]) as any[]
-  // garantisce 12 mesi
   const byMonth: Record<number, MonthlyProgress> = {}
   for(let m=1;m<=12;m++) byMonth[m] = { month:m, consulenze:0, contratti:0, prod_danni:0, prod_vprot:0, prod_vpr:0, prod_vpu:0 }
   for(const r of arr){ byMonth[r.month] = { month:r.month, consulenze:r.consulenze, contratti:r.contratti, prod_danni:r.prod_danni, prod_vprot:r.prod_vprot, prod_vpr:r.prod_vpr, prod_vpu:r.prod_vpu } }
@@ -284,6 +357,7 @@ function makeMonthly(advisor_user_id:string, year:number, month:number, patch:Pa
   return { advisor_user_id, year, month, target_consulenze:0, target_contratti:0, target_prod_danni:0, target_prod_vprot:0, target_prod_vpr:0, target_prod_vpu:0, ...patch }
 }
 
+/* Spark mini-chart */
 function SparkCard({ label, data, fmt }:{ label:string; data:number[]; fmt?:'€' }){
   return (
     <div style={{ ...box }}>
@@ -293,7 +367,6 @@ function SparkCard({ label, data, fmt }:{ label:string; data:number[]; fmt?:'€
     </div>
   )
 }
-
 function Sparkline({ data }:{ data:number[] }){
   if (!data || data.length===0) return null
   const max = Math.max(1, ...data)
@@ -305,6 +378,5 @@ function Sparkline({ data }:{ data:number[] }){
     </svg>
   )
 }
-
 function sum(arr:number[]){ return arr.reduce((a,b)=>a+b,0) }
 function formatCurrency(n:number){ try{ return new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR',maximumFractionDigits:0}).format(n) }catch{ return `€ ${n.toFixed(0)}` } }
