@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
+/**
+ * AdminUsers.tsx — Gestione Utenti (solo Admin)
+ */
+
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 
 type Advisor = {
@@ -64,72 +68,109 @@ export default function AdminUsersPage(){
   function nameOf(a: Advisor){ return (a.full_name && a.full_name.trim()) || a.email }
   function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
 
-  // ====== INVITES (con alias multipli per il ruolo) ======
+  // ====== INVITES con retry + fallback ======
+  function normalizeRole(r: Role){
+    return r === 'Team Lead' ? 'TeamLead' : r
+  }
+  function buildInviteBody(payload: { email:string; role:Role; full_name?:string }){
+    const roleForEdge = normalizeRole(payload.role)
+    return {
+      email: payload.email,
+      role: roleForEdge,
+      role_id: roleForEdge,          // compat: se la funzione usa role_id
+      full_name: payload.full_name,
+    }
+  }
+  async function sleep(ms:number){ return new Promise(res=>setTimeout(res, ms)) }
+
+  async function sendWithFetch(url:string, body:any){
+    const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'apikey': anon, 'authorization': `Bearer ${anon}` },
+      body: JSON.stringify(body),
+      keepalive: true,
+    })
+    if (!resp.ok){
+      const txt = await resp.text()
+      // 409: utente già presente → trattiamo come "non bloccante" (reinvia invito o già attivo)
+      if (resp.status === 409) return { ok:true, note:'exists' }
+      const err = new Error(`HTTP ${resp.status} — ${txt}`)
+      // 425/429/500/503/504 → retryabile
+      ;(err as any).retryable = [425,429,500,503,504].includes(resp.status)
+      throw err
+    }
+    return { ok:true }
+  }
+
+  async function sendWithInvoke(name:string, body:any){
+    const { data, error } = await supabase.functions.invoke(name, { body })
+    if (error){
+      const msg = error.message || 'Edge error'
+      const err = new Error(msg)
+      ;(err as any).retryable = /timeout|too\s*many|earlydrop|temporar/i.test(msg)
+      throw err
+    }
+    return { ok:true }
+  }
+
   async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
-    const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
-    const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-    if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
+    const url  = (import.meta as any).env?.VITE_SUPABASE_URL
+    const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY
+    if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY')
+    const body = buildInviteBody(payload)
 
-    // alias possibili attesi dal backend
-    const roleAliases: Record<Role, string[]> = {
-      'Admin':  ['Admin','admin','ADMIN'],
-      'Junior': ['Junior','junior','JUNIOR'],
-      'Team Lead': [
-        'TeamLead', 'team_lead', 'TEAM_LEAD', 'TL', 'Tl', 'teamLead', 'Teamlead'
-      ],
-    };
+    const attempts = [600, 1200, 2400] // backoff ms
 
-    const aliases = roleAliases[payload.role] || [payload.role];
-
-    async function tryPost(roleValue: string){
-      const body = { email: payload.email, role: roleValue, full_name: payload.full_name };
-      const resp = await fetch(`${url}/functions/v1/invite`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': anon,
-          'authorization': `Bearer ${anon}`,
-        },
-        body: JSON.stringify(body),
-      });
-      if (!resp.ok){
-        const txt = await resp.text();
-        const err = new Error(`HTTP ${resp.status} — ${txt}`);
-        // se 400 (validazione) continuiamo a provare altri alias
-        // altrimenti interrompiamo subito (es. 401/403/500)
-        if (resp.status === 400) throw Object.assign(err, { retryable:true });
-        throw err;
-      }
-      return true;
-    }
-
-    // 1) Prova alias in direct fetch
-    let lastErr:any = null;
-    for (const alias of aliases){
+    // 1) Direct fetch → /functions/v1/invite
+    let lastErr:any = null
+    for (let i=0; i<attempts.length; i++){
       try{
-        await tryPost(alias);
-        return 'direct';
+        const res = await sendWithFetch(`${url}/functions/v1/invite`, body)
+        return res.note === 'exists' ? 'direct-existing' : 'direct'
       }catch(e:any){
-        lastErr = e;
-        if (!e?.retryable) break; // errori non di validazione → stop
+        lastErr = e
+        if (!e?.retryable) break
+        await sleep(attempts[i])
       }
     }
 
-    // 2) Fallback SDK (ripeti il giro alias)
-    for (const alias of aliases){
+    // 2) Supabase invoke → invite
+    for (let i=0; i<attempts.length; i++){
       try{
-        const { error } = await supabase.functions.invoke('invite', {
-          body: { email: payload.email, role: alias, full_name: payload.full_name }
-        });
-        if (error) throw Object.assign(new Error(error.message||'Edge error'), { retryable: /ruolo/i.test(error.message||'') });
-        return 'edge';
+        await sendWithInvoke('invite', body)
+        return 'edge'
       }catch(e:any){
-        lastErr = e;
-        if (!e?.retryable) break;
+        lastErr = e
+        if (!e?.retryable) break
+        await sleep(attempts[i])
       }
     }
 
-    throw new Error(`Invio invito fallito. Ultimo errore: ${lastErr?.message||lastErr}`);
+    // 3) Fallback → smtp_invite (se esiste lato server)
+    for (let i=0; i<attempts.length; i++){
+      try{
+        // prima fetch diretta
+        await sendWithFetch(`${url}/functions/v1/smtp_invite`, body)
+        return 'smtp-direct'
+      }catch(e:any){
+        lastErr = e
+        if (!e?.retryable) break
+        await sleep(attempts[i])
+      }
+    }
+    for (let i=0; i<attempts.length; i++){
+      try{
+        await sendWithInvoke('smtp_invite', body)
+        return 'smtp-edge'
+      }catch(e:any){
+        lastErr = e
+        if (!e?.retryable) break
+        await sleep(attempts[i])
+      }
+    }
+
+    throw new Error(`Invio invito fallito. Ultimo errore: ${lastErr?.message||lastErr}`)
   }
 
   async function inviteNew(){
@@ -137,7 +178,8 @@ export default function AdminUsersPage(){
     if (!newUser.email.trim()) return alert('Email obbligatoria')
     try{
       const mode = await sendInvite({ email:newUser.email, role:newUser.role, full_name: newUser.full_name || undefined })
-      alert(`Invito inviato (${mode}).`)
+      const note = mode.includes('existing') ? ' (utente già presente)' : ''
+      alert(`Invito inviato${note} (${mode}).`)
       setNewUser({ full_name:'', email:'', role:'Junior', team_lead_user_id:'' })
       await loadAdvisors()
     } catch(e:any){ alert(e.message||'Errore invito') }
@@ -175,7 +217,6 @@ export default function AdminUsersPage(){
   async function requestDelete(a: Advisor){
     if (!canAdmin()) return alert('Accesso negato: solo Admin')
 
-    // Utente mai loggato: niente user_id → elimina per email
     if (!a.user_id){
       const ok = confirm(`Confermi l'eliminazione di ${nameOf(a)}?`)
       if (!ok) return
@@ -185,7 +226,6 @@ export default function AdminUsersPage(){
       return
     }
 
-    // Conta lead posseduti
     const { count, error } = await supabase
       .from('leads')
       .select('id', { count:'exact', head:true })
