@@ -853,7 +853,7 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), line: ctrDraft.contract_type, notes: actDraft.notes||null }
+                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                       const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
                       if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                     }}>Salva</button>
@@ -1044,7 +1044,7 @@ export default function LeadsPage(){
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), line: ctrDraft.contract_type, notes: ctrDraft.notes||null }
                     const { error } = await supabase.from('contracts').insert(payload)
                     if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                   }}>Aggiungi contratto</button>
