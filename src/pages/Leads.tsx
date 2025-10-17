@@ -316,7 +316,7 @@ export default function LeadsPage(){
   async function loadContracts(leadId:string){
     const { data } = await supabase
       .from('contracts')
-      .select('id,ts,contract_type,amount,notes')
+      .select('id,ts,contract_type,amount:premium,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
     setContracts(data||[])
