@@ -853,7 +853,7 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), line:ctrDraft.contract_type, notes: actDraft.notes||null }
+                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), line: ctrDraft.contract_type, notes: actDraft.notes||null }
                       const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
                       if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                     }}>Salva</button>
