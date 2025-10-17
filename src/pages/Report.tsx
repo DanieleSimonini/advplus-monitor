@@ -4,7 +4,6 @@ import { supabase } from '@/supabaseClient'
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 type Me = { id: string; user_id: string; email: string; full_name: string | null; role: Role }
-type AdvisorLite = { id: string; user_id: string; email: string; full_name: string | null }
 
 type GoalsRow = {
   advisor_user_id?: string
@@ -29,7 +28,7 @@ type ProgressRow = {
   prod_vprot?: number
   prod_vpr?: number
   prod_vpu?: number
-  appuntamenti?: number // calcolato se assente
+  appuntamenti?: number
 }
 
 const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
@@ -37,22 +36,18 @@ const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(-
 
 export default function ReportPage(){
   const [me, setMe] = useState<Me | null>(null)
-  const [advisors, setAdvisors] = useState<AdvisorLite[]>([])
+  const [advisors, setAdvisors] = useState<{ user_id: string, email: string, full_name: string | null }[]>([])
 
   const today = new Date()
   const [fromKey, setFromKey] = useState(toMonthKey(addMonths(today, -5)))
   const [toKey, setToKey] = useState(toMonthKey(today))
-
-  // Advisor selezionato (sia uid auth che id tabella advisors)
-  const [selUid, setSelUid] = useState('')   // advisor_user_id scelto
-  const [selAid, setSelAid] = useState('')   // advisor_id (tabella advisors) del selezionato
+  const [advisorUid, setAdvisorUid] = useState('')
 
   const [goals, setGoals] = useState<GoalsRow[]>([])
   const [prog, setProg] = useState<ProgressRow[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // Bootstrap profilo + elenco advisors (con id + user_id)
   useEffect(()=>{ (async()=>{
     setLoading(true); setErr('')
     try{
@@ -67,48 +62,31 @@ export default function ReportPage(){
         .maybeSingle()
       if (meErr) throw meErr
       if (!meRow){ setErr('Profilo non trovato'); setLoading(false); return }
-
       const meObj: Me = { id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role }
       setMe(meObj)
 
       if (meObj.role === 'Admin' || meObj.role === 'Team Lead'){
         const { data: list, error: lerr } = await supabase
           .from('advisors')
-          .select('id,user_id,email,full_name')
+          .select('user_id,email,full_name')
           .order('full_name', { ascending: true })
         if (lerr) throw lerr
-        const arr = (list||[]).filter(a => a.user_id) as AdvisorLite[]
-        setAdvisors(arr)
-        // default: me
-        setSelUid(meObj.user_id)
-        setSelAid(meObj.id)
+        setAdvisors((list||[]).filter(x=>!!x.user_id) as any)
       } else {
-        // Junior → solo sé stesso
         setAdvisors([])
-        setSelUid(meObj.user_id)
-        setSelAid(meObj.id)
       }
+      setAdvisorUid(uid)
     } catch(ex:any){ setErr(ex.message || 'Errore bootstrap') }
     finally{ setLoading(false) }
   })() },[])
 
-  // quando cambia l'UID selezionato, aggiorno anche l'advisor_id coerente
-  useEffect(()=>{
-    if (!selUid) return
-    if (me && selUid === me.user_id) { setSelAid(me.id); return }
-    const found = advisors.find(a => a.user_id === selUid)
-    setSelAid(found?.id || '')
-  }, [selUid, advisors, me?.id])
-
-  // Caricamento dati per range + advisor selezionato
   useEffect(()=>{ (async()=>{
-    if (!selUid) return
+    if (!advisorUid || !me) return
     setLoading(true); setErr('')
     try{
       const rng = monthRange(fromKey, toKey)
       const yrs = Array.from(new Set(rng.map(r=>r.y)))
 
-      // GOALS: prendo * e filtro client-side per compatibilità (advisor_user_id vs advisor_id)
       const goalsRes: GoalsRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -122,7 +100,6 @@ export default function ReportPage(){
       }
       setGoals(goalsRes)
 
-      // PROGRESS: idem
       const progRes: ProgressRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -135,11 +112,10 @@ export default function ReportPage(){
         progRes.push(...(data||[] as any[]))
       }
 
-      // se la vista non espone 'appuntamenti' → calcolo su tabella appointments
       const anyAppField = progRes.some(r => typeof r.appuntamenti !== 'undefined')
       if (!anyAppField){
         const monthKeys = rng.map(r=>`${r.y}-${String(r.m).padStart(2,'0')}`)
-        const byMonth = await countAppointmentsByMonth(selUid, monthKeys)
+        const byMonth = await countAppointmentsByMonth(advisorUid, monthKeys)
         for(const row of progRes){
           const key = `${row.year}-${String(row.month).padStart(2,'0')}`
           row.appuntamenti = byMonth.get(key) || 0
@@ -149,12 +125,9 @@ export default function ReportPage(){
       setProg(progRes)
     } catch(ex:any){ setErr(ex.message || 'Errore caricamento dati') }
     finally{ setLoading(false) }
-  })() },[selUid, fromKey, toKey])
+  })() },[advisorUid, fromKey, toKey, me?.id])
 
-  const rows = useMemo(
-    ()=> mergeByMonth(goals, prog, fromKey, toKey, selUid, selAid),
-    [goals, prog, fromKey, toKey, selUid, selAid]
-  )
+  const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey, advisorUid, me?.id||''), [goals, prog, fromKey, toKey, advisorUid, me?.id])
 
   return (
     <div style={{ display:'grid', gap:16 }}>
@@ -165,24 +138,14 @@ export default function ReportPage(){
           <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={ipt} />
           <label style={{ fontSize:12 }}>al</label>
           <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={ipt} />
-
           {me && (me.role==='Admin' || me.role==='Team Lead') ? (
             <>
               <label style={{ fontSize:12 }}>Advisor</label>
-              <select
-                value={selUid}
-                onChange={e=>setSelUid(e.target.value)}
-                style={ipt}
-              >
-                {/* Me sempre in cima */}
+              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={ipt}>
                 <option value={me.user_id}>— {me.full_name || me.email} (me)</option>
-                {advisors
-                  .filter(a=>a.user_id!==me.user_id)
-                  .map(a=> (
-                    <option key={a.user_id} value={a.user_id}>
-                      {a.full_name || a.email}
-                    </option>
-                  ))}
+                {advisors.filter(a=>a.user_id!==me.user_id).map(a=> (
+                  <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
+                ))}
               </select>
             </>
           ) : (
@@ -192,6 +155,9 @@ export default function ReportPage(){
       </div>
 
       {err && <div style={{ ...box, color:'#c00' }}>{err}</div>}
+
+      {/* NUOVO: Grafico Riepilogativo Obiettivi di Periodo */}
+      <PeriodTargetOverview rows={rows} />
 
       <div style={{ display:'grid', gap:16 }}>
         <MetricCard title="Appuntamenti" field="appuntamenti" rows={rows} format="int" />
@@ -207,8 +173,50 @@ export default function ReportPage(){
   )
 }
 
-// ---------- Render helpers ----------
+// ---------- NUOVO COMPONENTE: Riepilogo Obiettivi di Periodo ----------
+function PeriodTargetOverview({ rows }: { rows: MergedRow[] }){
+  const metrics: { title: string, field: keyof GoalsRow | 'appuntamenti', format: 'int'|'currency' }[] = [
+    { title: 'Appuntamenti', field: 'appuntamenti', format: 'int' },
+    { title: 'Contratti', field: 'contratti', format: 'int' },
+    { title: 'Prod. Danni', field: 'prod_danni', format: 'currency' },
+    { title: 'Vita Protection', field: 'prod_vprot', format: 'currency' },
+    { title: 'Vita PR', field: 'prod_vpr', format: 'currency' },
+    { title: 'Vita PU', field: 'prod_vpu', format: 'currency' }
+  ]
 
+  const data = metrics.map(m => {
+    const totGoal = rows.reduce((s,r)=> s + (r.goal[m.field]||0), 0)
+    const totAct  = rows.reduce((s,r)=> s + (r.actual[m.field]||0), 0)
+    const pct = totGoal>0 ? (totAct / totGoal) : 0
+    return { title: m.title, goal: totGoal, actual: totAct, pct, format: m.format }
+  })
+
+  return (
+    <div style={{ ...box }}>
+      <div style={{ fontSize:18, fontWeight:700, marginBottom:12 }}>
+        Obiettivi di Periodo — Riepilogo
+      </div>
+      <div style={{ display:'grid', gap:12 }}>
+        {data.map((item, idx) => (
+          <div key={idx} style={{ display:'grid', gap:4 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div style={{ fontSize:14, fontWeight:600 }}>{item.title}</div>
+              <div style={{ fontSize:12, color:'#666' }}>
+                <b>{fmt(item.actual, item.format)}</b> / {fmt(item.goal, item.format)}
+                <span style={{ marginLeft:8, fontWeight:700, color: item.pct>=1? '#0a0':'#a60' }}>
+                  {(item.pct*100).toFixed(0)}%
+                </span>
+              </div>
+            </div>
+            <PeriodTargetBar totalGoal={item.goal} totalActual={item.actual} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ---------- Render helpers ----------
 function MetricCard({ title, field, rows, format }:{
   title:string,
   field: keyof GoalsRow | 'appuntamenti',
@@ -221,23 +229,16 @@ function MetricCard({ title, field, rows, format }:{
 
   return (
     <div style={{ ...box }}>
-      {/* Header con Totale periodo ben visibile */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
         <div style={{ fontSize:16, fontWeight:700 }}>{title}</div>
-        <div style={{ fontSize:14, minWidth:220, textAlign:'right' }}>
-          <span style={{ color:'#666' }}>Totale periodo: </span>
-          <b>{fmt(totAct, format)}</b>
-          <span> / {fmt(totGoal, format)}</span>
-          <span style={{ marginLeft:10, fontWeight:800, color: pct>=1? '#0a0':'#a60' }}>
-            {(pct*100).toFixed(0)}%
-          </span>
+        <div style={{ fontSize:14, minWidth:140, textAlign:'right' }}>
+          <b>{fmt(totAct, format)}</b> / {fmt(totGoal, format)}{' '}
+          <span style={{ marginLeft:8, fontWeight:700, color: pct>=1? '#0a0':'#a60' }}>{(pct*100).toFixed(0)}%</span>
         </div>
       </div>
 
-      {/* Grafico mensile con etichette Goal/Actual chiare */}
       <BarChart rows={rows} field={field} format={format} />
 
-      {/* Obiettivo di periodo (layout anti-sovrapposizione) */}
       <div style={{ marginTop:12, display:'grid', gap:6 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div style={{ fontSize:12, color:'#666' }}>Obiettivo di periodo</div>
@@ -256,12 +257,12 @@ function MetricCard({ title, field, rows, format }:{
 }
 
 function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow|'appuntamenti', format:'int'|'currency' }){
-  const W = Math.max(600, rows.length*64)
-  const H = 176
-  const pad = { l:44, r:22, t:12, b:38 }
+  const W = Math.max(600, rows.length*60)
+  const H = 170
+  const pad = { l:40, r:20, t:10, b:34 }
   const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
   const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
-  const barW = Math.max(16, step*0.36)
+  const barW = Math.max(14, step*0.35)
 
   return (
     <div style={{ overflowX:'auto' }}>
@@ -276,19 +277,11 @@ function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsR
           const baseY = H - pad.b
           return (
             <g key={i}>
-              {/* Goal (G:) */}
               <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#eaeaea" />
-              {/* Actual (A:) */}
               <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#888" />
-              {/* Mese */}
-              <text x={x + barW} y={H-14} fontSize={11} textAnchor="middle">{r.label}</text>
-              {/* Valori, con prefissi per chiarezza */}
-              <text x={x + barW/2} y={Math.min(baseY - gH - 4, H-40)} fontSize={10} textAnchor="middle" fill="#777">
-                {'G: ' + fmt(gVal, format)}
-              </text>
-              <text x={x + barW + 6 + barW/2} y={Math.min(baseY - aH - 4, H-40)} fontSize={10} textAnchor="middle" fill="#333">
-                {'A: ' + fmt(aVal, format)}
-              </text>
+              <text x={x + barW} y={H-12} fontSize={11} textAnchor="middle">{r.label}</text>
+              <text x={x + barW/2} y={Math.min(baseY - gH - 4, H-36)} fontSize={10} textAnchor="middle" fill="#777">{fmt(gVal, format)}</text>
+              <text x={x + barW + 6 + barW/2} y={Math.min(baseY - aH - 4, H-36)} fontSize={10} textAnchor="middle" fill="#333">{fmt(aVal, format)}</text>
             </g>
           )
         })}
@@ -297,7 +290,6 @@ function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsR
   )
 }
 
-/** Barra orizzontale semplice, senza testi dentro, per evitare sovrapposizioni */
 function PeriodTargetBar({ totalGoal, totalActual }:{ totalGoal:number; totalActual:number }){
   const MAX_W = 560, H = 12, pad = 2
   const max = Math.max(totalGoal, totalActual, 1)
@@ -314,14 +306,11 @@ function PeriodTargetBar({ totalGoal, totalActual }:{ totalGoal:number; totalAct
 }
 
 function fmt(v:number, mode:'int'|'currency'){
-  if (mode==='int') return String(Math.round(Number(v)||0))
-  try{
-    return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(Number(v)||0)
-  }catch{ return String(Number(v)||0) }
+  if (mode==='int') return String(Math.round(v||0))
+  try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(v||0) }catch{ return String(v||0) }
 }
 
 // ---------- Merge / Date helpers ----------
-
 type YM = { y:number, m:number }
 type MergedRow = {
   y: number
@@ -350,9 +339,8 @@ function mergeByMonth(
   const rng = monthRange(fromKey, toKey)
   const key = (y:number,m:number)=> `${y}-${m}`
 
-  // Filtro righe che appartengono all'advisor selezionato
-  const goalRows = goals.filter(g => (g.advisor_user_id && g.advisor_user_id === advisorUid) || (g.advisor_id && g.advisor_id === advisorId))
-  const progRows = prog.filter(a => (a.advisor_user_id && a.advisor_user_id === advisorUid) || (a.advisor_id && a.advisor_id === advisorId))
+  const goalRows = goals.filter(g => g.advisor_user_id === advisorUid || g.advisor_id === advisorId)
+  const progRows = prog.filter(a => a.advisor_user_id === advisorUid || a.advisor_id === advisorId)
 
   const gmap = new Map<string, GoalsRow>()
   const amap = new Map<string, ProgressRow>()
@@ -367,7 +355,6 @@ function mergeByMonth(
     const a = amap.get(key(y,m))
     const row: MergedRow = { y, m, label: `${String(m).padStart(2,'0')}/${String(y).slice(2)}`, goal: {} as any, actual: {} as any }
     for(const f of metricFields){
-      // Goal 'appuntamenti' deriva da 'consulenze' (se presente)
       const gv = f==='appuntamenti' ? (g?.consulenze ?? 0) : ((g as any)?.[f] ?? 0)
       const av = f==='appuntamenti' ? (a?.appuntamenti ?? 0) : ((a as any)?.[f] ?? 0)
       row.goal[f] = Number(gv) || 0
@@ -378,7 +365,6 @@ function mergeByMonth(
   return out
 }
 
-// ---------- Query helpers (Appuntamenti per mese) ----------
 async function countAppointmentsByMonth(advisor_user_id:string, monthKeys:string[]){
   const { data: leads, error: lerr } = await supabase.from('leads').select('id').eq('owner_id', advisor_user_id)
   if (lerr) throw lerr
