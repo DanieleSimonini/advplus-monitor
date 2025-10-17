@@ -308,7 +308,7 @@ export default function LeadsPage(){
   async function loadProposals(leadId:string){
     const { data } = await supabase
       .from('proposals')
-      .select('id,ts,line,amount,notes')
+      .select('id,ts,line,amount:premium,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
     setProposals(data||[])
