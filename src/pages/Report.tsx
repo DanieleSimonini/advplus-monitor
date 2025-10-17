@@ -159,7 +159,7 @@ export default function ReportPage(){
       {err && <div style={{ ...box, color:'#c00' }}>{err}</div>}
 
       <div style={{ display:'grid', gap:16 }}>
-        <MetricCard title="Consulenze" field="consulenze" rows={rows} format="int" />
+        <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
         <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
         <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
         <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
