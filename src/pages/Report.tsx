@@ -160,7 +160,7 @@ export default function ReportPage(){
 
       <div style={{ display:'grid', gap:16 }}>
         <MetricCard title="Consulenze" field="consulenze" rows={rows} format="int" />
-        <MetricCard title="Appuntamenti" field="contratti" rows={rows} format="int" />
+        <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
         <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
         <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
         <MetricCard title="Vita Premi Ricorrenti" field="prod_vpr" rows={rows} format="currency" />
