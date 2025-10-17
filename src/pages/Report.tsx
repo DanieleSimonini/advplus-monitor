@@ -4,16 +4,20 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * Report — Andamento vs Obiettivi
- * - Fonte obiettivi: viste v_goals_monthly (mensilizzati, già allineati alla pagina "Obiettivi")
- * - Fonte andamento: viste v_progress_monthly + fallback conteggio appuntamenti da appointments
- * - Admin / Team Lead: selettore advisor per vedere i Junior (o se stessi)
- * - Junior: solo se stesso
- * - Grafico mensile (Actual vs Goal) + riepilogo obiettivo di periodo
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
 type Me = { id: string; user_id: string; email: string; full_name: string | null; role: Role }
 type AdvisorLite = { id: string; user_id: string; email: string; full_name: string | null }
+
+/** Le metriche visualizzabili nei grafici/riquadri */
+type MetricKey =
+  | 'appuntamenti'
+  | 'contratti'
+  | 'prod_danni'
+  | 'prod_vprot'
+  | 'prod_vpr'
+  | 'prod_vpu'
 
 type GoalsRow = {
   advisor_user_id?: string
@@ -38,38 +42,21 @@ type ProgressRow = {
   prod_vprot?: number
   prod_vpr?: number
   prod_vpu?: number
-  appuntamenti?: number // calcolato se assente
+  appuntamenti?: number
 }
 
 type MergedRow = {
   y: number
   m: number
-  label: string // es. 2025-10
-  // Goal per mese
-  goal: {
-    appuntamenti?: number
-    contratti?: number
-    prod_danni?: number
-    prod_vprot?: number
-    prod_vpr?: number
-    prod_vpu?: number
-  }
-  // Actual per mese
-  actual: {
-    appuntamenti?: number
-    contratti?: number
-    prod_danni?: number
-    prod_vprot?: number
-    prod_vpr?: number
-    prod_vpu?: number
-  }
+  label: string
+  goal: Partial<Record<MetricKey, number>>
+  actual: Partial<Record<MetricKey, number>>
 }
 
 const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
 const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border, #ddd)', borderRadius: 8, background:'#fff', color:'var(--text, #111)' }
 const small: React.CSSProperties = { fontSize: 12, color:'#666' }
 
-/* ---------------------- Utils calendario ---------------------- */
 function toMonthKey(d: Date){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}` }
 function addMonths(d: Date, delta: number){ return new Date(d.getFullYear(), d.getMonth()+delta, 1) }
 function monthRange(fromKey: string, toKey: string){
@@ -87,7 +74,6 @@ function monthRange(fromKey: string, toKey: string){
 }
 function ymLabel(y:number,m:number){ return `${y}-${String(m).padStart(2,'0')}` }
 
-/* ---------------------- Pagina ---------------------- */
 export default function ReportPage(){
   const [me, setMe] = useState<Me | null>(null)
   const [advisors, setAdvisors] = useState<AdvisorLite[]>([])
@@ -96,16 +82,14 @@ export default function ReportPage(){
   const [fromKey, setFromKey] = useState(toMonthKey(addMonths(today, -5)))
   const [toKey, setToKey] = useState(toMonthKey(today))
 
-  // Advisor selezionato (sia uid auth che id tabella advisors)
-  const [selUid, setSelUid] = useState('')   // advisor_user_id scelto
-  const [selAid, setSelAid] = useState('')   // advisor_id (tabella advisors) del selezionato
+  const [selUid, setSelUid] = useState('')   // advisor_user_id
+  const [selAid, setSelAid] = useState('')   // advisors.id
 
   const [goals, setGoals] = useState<GoalsRow[]>([])
   const [prog, setProg] = useState<ProgressRow[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // Bootstrap profilo + elenco advisors (con id + user_id)
   useEffect(()=>{ (async()=>{
     setLoading(true); setErr('')
     try{
@@ -132,11 +116,9 @@ export default function ReportPage(){
         if (lerr) throw lerr
         const arr = (list||[]).filter(a => a.user_id) as AdvisorLite[]
         setAdvisors(arr)
-        // default: me
         setSelUid(meObj.user_id)
         setSelAid(meObj.id)
       } else {
-        // Junior → solo sé stesso
         setAdvisors([])
         setSelUid(meObj.user_id)
         setSelAid(meObj.id)
@@ -145,7 +127,6 @@ export default function ReportPage(){
     finally{ setLoading(false) }
   })() },[])
 
-  // quando cambia l'UID selezionato, aggiorno anche l'advisor_id coerente
   useEffect(()=>{
     if (!selUid) return
     if (me && selUid === me.user_id) { setSelAid(me.id); return }
@@ -153,7 +134,6 @@ export default function ReportPage(){
     setSelAid(found?.id || '')
   }, [selUid, advisors, me?.id])
 
-  // Caricamento dati per range + advisor selezionato
   useEffect(()=>{ (async()=>{
     if (!selUid) return
     setLoading(true); setErr('')
@@ -161,7 +141,6 @@ export default function ReportPage(){
       const rng = monthRange(fromKey, toKey)
       const yrs = Array.from(new Set(rng.map(r=>r.y)))
 
-      // GOALS: v_goals_monthly → recupera i target mensili derivati dagli obiettivi annuali/mensili (pagina Obiettivi)
       const goalsRes: GoalsRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -175,7 +154,6 @@ export default function ReportPage(){
       }
       setGoals(goalsRes)
 
-      // PROGRESS: v_progress_monthly
       const progRes: ProgressRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -188,7 +166,6 @@ export default function ReportPage(){
         progRes.push(...(data||[] as any[]))
       }
 
-      // se la vista non espone 'appuntamenti' → calcolo da appointments
       const anyAppField = progRes.some(r => typeof r.appuntamenti !== 'undefined')
       if (!anyAppField){
         const monthKeys = rng.map(r=>ymLabel(r.y, r.m))
@@ -227,7 +204,6 @@ export default function ReportPage(){
                 onChange={e=>setSelUid(e.target.value)}
                 style={ipt}
               >
-                {/* Me sempre in cima */}
                 <option value={me.user_id}>— {me.full_name || me.email} (me)</option>
                 {advisors
                   .filter(a=>a.user_id!==me.user_id)
@@ -261,12 +237,10 @@ export default function ReportPage(){
 }
 
 /* ---------------------- Conteggio appuntamenti (fallback) ---------------------- */
-// Conta appuntamenti per monthKey (YYYY-MM) per il dato advisor_user_id
 async function countAppointmentsByMonth(advisorUserId: string, monthKeys: string[]){
   const out = new Map<string, number>()
   if (!advisorUserId || monthKeys.length===0) return out
 
-  // 1) prendo tutti i lead posseduti dall'advisor
   const { data: leads } = await supabase
     .from('leads')
     .select('id')
@@ -275,8 +249,6 @@ async function countAppointmentsByMonth(advisorUserId: string, monthKeys: string
   const leadIds = (leads||[]).map(l=>l.id)
   if (!leadIds.length){ monthKeys.forEach(k=>out.set(k,0)); return out }
 
-  // 2) prendo gli appuntamenti di quei lead nel range complessivo e li bucketizzo a client
-  // calcolo min/max del range richiesto
   const years = Array.from(new Set(monthKeys.map(k=>Number(k.slice(0,4)))))
   const monthsByYear: Record<number, number[]> = {}
   for(const k of monthKeys){
@@ -320,12 +292,11 @@ function mergeByMonth(
     goal:{}, actual:{}
   }))
 
-  // Helper di filtro: compatibilità tra viste con advisor_user_id o advisor_id
   function matchByAdvisor(r: {advisor_user_id?:string; advisor_id?:string}){
     if (r.advisor_user_id && advisor_user_id) return r.advisor_user_id === advisor_user_id
     if (r.advisor_id && advisor_id) return r.advisor_id === advisor_id
     return false
-  }
+    }
 
   // GOALS
   for(const g of goals){
@@ -342,7 +313,7 @@ function mergeByMonth(
     }
   }
 
-  // PROGRESS (Actual)
+  // PROGRESS
   for(const p of progress){
     if (!matchByAdvisor(p)) continue
     const idx = rows.findIndex(r => r.y===p.year && r.m===p.month)
@@ -368,7 +339,7 @@ function fmt(n:number, type:'int'|'currency'){
 
 function MetricCard({ title, field, rows, format }:{
   title:string,
-  field: keyof GoalsRow | 'appuntamenti',
+  field: MetricKey,
   rows: MergedRow[],
   format:'int'|'currency'
 }){
@@ -379,7 +350,6 @@ function MetricCard({ title, field, rows, format }:{
 
   return (
     <div style={{ ...box }}>
-      {/* Header con Totale periodo ben visibile */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
         <div style={{ fontSize:16, fontWeight:700 }}>{title}</div>
         <div style={{ fontSize:14, minWidth:260, textAlign:'right' }}>
@@ -392,10 +362,8 @@ function MetricCard({ title, field, rows, format }:{
         </div>
       </div>
 
-      {/* Grafico mensile con etichette Goal/Actual chiare */}
       <BarChart rows={rows} field={field} format={format} />
 
-      {/* Obiettivo di periodo (layout anti-sovrapposizione) */}
       <div style={{ marginTop:12, display:'grid', gap:6 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div style={{ fontSize:12, color:'#666' }}>Obiettivo periodo</div>
@@ -414,11 +382,9 @@ function MetricCard({ title, field, rows, format }:{
 /* ---------------------- BarChart ---------------------- */
 function BarChart({ rows, field, format }:{
   rows: MergedRow[],
-  field: keyof GoalsRow | 'appuntamenti',
+  field: MetricKey,
   format: 'int'|'currency'
 }){
-  // Canvas senza dipendenze esterne
-  // calcolo max per scala
   const values = rows.flatMap(r => [r.actual[field]||0, r.goal[field]||0])
   const max = Math.max(1, ...values)
   const H = 160
@@ -434,7 +400,6 @@ function BarChart({ rows, field, format }:{
   return (
     <div style={{ overflowX:'auto' }}>
       <svg width={Math.max(width, 560)} height={H+28} role="img" aria-label="BarChart">
-        {/* asse Y semplice (0 / max) */}
         <text x={0} y={y(0)} fontSize="10" fill="#666">0</text>
         <text x={0} y={y(max)} fontSize="10" fill="#666">{fmt(max, format)}</text>
 
@@ -446,16 +411,13 @@ function BarChart({ rows, field, format }:{
           const hA = H - yA, hG = H - yG
           return (
             <g key={r.label}>
-              {/* etichetta mese */}
               <text x={x0 + barW + gap/2} y={H+20} textAnchor="middle" fontSize="10" fill="#0f172a">{r.label}</text>
 
-              {/* actual */}
               <rect x={x0} y={yA} width={barW} height={hA} fill="#0b57d0" opacity="0.9" />
               <text x={x0 + barW/2} y={yA-4} textAnchor="middle" fontSize="10" fill="#0f172a">
                 {a ? fmt(a, format) : ''}
               </text>
 
-              {/* goal */}
               <rect x={x0+barW+gap} y={yG} width={barW} height={hG} fill="#94a3b8" />
               <text x={x0 + barW+gap + barW/2} y={yG-4} textAnchor="middle" fontSize="10" fill="#334155">
                 {g ? fmt(g, format) : ''}
