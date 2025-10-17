@@ -19,7 +19,7 @@ type GoalsRow = {
   advisor_user_id: string
   year: number
   month: number
-  appuntamenti: number
+  consulenze: number
   contratti: number
   prod_danni: number
   prod_vprot: number
@@ -159,7 +159,7 @@ export default function ReportPage(){
       {err && <div style={{ ...box, color:'#c00' }}>{err}</div>}
 
       <div style={{ display:'grid', gap:16 }}>
-        <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
+        <MetricCard title="Consulenze" field="consulenze" rows={rows} format="int" />
         <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
         <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
         <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
@@ -174,9 +174,7 @@ export default function ReportPage(){
 
 // ===== Helpers render =====
 
-function MetricCard({ title, field, rows, format }:{
-  title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency'
-}){
+function MetricCard({ title, field, rows, format }:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
   const data = rows
   const totGoal = data.reduce((s,r)=> s + (r.goal[field]||0), 0)
   const totAct  = data.reduce((s,r)=> s + (r.actual[field]||0), 0)
@@ -190,49 +188,7 @@ function MetricCard({ title, field, rows, format }:{
           <span style={{ marginLeft:8, color: pct>=1? '#0a0':'#a60' }}>{(pct*100).toFixed(0)}%</span>
         </div>
       </div>
-
-      {/* Grafico mensile (esistente) */}
       <BarChart rows={data} field={field} format={format} />
-
-      {/* NUOVO: Grafico "Obiettivo periodo" */}
-      <div style={{ marginTop:12 }}>
-        <PeriodGoalChart totGoal={totGoal} totAct={totAct} format={format} />
-      </div>
-    </div>
-  )
-}
-
-function PeriodGoalChart({ totGoal, totAct, format }:{
-  totGoal:number, totAct:number, format:'int'|'currency'
-}){
-  const W = 420, H = 120
-  const pad = { l:100, r:20, t:16, b:30 }
-  const maxVal = Math.max(1, totGoal, totAct)
-  const barH = 18
-  const gap = 16
-
-  const rows = [
-    { label: 'Obiettivo periodo', value: totGoal, fill: '#e0e0e0' },
-    { label: 'Valore periodo',    value: totAct,  fill: '#808080' },
-  ]
-
-  return (
-    <div style={{ overflowX:'auto' }}>
-      <svg width={W} height={H} aria-label="Confronto obiettivo periodo vs valore periodo">
-        <text x={pad.l} y={12} fontSize={12} fill="#666">Confronto periodo</text>
-        {rows.map((r, i) => {
-          const y = pad.t + i*(barH+gap)
-          const w = ((r.value / maxVal) * (W - pad.l - pad.r))
-          return (
-            <g key={i}>
-              <text x={8} y={y + barH - 4} fontSize={12} fill="#444">{r.label}</text>
-              <rect x={pad.l} y={y} width={W - pad.l - pad.r} height={barH} fill="#f5f5f5" />
-              <rect x={pad.l} y={y} width={w} height={barH} fill={r.fill} />
-              <text x={pad.l + w + 6} y={y + barH - 4} fontSize={11} fill="#333">{fmt(r.value, format)}</text>
-            </g>
-          )
-        })}
-      </svg>
     </div>
   )
 }
