@@ -19,7 +19,7 @@ type GoalsRow = {
   advisor_user_id: string
   year: number
   month: number
-  appuntamenti: number
+  consulenze: number
   contratti: number
   prod_danni: number
   prod_vprot: number
