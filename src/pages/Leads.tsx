@@ -212,49 +212,53 @@ export default function LeadsPage(){
     finally{ setLoading(false) }
   })() },[])
 
-  // carica leads
- async function loadLeads() {
-  try {
-    // recupera utente loggato e ruolo
-    const { data: user } = await supabase.auth.getUser()
-    const uid = user?.user?.id
-    if (!uid) return
+ // carica leads (con visibilità per ruolo)
+async function loadLeads(){
+  try{
+    // 1) utente corrente + ruolo
+    const { data: s } = await supabase.auth.getUser()
+    const uid = s.user?.id || ''
+    if (!uid) { setLeads([]); setAggs({}); return }
 
-    // carica il ruolo dell'utente
-    const { data: me } = await supabase
+    const { data: me, error: meErr } = await supabase
       .from('advisors')
       .select('role')
       .eq('user_id', uid)
       .maybeSingle()
-    const role = me?.role as Role
+    if (meErr) throw meErr
+    const role = (me?.role || 'Junior') as Role
 
+    // 2) query base sui lead
     let query = supabase
       .from('leads')
       .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
 
-    if (role === 'Junior') {
-      // solo i propri lead
+    if (role === 'Junior'){
+      // solo i propri
       query = query.eq('owner_id', uid)
-    } else if (role === 'Team Lead') {
-      // include i lead dei propri Junior
-      const { data: juniors } = await supabase
+    } else if (role === 'Team Lead'){
+      // i propri + quelli dei Junior del proprio team
+      const { data: juniors, error: jErr } = await supabase
         .from('advisors')
         .select('user_id')
         .eq('team_lead_user_id', uid)
-      const juniorIds = (juniors || []).map(j => j.user_id)
-      query = query.in('owner_id', [uid, ...juniorIds])
-    } // Admin → vede tutti, nessun filtro
+      if (jErr) throw jErr
+      const juniorIds = (juniors || []).map(j => j.user_id).filter(Boolean) as string[]
+      query = juniorIds.length ? query.in('owner_id', [uid, ...juniorIds]) : query.eq('owner_id', uid)
+    } // Admin → nessun filtro (vede tutti)
 
-    const { data, error } = await query.order('created_at', { ascending: false })
+    const { data, error } = await query.order('created_at', { ascending:false })
     if (error) throw error
 
-    setLeads(data || [])
-    await loadAggregates((data || []).map(x => x.id!).filter(Boolean))
-  } catch (e: any) {
-    setErr(e.message || 'Errore caricamento leads')
+    const arr = (data || []) as Lead[]
+    setLeads(arr)
+
+    // 3) aggregati per i lead correnti
+    await loadAggregates(arr.map(x => x.id!).filter(Boolean))
+  } catch (ex:any){
+    setErr(ex.message || 'Errore caricamento leads')
   }
 }
-
 
   // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
   async function loadAggregates(leadIds: string[]){
