@@ -259,57 +259,167 @@ export default function ReportPage(){
 
 // ===== Helpers render =====
 
-function MetricCard({ title, field, rows, format }:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
-  const data = rows
-  const totGoal = data.reduce((s,r)=> s + (r.goal[field]||0), 0)
-  const totAct  = data.reduce((s,r)=> s + (r.actual[field]||0), 0)
-  const pct = totGoal>0 ? (totAct / totGoal) : 0
+function MetricCard({
+  title,
+  field,
+  rows,
+  format,
+}: {
+  title: string
+  field: keyof GoalsRow
+  rows: MergedRow[]
+  format: 'int' | 'currency'
+}) {
+  // Somme periodo
+  const totGoal = rows.reduce((s, r) => s + (r.goal[field] || 0), 0)
+  const totAct = rows.reduce((s, r) => s + (r.actual[field] || 0), 0)
+  const hasTarget = totGoal > 0
+  const pct = hasTarget ? totAct / totGoal : 0
+
   return (
     <div style={{ ...box }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
-        <div style={{ fontSize:16, fontWeight:700 }}>{title}</div>
-        <div style={{ fontSize:14 }}>
-          <b>{fmt(totAct, format)}</b> / {fmt(totGoal, format)}
-          <span style={{ marginLeft:8, color: pct>=1? '#0a0':'#a60' }}>{(pct*100).toFixed(0)}%</span>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'baseline',
+          marginBottom: 8,
+        }}
+      >
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{title}</div>
+        <div style={{ fontSize: 14, minWidth: 220, textAlign: 'right' }}>
+          <span style={{ color: '#666' }}>Totale periodo: </span>
+          <b>{fmt(totAct, format)}</b>
+          <span> / {fmt(totGoal, format)}</span>
+          <span
+            style={{
+              marginLeft: 10,
+              fontWeight: 800,
+              color: pct >= 1 ? '#0a0' : '#a60',
+            }}
+          >
+            {hasTarget ? `${(pct * 100).toFixed(0)}%` : '—'}
+          </span>
         </div>
       </div>
-      <BarChart rows={data} field={field} format={format} />
+
+      <BarChart rows={rows} field={field} format={format} />
     </div>
   )
 }
 
-function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency' }){
-  const W = Math.max(600, rows.length*60)
-  const H = 160
-  const pad = { l:40, r:20, t:10, b:30 }
-  const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
+function BarChart({
+  rows,
+  field,
+  format,
+}: {
+  rows: MergedRow[]
+  field: keyof GoalsRow
+  format: 'int' | 'currency'
+}) {
+  const W = Math.max(600, rows.length * 60)
+  const H = 180
+  const pad = { l: 44, r: 20, t: 12, b: 34 }
+
+  // scala su max(target, actual) per campo selezionato
+  const maxVal = Math.max(
+    1,
+    ...rows.map((r) => Math.max(r.goal[field] || 0, r.actual[field] || 0))
+  )
   const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
-  const barW = Math.max(14, step*0.35)
+  const barW = Math.max(16, step * 0.35)
 
   return (
-    <div style={{ overflowX:'auto' }}>
+    <div style={{ overflowX: 'auto' }}>
       <svg width={W} height={H}>
-        {/* axis */}
-        <line x1={pad.l} y1={H-pad.b} x2={W-pad.r} y2={H-pad.b} stroke="#ddd" />
-        {/* bars */}
+        {/* asse X */}
+        <line
+          x1={pad.l}
+          y1={H - pad.b}
+          x2={W - pad.r}
+          y2={H - pad.b}
+          stroke="#ddd"
+        />
+
         {rows.map((r, i) => {
-          const x = pad.l + i*step + 8
-          const gVal = r.goal[field]||0
-          const aVal = r.actual[field]||0
-          const gH = (gVal/maxVal) * (H - pad.b - pad.t)
-          const aH = (aVal/maxVal) * (H - pad.b - pad.t)
+          const x = pad.l + i * step + 8
+          const goal = r.goal[field] || 0
+          const act = r.actual[field] || 0
+          const gH = (goal / maxVal) * (H - pad.b - pad.t)
+          const aH = (act / maxVal) * (H - pad.b - pad.t)
           const baseY = H - pad.b
+
+          // % di avanzamento mensile (solo se c'è un target)
+          const monthPct =
+            goal > 0 ? Math.round((act / Math.max(goal, 1)) * 100) : null
+
           return (
             <g key={i}>
-              {/* goal bar (light) */}
-              <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#eaeaea" />
-              {/* actual bar (solid) */}
-              <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#888" />
-              {/* label month */}
-              <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle">{r.label}</text>
-              {/* values */}
-              <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#777">{fmt(gVal, format)}</text>
-              <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#333">{fmt(aVal, format)}</text>
+              {/* barra target (chiara) */}
+              <rect
+                x={x}
+                y={baseY - gH}
+                width={barW}
+                height={gH}
+                fill="#eaeaea"
+              />
+              {/* barra actual (scura) */}
+              <rect
+                x={x + barW + 6}
+                y={baseY - aH}
+                width={barW}
+                height={aH}
+                fill="#888"
+              />
+
+              {/* label mese */}
+              <text
+                x={x + barW}
+                y={H - 12}
+                fontSize={11}
+                textAnchor="middle"
+              >
+                {r.label}
+              </text>
+
+              {/* etichette valori:
+                  - Mostra SEMPRE il target (se >0).
+                  - Mostra l'actual solo se >0 (evita "0" rumorosi). */}
+              {goal > 0 && (
+                <text
+                  x={x + barW / 2}
+                  y={baseY - gH - 4}
+                  fontSize={10}
+                  textAnchor="middle"
+                  fill="#777"
+                >
+                  {fmt(goal, format)}
+                </text>
+              )}
+              {act > 0 && (
+                <text
+                  x={x + barW + 6 + barW / 2}
+                  y={baseY - aH - 4}
+                  fontSize={10}
+                  textAnchor="middle"
+                  fill="#333"
+                >
+                  {fmt(act, format)}
+                </text>
+              )}
+
+              {/* percentuale di completamento del mese */}
+              {monthPct !== null && (
+                <text
+                  x={x + barW + 6 + barW / 2}
+                  y={baseY + 14}
+                  fontSize={10}
+                  textAnchor="middle"
+                  fill={monthPct >= 100 ? '#0a0' : '#a60'}
+                >
+                  {monthPct}%
+                </text>
+              )}
             </g>
           )
         })}
