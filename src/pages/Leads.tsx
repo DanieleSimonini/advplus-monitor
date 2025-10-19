@@ -213,25 +213,48 @@ export default function LeadsPage(){
   })() },[])
 
   // carica leads
-  async function loadLeads(){
-    const { data, error } = await supabase
+ async function loadLeads() {
+  try {
+    // recupera utente loggato e ruolo
+    const { data: user } = await supabase.auth.getUser()
+    const uid = user?.user?.id
+    if (!uid) return
+
+    // carica il ruolo dell'utente
+    const { data: me } = await supabase
+      .from('advisors')
+      .select('role')
+      .eq('user_id', uid)
+      .maybeSingle()
+    const role = me?.role as Role
+
+    let query = supabase
       .from('leads')
       .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
-      .order('created_at', { ascending:false })
-    if (error){ setErr(error.message); return }
-    const arr = (data || []) as Lead[]
-    setLeads(arr)
-    // carica aggregati per tutti i lead correnti
-    await loadAggregates(arr.map(x=>x.id!).filter(Boolean))
-  }
 
-  async function loadAdvisors(){
-    const { data } = await supabase
-      .from('advisors')
-      .select('user_id,email,full_name,role')
-      .order('full_name', { ascending:true })
-    setAdvisors((data||[]) as AdvisorRow[])
+    if (role === 'Junior') {
+      // solo i propri lead
+      query = query.eq('owner_id', uid)
+    } else if (role === 'Team Lead') {
+      // include i lead dei propri Junior
+      const { data: juniors } = await supabase
+        .from('advisors')
+        .select('user_id')
+        .eq('team_lead_user_id', uid)
+      const juniorIds = (juniors || []).map(j => j.user_id)
+      query = query.in('owner_id', [uid, ...juniorIds])
+    } // Admin → vede tutti, nessun filtro
+
+    const { data, error } = await query.order('created_at', { ascending: false })
+    if (error) throw error
+
+    setLeads(data || [])
+    await loadAggregates((data || []).map(x => x.id!).filter(Boolean))
+  } catch (e: any) {
+    setErr(e.message || 'Errore caricamento leads')
   }
+}
+
 
   // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
   async function loadAggregates(leadIds: string[]){
