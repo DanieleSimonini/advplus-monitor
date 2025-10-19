@@ -72,7 +72,7 @@ export default function AdminUsersPage(){
     if (error){ setErr(error.message); return }
     const list = (data||[]) as Advisor[]
     setRows(list)
-    setTls(list.filter(a=>a.role==='Team Lead'))
+    setTls(list.filter(a => a.role === 'Team Lead' || a.role === 'Admin'))
   }
 
   function canAdmin(){ return meRole==='Admin' }
