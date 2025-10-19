@@ -8,11 +8,10 @@ import { supabase } from '@/supabaseClient'
  * - Indicatori: consulenze, contratti, prod_danni, prod_vprot, prod_vpr, prod_vpu
  * - Regole visibilità:
  *   • Junior: vede solo i propri dati (advisor selezionato = me, disabilitato)
- *   • Team Lead/Admin: possono scegliere l'advisor dal menu
+ *   • Team Lead/Admin: possono scegliere l'advisor dal menu (+ Totale Team)
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
-
 type Me = { id: string; user_id: string; email: string; full_name: string | null; role: Role }
 
 type GoalsRow = {
@@ -29,10 +28,10 @@ type GoalsRow = {
 
 type ProgressRow = GoalsRow & { }
 
+const TEAM_SUM_UID = '__TEAM_SUM__' // <-- nuova “scelta” per Totale Team
+
 const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
 const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border, #ddd)', borderRadius: 8, background:'#fff', color:'var(--text, #111)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid #eee', background: '#fafafa' }
-const td: React.CSSProperties = { padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }
 
 export default function ReportPage(){
   const [me, setMe] = useState<Me | null>(null)
@@ -96,7 +95,70 @@ export default function ReportPage(){
       const rng = monthRange(fromKey, toKey) // array di {y,m}
       const yrs = Array.from(new Set(rng.map(r=>r.y)))
 
-      // goals
+      // === BRANCH: Totale Team (me + junior) ===
+      if (advisorUid === TEAM_SUM_UID) {
+        // 1) GOALS (già aggregati lato DB)
+        const teamGoals: GoalsRow[] = []
+        for(const y of yrs){
+          const months = rng.filter(r=>r.y===y).map(r=>r.m)
+          const { data, error } = await supabase
+            .from('v_team_goals_monthly_sum')
+            .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
+            .eq('year', y)
+            .in('month', months)
+          if (error) throw error
+          // normalizzo i nomi campi (prod_* nel FE) e inserisco advisor_user_id fittizio
+          for (const r of (data||[])) {
+            teamGoals.push({
+              advisor_user_id: TEAM_SUM_UID,
+              year: r.year,
+              month: r.month,
+              consulenze: r.consulenze || 0,
+              contratti: r.contratti || 0,
+              prod_danni: r.danni_non_auto || 0,
+              prod_vprot: r.vita_protection || 0,
+              prod_vpr: r.vita_ricorrenti || 0,
+              prod_vpu: r.vita_unici || 0,
+            })
+          }
+        }
+        setGoals(teamGoals)
+
+        // 2) PROGRESS (sommo lato FE da v_progress_monthly sfruttando RLS)
+        //    Non filtro per advisor_user_id: l’RLS limita già a me + i miei junior.
+        const teamProgMap = new Map<string, ProgressRow>() // key: y-m
+        const k = (y:number,m:number)=>`${y}-${m}`
+        for(const y of yrs){
+          const months = rng.filter(r=>r.y===y).map(r=>r.m)
+          const { data, error } = await supabase
+            .from('v_progress_monthly')
+            .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+            .eq('year', y)
+            .in('month', months)
+          if (error) throw error
+          for(const row of (data||[])){
+            const key = k(row.year, row.month)
+            const acc = teamProgMap.get(key) || {
+              advisor_user_id: TEAM_SUM_UID,
+              year: row.year,
+              month: row.month,
+              consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
+            }
+            acc.consulenze += row.consulenze || 0
+            acc.contratti  += row.contratti  || 0
+            acc.prod_danni += row.prod_danni || 0
+            acc.prod_vprot += row.prod_vprot || 0
+            acc.prod_vpr   += row.prod_vpr   || 0
+            acc.prod_vpu   += row.prod_vpu   || 0
+            teamProgMap.set(key, acc)
+          }
+        }
+        setProg(Array.from(teamProgMap.values()))
+        setLoading(false)
+        return
+      }
+
+      // === BRANCH: singolo advisor (comportamento attuale) ===
       const goalsRes: GoalsRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -111,7 +173,6 @@ export default function ReportPage(){
       }
       setGoals(goalsRes)
 
-      // progress (vista v_progress_monthly)
       const progRes: ProgressRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -144,6 +205,8 @@ export default function ReportPage(){
             <>
               <label style={{ fontSize:12 }}>Advisor</label>
               <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={ipt}>
+                {/* Opzione Totale Team (me + junior) SOLO per Admin/TL */}
+                <option value={TEAM_SUM_UID}>— Totale Team (me + junior)</option>
                 <option value={me.user_id}>— {me.full_name || me.email} (me)</option>
                 {advisors.filter(a=>a.user_id!==me.user_id).map(a=> (
                   <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
