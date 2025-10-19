@@ -207,7 +207,7 @@ export default function LeadsPage(){
         const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
         if (me?.role) setMeRole(me.role as Role)
       }
-      await Promise.all([loadLeads(), loadAdvisors()])
+      await Promise.all([loadLeads(), Advisors()])
     } catch(ex:any){ setErr(ex.message || 'Errore inizializzazione') }
     finally{ setLoading(false) }
   })() },[])
