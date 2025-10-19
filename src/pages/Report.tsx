@@ -259,32 +259,21 @@ export default function ReportPage(){
 
 // ===== Helpers render =====
 
-function MetricCard({ title, field, rows, format }:{
-  title:string,
-  field: keyof GoalsRow,
-  rows: MergedRow[],
-  format:'int'|'currency'
-}){
-  const totGoal = rows.reduce((s,r)=> s + (r.goal[field]||0), 0)
-  const totAct  = rows.reduce((s,r)=> s + (r.actual[field]||0), 0)
-  const hasTarget = totGoal > 0
-  const pct = hasTarget ? (totAct / totGoal) : 0
-
+function MetricCard({ title, field, rows, format }:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
+  const data = rows
+  const totGoal = data.reduce((s,r)=> s + (r.goal[field]||0), 0)
+  const totAct  = data.reduce((s,r)=> s + (r.actual[field]||0), 0)
+  const pct = totGoal>0 ? (totAct / totGoal) : 0
   return (
     <div style={{ ...box }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
         <div style={{ fontSize:16, fontWeight:700 }}>{title}</div>
-        <div style={{ fontSize:14, minWidth:220, textAlign:'right' }}>
-          <span style={{ color:'#666' }}>Totale periodo: </span>
-          <b>{fmt(totAct, format)}</b>
-          <span> / {fmt(totGoal, format)}</span>
-          <span style={{ marginLeft:10, fontWeight:800, color: pct>=1? '#0a0':'#a60' }}>
-            {hasTarget ? `${(pct*100).toFixed(0)}%` : '—'}
-          </span>
+        <div style={{ fontSize:14 }}>
+          <b>{fmt(totAct, format)}</b> / {fmt(totGoal, format)}
+          <span style={{ marginLeft:8, color: pct>=1? '#0a0':'#a60' }}>{(pct*100).toFixed(0)}%</span>
         </div>
       </div>
-
-      <BarChart rows={rows} field={field} format={format} />
+      <BarChart rows={data} field={field} format={format} />
     </div>
   )
 }
@@ -329,72 +318,43 @@ function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsR
   )
 }
 
-function BarChart({ rows, field, format }:{
-  rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency'
-}){
-  const W = Math.max(600, rows.length*60)
-  const H = 180
-  const pad = { l:44, r:20, t:12, b:34 }
+function fmt(v:number, mode:'int'|'currency'){
+  if (mode==='int') return String(Math.round(v||0))
+  try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(v||0) }catch{ return String(v||0) }
+}
 
-  // scala verticale in base al massimo tra target (goal) e actual
-  const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
-  const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
-  const barW = Math.max(16, step*0.35)
+// ===== Merge/Date helpers =====
 
-  return (
-    <div style={{ overflowX:'auto' }}>
-      <svg width={W} height={H}>
-        {/* asse X */}
-        <line x1={pad.l} y1={H-pad.b} x2={W-pad.r} y2={H-pad.b} stroke="#ddd" />
+type YM = { y:number, m:number }
 
-        {rows.map((r, i) => {
-          const x = pad.l + i*step + 8
-          const goal = r.goal[field]||0
-          const act  = r.actual[field]||0
-          const gH = (goal/maxVal) * (H - pad.b - pad.t)
-          const aH = (act /maxVal) * (H - pad.b - pad.t)
-          const baseY = H - pad.b
+type MergedRow = {
+  y: number
+  m: number
+  label: string
+  goal: Record<keyof GoalsRow, number>
+  actual: Record<keyof GoalsRow, number>
+}
 
-          // % mensile se abbiamo un target
-          const monthPct = goal>0 ? Math.round((act/goal)*100) : null
-
-          return (
-            <g key={i}>
-              {/* goal bar (chiara) */}
-              <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#eaeaea" />
-              {/* actual bar (scura) */}
-              <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#888" />
-
-              {/* label mese */}
-              <text x={x + barW} y={H-12} fontSize={11} textAnchor="middle">{r.label}</text>
-
-              {/* etichette:
-                  - mostra SEMPRE il target (anche se 0 viene omesso per pulizia)
-                  - evita di stampare "0" sull'actual; mostra solo se > 0
-              */}
-              {goal>0 && (
-                <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#777">
-                  {fmt(goal, format)}
-                </text>
-              )}
-              {act>0 && (
-                <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#333">
-                  {fmt(act, format)}
-                </text>
-              )}
-
-              {/* percentuale mensile di avanzamento (se esiste target) */}
-              {monthPct!==null && (
-                <text x={x + barW + 6 + barW/2} y={baseY + 14} fontSize={10} textAnchor="middle" fill={monthPct>=100? '#0a0':'#a60'}>
-                  {monthPct}%
-                </text>
-              )}
-            </g>
-          )
-        })}
-      </svg>
-    </div>
-  )
+function toMonthKey(d: Date){
+  const y = d.getFullYear()
+  const m = d.getMonth()+1
+  return `${y}-${String(m).padStart(2,'0')}`
+}
+function addMonths(d: Date, delta: number){
+  const dd = new Date(d.getTime())
+  dd.setMonth(dd.getMonth()+delta)
+  return dd
+}
+function monthRange(fromKey:string, toKey:string): YM[]{
+  const [fy,fm] = fromKey.split('-').map(n=>parseInt(n,10))
+  const [ty,tm] = toKey.split('-').map(n=>parseInt(n,10))
+  const out: YM[] = []
+  let y=fy, m=fm
+  while (y<ty || (y===ty && m<=tm)){
+    out.push({ y, m })
+    m++; if (m>12){ m=1; y++ }
+  }
+  return out
 }
 
 function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, toKey:string): MergedRow[]{
