@@ -207,58 +207,31 @@ export default function LeadsPage(){
         const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
         if (me?.role) setMeRole(me.role as Role)
       }
-      await Promise.all([loadLeads(), advisors()])
+      await Promise.all([loadLeads(), loadAdvisors()])
     } catch(ex:any){ setErr(ex.message || 'Errore inizializzazione') }
     finally{ setLoading(false) }
   })() },[])
 
- // carica leads (con visibilità per ruolo)
-async function loadLeads(){
-  try{
-    // 1) utente corrente + ruolo
-    const { data: s } = await supabase.auth.getUser()
-    const uid = s.user?.id || ''
-    if (!uid) { setLeads([]); setAggs({}); return }
-
-    const { data: me, error: meErr } = await supabase
-      .from('advisors')
-      .select('role')
-      .eq('user_id', uid)
-      .maybeSingle()
-    if (meErr) throw meErr
-    const role = (me?.role || 'Junior') as Role
-
-    // 2) query base sui lead
-    let query = supabase
+  // carica leads
+  async function loadLeads(){
+    const { data, error } = await supabase
       .from('leads')
       .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
-
-    if (role === 'Junior'){
-      // solo i propri
-      query = query.eq('owner_id', uid)
-    } else if (role === 'Team Lead'){
-      // i propri + quelli dei Junior del proprio team
-      const { data: juniors, error: jErr } = await supabase
-        .from('advisors')
-        .select('user_id')
-        .eq('team_lead_user_id', uid)
-      if (jErr) throw jErr
-      const juniorIds = (juniors || []).map(j => j.user_id).filter(Boolean) as string[]
-      query = juniorIds.length ? query.in('owner_id', [uid, ...juniorIds]) : query.eq('owner_id', uid)
-    } // Admin → nessun filtro (vede tutti)
-
-    const { data, error } = await query.order('created_at', { ascending:false })
-    if (error) throw error
-
+      .order('created_at', { ascending:false })
+    if (error){ setErr(error.message); return }
     const arr = (data || []) as Lead[]
     setLeads(arr)
-
-    // 3) aggregati per i lead correnti
-    await loadAggregates(arr.map(x => x.id!).filter(Boolean))
-  } catch (ex:any){
-    setErr(ex.message || 'Errore caricamento leads')
+    // carica aggregati per tutti i lead correnti
+    await loadAggregates(arr.map(x=>x.id!).filter(Boolean))
   }
-}
+
+  async function loadAdvisors(){
+    const { data } = await supabase
+      .from('advisors')
+      .select('user_id,email,full_name,role')
+      .order('full_name', { ascending:true })
+    setAdvisors((data||[]) as AdvisorRow[])
+  }
 
   // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
   async function loadAggregates(leadIds: string[]){
@@ -335,7 +308,7 @@ async function loadLeads(){
   async function loadProposals(leadId:string){
     const { data } = await supabase
       .from('proposals')
-      .select('id,ts,line,amount:premium,notes')
+      .select('id,ts,line,amount,notes')
       .eq('lead_id', leadId)
       .order('ts', { ascending:false })
     setProposals(data||[])
@@ -999,7 +972,7 @@ async function loadLeads(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
+                      const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, amount: propDraft.amount||0, notes: propDraft.notes||null }
                       const { error } = await supabase.from('proposals').update(payload).eq('id', editingPropId)
                       if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                     }}>Salva</button>
@@ -1008,7 +981,7 @@ async function loadLeads(){
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, amount: propDraft.amount||0, notes: propDraft.notes||null }
                     const { error } = await supabase.from('proposals').insert(payload)
                     if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                   }}>Aggiungi proposta</button>
