@@ -98,18 +98,73 @@ export default function ReportPage(){
       const rng = monthRange(fromKey, toKey) // array di {y,m}
       const yrs = Array.from(new Set(rng.map(r=>r.y)))
 
-      // === BRANCH: Il Mio Team (TL o Admin) ===
-      if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
-        // TL: il proprio team; Admin: il team del TL selezionato nel menu Advisor
-        const teamLeadId = me.role === 'Admin' ? advisorUid : me.user_id
+     // === BRANCH: Il Mio Team (TL o Admin) ===
+if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
+  // ...
+  // (1) teamLeadId, (2) teamList/ids restano uguali
 
-        // 1) recupera tutti gli user_id del team (TL + junior)
-        const { data: teamList, error: teamErr } = await supabase
-          .from('advisors')
-          .select('user_id,team_lead_user_id')
-          .or(`user_id.eq.${teamLeadId},team_lead_user_id.eq.${teamLeadId}`)
-        if (teamErr) throw teamErr
-        const ids = (teamList||[]).map(r=>r.user_id)
+  // ⬇️ SOSTITUISCI QUESTO BLOCCO GOALS CON IL SEGUENTE
+  // 2) GOALS TEAM
+  const teamGoals: GoalsRow[] = []
+
+  if (me.role === 'Admin') {
+    // Admin: sommiamo i GOALS lato FE per il team del TL selezionato
+    const goalsMap = new Map<string, GoalsRow>() // key y-m
+    const k = (y:number,m:number)=>`${y}-${m}`
+
+    for (const y of yrs) {
+      const months = rng.filter(r=>r.y===y).map(r=>r.m)
+      const { data, error } = await supabase
+        .from('v_goals_monthly')
+        .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+        .eq('year', y)
+        .in('month', months)
+        .in('advisor_user_id', ids) // TL + junior del TL selezionato
+      if (error) throw error
+
+      for (const row of (data || [])) {
+        const key = k(row.year, row.month)
+        const acc = goalsMap.get(key) || {
+          advisor_user_id: 'TEAM',
+          year: row.year,
+          month: row.month,
+          consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
+        }
+        acc.consulenze += row.consulenze || 0
+        acc.contratti  += row.contratti  || 0
+        acc.prod_danni += row.prod_danni || 0
+        acc.prod_vprot += row.prod_vprot || 0
+        acc.prod_vpr   += row.prod_vpr   || 0
+        acc.prod_vpu   += row.prod_vpu   || 0
+        goalsMap.set(key, acc)
+      }
+    }
+    teamGoals.push(...Array.from(goalsMap.values()))
+  } else {
+    // Team Lead: possiamo usare la vista aggregata già pronta
+    for(const y of yrs){
+      const months = rng.filter(r=>r.y===y).map(r=>r.m)
+      const { data, error } = await supabase
+        .from('v_team_goals_monthly_sum')
+        .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
+        .eq('year', y)
+        .in('month', months)
+      if (error) throw error
+      for (const r of (data||[])) {
+        teamGoals.push({
+          advisor_user_id: 'TEAM',
+          year: r.year,
+          month: r.month,
+          consulenze: r.consulenze || 0,
+          contratti: r.contratti || 0,
+          prod_danni: r.danni_non_auto || 0,
+          prod_vprot: r.vita_protection || 0,
+          prod_vpr: r.vita_ricorrenti || 0,
+          prod_vpu: r.vita_unici || 0,
+        })
+      }
+    }
+  }
 
         // 2) GOALS TEAM (già aggregati lato DB nella vista v_team_goals_monthly_sum)
         const teamGoals: GoalsRow[] = []
