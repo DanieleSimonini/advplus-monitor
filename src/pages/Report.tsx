@@ -8,7 +8,8 @@ import { supabase } from '@/supabaseClient'
  * - Indicatori: consulenze, contratti, prod_danni, prod_vprot, prod_vpr, prod_vpu
  * - Regole visibilità:
  *   • Junior: vede solo i propri dati (advisor selezionato = me, disabilitato)
- *   • Team Lead/Admin: possono scegliere l'advisor dal menu (+ filtro "Il Mio Team" per TL)
+ *   • Team Lead/Admin: possono scegliere l'advisor dal menu
+ *   • Filtro “Il Mio Team”: TL → il proprio team; Admin → il team del TL selezionato
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -31,13 +32,10 @@ type ProgressRow = GoalsRow & { }
 
 const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
 const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border, #ddd)', borderRadius: 8, background:'#fff', color:'var(--text, #111)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid #eee', background: '#fafafa' }
-const td: React.CSSProperties = { padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }
 
 export default function ReportPage(){
   const [me, setMe] = useState<Me | null>(null)
   const [advisors, setAdvisors] = useState<{ user_id: string, email: string, full_name: string | null }[]>([])
-  const [teamIds, setTeamIds] = useState<string[]>([])  // me + miei junior (solo per TL)
 
   // Filtri
   const today = new Date()
@@ -47,7 +45,7 @@ export default function ReportPage(){
   const [toKey, setToKey] = useState<string>(defTo)
   const [advisorUid, setAdvisorUid] = useState<string>('')
 
-  // Nuovo filtro: Il Mio Team (solo TL)
+  // Nuovo filtro: Il Mio Team (per TL e Admin)
   const [myTeam, setMyTeam] = useState<boolean>(false)
 
   // Dati
@@ -56,7 +54,7 @@ export default function ReportPage(){
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // Bootstrap: me + advisors (per dropdown) + ids del mio team se sono TL
+  // Bootstrap: me + advisors (per dropdown)
   useEffect(()=>{ (async()=>{
     setLoading(true); setErr('')
     try{
@@ -72,26 +70,17 @@ export default function ReportPage(){
         .maybeSingle()
       if (meErr) throw meErr
       if (!meRow){ setErr('Profilo non trovato'); setLoading(false); return }
-      const meObj: Me = { id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role }
-      setMe(meObj)
+      setMe({ id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role })
 
       // lista advisors (solo per Admin/TL)
       if (meRow.role === 'Admin' || meRow.role === 'Team Lead'){
         const { data: list, error: lerr } = await supabase
           .from('advisors')
-          .select('user_id,email,full_name,team_lead_user_id')
+          .select('user_id,email,full_name')
           .order('full_name', { ascending: true })
         if (lerr) throw lerr
-        const arr = (list||[]).filter(x=>!!x.user_id) as any as { user_id:string, email:string, full_name:string|null, team_lead_user_id?:string|null }[]
-        setAdvisors(arr.map(({user_id,email,full_name})=>({user_id,email,full_name})))
+        setAdvisors((list||[]).filter(x=>!!x.user_id) as any)
         setAdvisorUid(uid)
-
-        // Se sono Team Lead: calcola gli user_id del mio team (me + junior)
-        if (meRow.role === 'Team Lead'){
-          const myJuniors = arr.filter(a => a.team_lead_user_id === uid).map(a => a.user_id)
-          const ids = Array.from(new Set([uid, ...myJuniors]))
-          setTeamIds(ids)
-        }
       } else {
         // Junior → advisor = me, dropdown disabilitato
         setAdvisors([])
@@ -109,83 +98,80 @@ export default function ReportPage(){
       const rng = monthRange(fromKey, toKey) // array di {y,m}
       const yrs = Array.from(new Set(rng.map(r=>r.y)))
 
-     // === BRANCH: Il Mio Team (TL o Admin) ===
-if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
-  // Determina di quale team calcolare la somma:
-  // - se sono TL → il mio team
-  // - se sono Admin → il team del TL selezionato (advisorUid)
-  const teamLeadId = me.role === 'Admin' ? advisorUid : me.user_id
+      // === BRANCH: Il Mio Team (TL o Admin) ===
+      if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
+        // TL: il proprio team; Admin: il team del TL selezionato nel menu Advisor
+        const teamLeadId = me.role === 'Admin' ? advisorUid : me.user_id
 
-  // 1️⃣ recupera tutti gli user_id del team (TL + junior)
-  const { data: teamList, error: teamErr } = await supabase
-    .from('advisors')
-    .select('user_id')
-    .or(`user_id.eq.${teamLeadId},team_lead_user_id.eq.${teamLeadId}`)
-  if (teamErr) throw teamErr
-  const ids = (teamList||[]).map(r=>r.user_id)
+        // 1) recupera tutti gli user_id del team (TL + junior)
+        const { data: teamList, error: teamErr } = await supabase
+          .from('advisors')
+          .select('user_id,team_lead_user_id')
+          .or(`user_id.eq.${teamLeadId},team_lead_user_id.eq.${teamLeadId}`)
+        if (teamErr) throw teamErr
+        const ids = (teamList||[]).map(r=>r.user_id)
 
-  // 2️⃣ GOALS (già aggregati lato DB; condizione TL/Admin identica)
-  const teamGoals: GoalsRow[] = []
-  for(const y of yrs){
-    const months = rng.filter(r=>r.y===y).map(r=>r.m)
-    const { data, error } = await supabase
-      .from('v_team_goals_monthly_sum')
-      .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
-      .eq('year', y)
-      .in('month', months)
-    if (error) throw error
-    for (const r of (data||[])) {
-      teamGoals.push({
-        advisor_user_id: 'TEAM',
-        year: r.year,
-        month: r.month,
-        consulenze: r.consulenze || 0,
-        contratti: r.contratti || 0,
-        prod_danni: r.danni_non_auto || 0,
-        prod_vprot: r.vita_protection || 0,
-        prod_vpr: r.vita_ricorrenti || 0,
-        prod_vpu: r.vita_unici || 0,
-      })
-    }
-  }
-  setGoals(teamGoals)
+        // 2) GOALS TEAM (già aggregati lato DB nella vista v_team_goals_monthly_sum)
+        const teamGoals: GoalsRow[] = []
+        for(const y of yrs){
+          const months = rng.filter(r=>r.y===y).map(r=>r.m)
+          const { data, error } = await supabase
+            .from('v_team_goals_monthly_sum')
+            .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
+            .eq('year', y)
+            .in('month', months)
+          if (error) throw error
+          for (const r of (data||[])) {
+            teamGoals.push({
+              advisor_user_id: 'TEAM',
+              year: r.year,
+              month: r.month,
+              consulenze: r.consulenze || 0,
+              contratti: r.contratti || 0,
+              prod_danni: r.danni_non_auto || 0,
+              prod_vprot: r.vita_protection || 0,
+              prod_vpr: r.vita_ricorrenti || 0,
+              prod_vpu: r.vita_unici || 0,
+            })
+          }
+        }
+        setGoals(teamGoals)
 
-  // 3️⃣ PROGRESS TEAM (somma lato FE sugli advisor del team)
-  const teamProgMap = new Map<string, ProgressRow>()
-  const k = (y:number,m:number)=>`${y}-${m}`
-  for(const y of yrs){
-    const months = rng.filter(r=>r.y===y).map(r=>r.m)
-    const { data, error } = await supabase
-      .from('v_progress_monthly')
-      .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-      .eq('year', y)
-      .in('month', months)
-      .in('advisor_user_id', ids)
-    if (error) throw error
-    for(const row of (data||[])){
-      const key = k(row.year, row.month)
-      const acc = teamProgMap.get(key) || {
-        advisor_user_id: 'TEAM',
-        year: row.year,
-        month: row.month,
-        consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
+        // 3) PROGRESS TEAM (somma lato FE sugli advisor del team)
+        const teamProgMap = new Map<string, ProgressRow>()
+        const k = (y:number,m:number)=>`${y}-${m}`
+        for(const y of yrs){
+          const months = rng.filter(r=>r.y===y).map(r=>r.m)
+          const { data, error } = await supabase
+            .from('v_progress_monthly')
+            .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+            .eq('year', y)
+            .in('month', months)
+            .in('advisor_user_id', ids)
+          if (error) throw error
+          for(const row of (data||[])){
+            const key = k(row.year, row.month)
+            const acc = teamProgMap.get(key) || {
+              advisor_user_id: 'TEAM',
+              year: row.year,
+              month: row.month,
+              consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
+            }
+            acc.consulenze += row.consulenze || 0
+            acc.contratti  += row.contratti  || 0
+            acc.prod_danni += row.prod_danni || 0
+            acc.prod_vprot += row.prod_vprot || 0
+            acc.prod_vpr   += row.prod_vpr   || 0
+            acc.prod_vpu   += row.prod_vpu   || 0
+            teamProgMap.set(key, acc)
+          }
+        }
+        setProg(Array.from(teamProgMap.values()))
+        setLoading(false)
+        return
       }
-      acc.consulenze += row.consulenze || 0
-      acc.contratti  += row.contratti  || 0
-      acc.prod_danni += row.prod_danni || 0
-      acc.prod_vprot += row.prod_vprot || 0
-      acc.prod_vpr   += row.prod_vpr   || 0
-      acc.prod_vpu   += row.prod_vpu   || 0
-      teamProgMap.set(key, acc)
-    }
-  }
-  setProg(Array.from(teamProgMap.values()))
-  setLoading(false)
-  return
-}
 
       // === BRANCH: singolo advisor (comportamento attuale) ===
-      // goals
       const goalsRes: GoalsRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -200,7 +186,6 @@ if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
       }
       setGoals(goalsRes)
 
-      // progress (vista v_progress_monthly)
       const progRes: ProgressRow[] = []
       for(const y of yrs){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
@@ -216,7 +201,7 @@ if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
       setProg(progRes)
     } catch(ex:any){ setErr(ex.message || 'Errore caricamento dati') }
     finally{ setLoading(false) }
-  })() },[advisorUid, fromKey, toKey, myTeam, me, teamIds])
+  })() },[advisorUid, fromKey, toKey, myTeam, me])
 
   const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey), [goals, prog, fromKey, toKey])
 
@@ -229,8 +214,8 @@ if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
           <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={ipt} />
           <label style={{ fontSize:12 }}>al</label>
           <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={ipt} />
-          {/* Filtro "Il Mio Team" SOLO per Team Lead */}
-          {me?.role === 'Team Lead' && (
+          {/* Filtro "Il Mio Team" per Team Lead E Admin */}
+          {me && (me.role === 'Team Lead' || me.role === 'Admin') && (
             <label style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12 }}>
               <input type="checkbox" checked={myTeam} onChange={e=>setMyTeam(e.target.checked)} />
               Il Mio Team
@@ -239,7 +224,8 @@ if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
           {me && (me.role==='Admin' || me.role==='Team Lead') ? (
             <>
               <label style={{ fontSize:12 }}>Advisor</label>
-              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={ipt} disabled={me.role==='Team Lead' && myTeam}>
+              {/* Admin deve poter selezionare il TL del quale vedere il team; TL può lasciare il proprio */}
+              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={ipt}>
                 <option value={me.user_id}>— {me.full_name || me.email} (me)</option>
                 {advisors.filter(a=>a.user_id!==me.user_id).map(a=> (
                   <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
