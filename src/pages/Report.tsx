@@ -240,6 +240,48 @@ export default function ReportPage(){
 
       {err && <div style={{ ...box, color:'#c00' }}>{err}</div>}
 
+      {/* === NUOVA SEZIONE: Grafici specchio — Solo obiettivo del periodo === */}
+      <div style={{ ...box, display:'grid', gap:12 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div style={{ fontSize:16, fontWeight:700 }}>Obiettivi del periodo (solo target & completamento)</div>
+          <small style={{ color:'#666' }}>Periodo: {prettyRange(fromKey, toKey)}</small>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0,1fr))', gap:12 }}>
+          <TargetOnlyBar
+            label="Appuntamenti"
+            {...totalsFor(rows, 'consulenze')}
+            format="int"
+          />
+          <TargetOnlyBar
+            label="Contratti"
+            {...totalsFor(rows, 'contratti')}
+            format="int"
+          />
+          <TargetOnlyBar
+            label="Produzione Danni Non Auto"
+            {...totalsFor(rows, 'prod_danni')}
+            format="currency"
+          />
+          <TargetOnlyBar
+            label="Vita Protection"
+            {...totalsFor(rows, 'prod_vprot')}
+            format="currency"
+          />
+          <TargetOnlyBar
+            label="Vita Premi Ricorrenti"
+            {...totalsFor(rows, 'prod_vpr')}
+            format="currency"
+          />
+          <TargetOnlyBar
+            label="Vita Premi Unici"
+            {...totalsFor(rows, 'prod_vpu')}
+            format="currency"
+          />
+        </div>
+      </div>
+
+      {/* === Sezione originale con grafici mensili (non toccata) === */}
       <div style={{ display:'grid', gap:16 }}>
         <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
         <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
@@ -271,6 +313,32 @@ function MetricCard({ title, field, rows, format }:{ title:string, field: keyof 
         </div>
       </div>
       <BarChart rows={data} field={field} format={format} />
+    </div>
+  )
+}
+
+/** NUOVO: “grafico speculare” minimal — SOLO obiettivo del periodo + % completamento */
+function TargetOnlyBar({
+  label,
+  totalActual,
+  totalGoal,
+  format
+}:{ label:string, totalActual:number, totalGoal:number, format:'int'|'currency' }){
+  const pct = totalGoal>0 ? (totalActual/totalGoal) : 0
+  const widthPct = Math.max(0, Math.min(1, pct)) * 100
+  return (
+    <div style={{ border:'1px solid var(--border, #eee)', borderRadius:12, padding:12, display:'grid', gap:8 }}>
+      <div style={{ fontWeight:700 }}>{label}</div>
+      <div style={{ fontSize:12, color:'#666' }}>
+        {fmt(totalActual, format)} / {fmt(totalGoal, format)}
+      </div>
+      <div style={{ height:10, background:'#f2f2f2', borderRadius:999, overflow:'hidden' }}>
+        <div style={{ width:`${widthPct}%`, height:'100%', background:'var(--brand-primary-600, #0029ae)' }} />
+      </div>
+      <div style={{ fontSize:12 }}>
+        Completamento: {(pct*100).toFixed(0)}%
+        {totalGoal===0 ? ' (nessun obiettivo impostato)' : (pct>1 ? ' (oltre 100%)' : '')}
+      </div>
     </div>
   )
 }
@@ -380,4 +448,19 @@ function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, to
     out.push(row)
   }
   return out
+}
+
+/** NUOVO: calcolo rapidi dei totali periodo per i grafici specchio */
+function totalsFor(rows: MergedRow[], field: keyof GoalsRow): { totalActual:number, totalGoal:number }{
+  const totalGoal = rows.reduce((s,r)=> s + (r.goal[field]||0), 0)
+  const totalActual = rows.reduce((s,r)=> s + (r.actual[field]||0), 0)
+  return { totalActual, totalGoal }
+}
+
+/** NUOVO: stringa leggibile del range selezionato */
+function prettyRange(fromKey:string, toKey:string){
+  const [fy,fm] = fromKey.split('-').map(n=>parseInt(n,10))
+  const [ty,tm] = toKey.split('-').map(n=>parseInt(n,10))
+  const m = (n:number)=> String(n).padStart(2,'0')
+  return `${m(fm)}/${fy} → ${m(tm)}/${ty}`
 }
