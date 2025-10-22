@@ -1,5 +1,5 @@
 
-// ReportPage.tsx — Patch: obiettivi visibili sopra le colonne + mirror a torta
+// ReportPage.tsx — Patch: etichette visibili + mirror a torta con percentuale >100% e testo verde al superamento
 // Mantiene le funzionalità esistenti, legge gli obiettivi dalla pagina Obiettivi (tabella goals_monthly).
 
 import React, { useEffect, useMemo, useState } from 'react'
@@ -259,10 +259,11 @@ function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, 
   )
 }
 
-// ⇩⇩⇩ PATCH: mirror trasformato in grafico a torta (progressivo)
+// ⇩⇩⇩ PATCH: mirror trasformato in grafico a torta (progressivo) con percentuale >100% e testo verde al superamento
 function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number, actual:number, format:'int'|'currency' }){
-  const pct = goal>0 ? Math.min(100, Math.round((actual/goal)*1000)/10) : 0
-  const HColor = pct>=100? '#067647' : pct>=70? '#B54708' : '#B42318'
+  const pctRaw = goal>0 ? (actual/goal)*100 : 0
+  const pctDisplay = Math.round(pctRaw*10)/10 // può superare 100
+  const HColor = pctRaw>=100? '#067647' : pctRaw>=70? '#B54708' : '#B42318'
 
   // configurazione pie
   const size = 140
@@ -271,8 +272,8 @@ function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number,
   const r = 46
   const strokeW = 12
 
-  // calcolo arco (0 → 360); per 100% disegniamo un cerchio completo
-  const angle = (pct / 100) * 360
+  // arco visivo: massimo 360°, ma il numero centrale può superare 100%
+  const angle = Math.min(360, (pctRaw / 100) * 360)
   const largeArc = angle > 180 ? 1 : 0
   const rad = (deg:number)=> (deg * Math.PI) / 180
   const x = cx + r * Math.sin(rad(angle))
@@ -282,7 +283,7 @@ function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number,
     <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
         <div style={headerTitle}>{title}</div>
-        <div style={{ fontSize:13, fontWeight:700, color: HColor }}>{pct}%</div>
+        <div style={{ fontSize:13, fontWeight:700, color: HColor }}>{pctDisplay}%</div>
       </div>
       <div style={meta}>
         Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
@@ -291,20 +292,20 @@ function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number,
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
           {/* background */}
           <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEF2F6" strokeWidth={strokeW} />
-          {/* progress */}
-          {pct >= 100 ? (
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#98A2B3" strokeWidth={strokeW} />
+          {/* progress: se >=100, anello completo; colore dell'arco verde quando superato */}
+          {pctRaw >= 100 ? (
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#067647" strokeWidth={strokeW} />
           ) : (
             <path
               d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`}
-              stroke="#98A2B3"
+              stroke={HColor === '#067647' ? '#067647' : '#98A2B3'}
               strokeWidth={strokeW}
               fill="none"
             />
           )}
-          {/* label */}
-          <text x={cx} y={cy+4} textAnchor="middle" fontSize="16" fontWeight="bold" fill="#111827">
-            {pct.toFixed(0)}%
+          {/* label percentuale al centro, verde quando >=100% */}
+          <text x={cx} y={cy+4} textAnchor="middle" fontSize="16" fontWeight="bold" fill={HColor}>
+            {pctDisplay}%
           </text>
         </svg>
       </div>
