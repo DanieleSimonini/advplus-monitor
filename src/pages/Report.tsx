@@ -1,8 +1,9 @@
-// ReportPage.tsx — Patch layout + obiettivi da "pagina obiettivi" con %
+// ReportPage.tsx — Patch layout + obiettivi da "pagina obiettivi" con % (owner_id mapping fix)
 // NOTE: mantiene tutte le funzionalità esistenti; aggiunge solo:
 // - mirror panel allineato nello stile (spaziature, altezze, label)
 // - lettura obiettivi dalla tabella `goals` (pagina Obiettivi) con fallback sulle viste
 // - percentuali mostrate sia nelle carte a sinistra (totali) che nelle carte specchio
+// - FIX: supporto owner_id salvato come advisors.id OPPURE advisors.user_id
 
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
@@ -136,8 +137,11 @@ export default function ReportPage(){
       }
       setProg(progRows)
 
+      // === FIX: mappa advisors.user_id -> advisors.id (owner_id può contenere uno dei due)
+      const { byUserId, allAdvisorIds } = await fetchAdvisorIdMap(scopeUserIds)
+
       // --- GOALS dalla "pagina obiettivi" (tabella `goals`) con fallback alle viste
-      const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, isTeam: myTeam })
+      const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, scopeAdvisorIds: allAdvisorIds, isTeam: myTeam })
         .catch(async ()=> await loadGoalsMonthlyFromViews({ rng, years, scopeUserIds, isTeam: myTeam }))
 
       setGoals(goalsRows)
@@ -372,34 +376,74 @@ function aggregateTotals(rows: MergedRow[]){
   }
 }
 
+// ===== Helper: mappa advisors.user_id -> advisors.id
+async function fetchAdvisorIdMap(userIds: string[]): Promise<{ byUserId: Record<string,string>, allAdvisorIds: string[] }> {
+  if (!userIds.length) return { byUserId: {}, allAdvisorIds: [] }
+  const { data, error } = await supabase
+    .from('advisors')
+    .select('id,user_id')
+    .in('user_id', userIds)
+  if (error) throw error
+  const byUserId: Record<string,string> = {}
+  for (const r of (data||[])) byUserId[r.user_id] = r.id
+  return { byUserId, allAdvisorIds: Object.values(byUserId) }
+}
+
 // ====== LETTURA OBIETTIVI DALLA PAGINA "OBIETTIVI" ======
 // Tabella prevista: `goals` con colonne mensili:
 //  year, month, owner_id (facoltativo), appointments_target, contracts_target,
 //  danni_non_auto_target, vita_protection_target, vita_premi_ricorrenti_target, vita_premi_unici_target
 async function loadGoalsMonthlyFromGoalsTable({
-  rng, years, scopeUserIds, isTeam
-}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
+  rng, years, scopeUserIds, scopeAdvisorIds, isTeam
+}:{ rng: YM[], years:number[], scopeUserIds:string[], scopeAdvisorIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
   const rows: GoalsRow[] = []
-  for(const y of years){
-    const months = rng.filter(r=>r.y===y).map(r=>r.m)
-    // prendo tutte le righe goals per i mesi nel range (eventuale owner_id tra quelli in scope)
-    const q = supabase.from('goals')
+  const monthsByYear: Record<number, number[]> = {}
+  for (const {y,m} of rng) { (monthsByYear[y] ||= []).push(m) }
+
+  for (const y of years){
+    const months = monthsByYear[y]
+
+    // 1) tenta match su owner_id = advisors.id (ID interno tabella advisors)
+    const { data: byAdvisorId, error: e1 } = await supabase
+      .from('goals')
       .select('year,month,owner_id,appointments_target,contracts_target,danni_non_auto_target,vita_protection_target,vita_premi_ricorrenti_target,vita_premi_unici_target')
       .eq('year', y)
       .in('month', months)
+      .in('owner_id', scopeAdvisorIds.length ? scopeAdvisorIds : ['__nope__'])
+    if (e1) throw e1
 
-    const { data, error } = await q
-    if (error) throw error
+    // 2) se non trovate righe, tenta match su owner_id = advisors.user_id
+    let byUserOwner: any[] = []
+    if (!byAdvisorId?.length){
+      const { data: byUserId, error: e2 } = await supabase
+        .from('goals')
+        .select('year,month,owner_id,appointments_target,contracts_target,danni_non_auto_target,vita_protection_target,vita_premi_ricorrenti_target,vita_premi_unici_target')
+        .eq('year', y)
+        .in('month', months)
+        .in('owner_id', scopeUserIds.length ? scopeUserIds : ['__nope__'])
+      if (e2) throw e2
+      byUserOwner = byUserId || []
+    }
 
-    // filtro per perimetro (se presente owner_id)
-    const filtered = (data||[]).filter((g:any)=> !g.owner_id || scopeUserIds.includes(g.owner_id))
+    // 3) opzionale: righe GLOBALI (senza owner) che vuoi sempre sommare
+    const { data: noOwner, error: e3 } = await supabase
+      .from('goals')
+      .select('year,month,owner_id,appointments_target,contracts_target,danni_non_auto_target,vita_protection_target,vita_premi_ricorrenti_target,vita_premi_unici_target')
+      .eq('year', y)
+      .in('month', months)
+      .is('owner_id', null)
+    if (e3) throw e3
+
+    // merge sorgenti valide
+    const source = (byAdvisorId?.length ? byAdvisorId : byUserOwner)
+    const merged = [...(source||[]), ...(noOwner||[])]  // rimuovi noOwner se non vuoi obiettivi globali
 
     if (isTeam){
-      // somma per mese
-      const byKey = new Map<string, GoalsRow>()
-      for(const g of filtered){
+      // somma per mese (team)
+      const map = new Map<string, GoalsRow>()
+      for(const g of merged){
         const k = `${g.year}-${g.month}`
-        const acc = byKey.get(k) || {
+        const acc = map.get(k) || {
           advisor_user_id: 'TEAM',
           year: g.year, month: g.month,
           consulenze: 0, contratti: 0,
@@ -411,16 +455,16 @@ async function loadGoalsMonthlyFromGoalsTable({
         acc.prod_vprot += Number(g.vita_protection_target || 0)
         acc.prod_vpr   += Number(g.vita_premi_ricorrenti_target || 0)
         acc.prod_vpu   += Number(g.vita_premi_unici_target || 0)
-        byKey.set(k, acc)
+        map.set(k, acc)
       }
-      rows.push(...byKey.values())
+      rows.push(...map.values())
     } else {
-      // singolo advisor: prendo owner_id = scopeUserIds[0] se presente, altrimenti righe senza owner_id
-      const wantedOwner = scopeUserIds[0]
-      for(const g of filtered){
-        if (g.owner_id && g.owner_id !== wantedOwner) continue
+      // singolo advisor: prendi solo le righe del selezionato (preferendo ID interni)
+      const ownersWanted = scopeAdvisorIds.length ? scopeAdvisorIds : scopeUserIds
+      for(const g of merged){
+        if (g.owner_id && !ownersWanted.includes(g.owner_id)) continue
         rows.push({
-          advisor_user_id: wantedOwner || 'TEAM',
+          advisor_user_id: ownersWanted[0] || 'TEAM',
           year: g.year, month: g.month,
           consulenze: g.appointments_target || 0,
           contratti: g.contracts_target || 0,
@@ -516,11 +560,11 @@ function groupSumByYM(data: any[]): ProgressRow[] {
       consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
     }
     acc.consulenze += r.consulenze || 0
-    acc.contratti  += r.contratti || 0
+    acc.contratti  += r.contratti  || 0
     acc.prod_danni += r.prod_danni || 0
     acc.prod_vprot += r.prod_vprot || 0
-    acc.prod_vpr   += r.prod_vpr || 0
-    acc.prod_vpu   += r.prod_vpu || 0
+    acc.prod_vpr   += r.prod_vpr   || 0
+    acc.prod_vpu   += r.prod_vpu   || 0
     byKey.set(key, acc)
   }
   return Array.from(byKey.values())
