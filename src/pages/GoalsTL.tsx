@@ -1,43 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../supabaseClient'
+// ReportPage.tsx — Patch: usa goals_monthly per obiettivi + layout allineato + %
+// Mantiene le funzionalità esistenti, legge gli obiettivi dalla pagina Obiettivi (tabella goals_monthly).
 
-/**
- * Obiettivi — pagina unica per Admin / Team Lead / Junior
- *
- * - "Nr. Consulenze" → "Nr. Appuntamenti" (solo label; stesso campo target_consulenze)
- * - Layout: riga 1 = Appuntamenti/Contratti; riga 2 = produzione
- * - Permessi:
- *    • Junior: solo lettura (niente Reset/Salva)
- *    • Team Lead: non modifica i propri obiettivi, solo quelli dei Junior del suo team
- *    • Admin: può modificare tutti; nel filtro non compaiono Admin
- * - Salvataggio robusto: niente upsert(); check → update/insert, throwOnError(), abortSignal + timeout
- */
+import React, { useEffect, useMemo, useState } from 'react'
+import { supabase } from '@/supabaseClient'
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
+type Me = { id: string; user_id: string; email: string; full_name: string | null; role: Role }
 
-type Advisor = {
-  id: string
-  user_id: string
-  full_name: string | null
-  email: string
-  role: Role
-  team_lead_user_id?: string | null
-}
-
-type AnnualGoals = {
+type ProgressRow = {
   advisor_user_id: string
   year: number
-  target_consulenze: number
-  target_contratti: number
-  target_prod_danni: number
-  target_prod_vprot: number
-  target_prod_vpr: number
-  target_prod_vpu: number
-}
-
-type MonthlyGoals = AnnualGoals & { month: number }
-
-type MonthlyProgress = {
   month: number
   consulenze: number
   contratti: number
@@ -47,698 +19,461 @@ type MonthlyProgress = {
   prod_vpu: number
 }
 
-/* ====== UI styles ====== */
-const box: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #eee',
+type GoalsRow = {
+  advisor_user_id: string | 'TEAM'
+  year: number
+  month: number
+  consulenze: number
+  contratti: number
+  prod_danni: number
+  prod_vprot: number
+  prod_vpr: number
+  prod_vpu: number
+}
+
+const card: React.CSSProperties = {
+  background: 'var(--card, #fff)',
+  border: '1px solid var(--border,#e7e7e7)',
   borderRadius: 16,
   padding: 16,
+  boxShadow: '0 0 0 rgba(0,0,0,0)'
 }
-const btn: React.CSSProperties = {
-  padding: '8px 10px',
-  borderRadius: 10,
-  border: '1px solid #ddd',
-  background: '#fff',
-  cursor: 'pointer',
-}
-const cta: React.CSSProperties = {
-  padding: '10px 12px',
-  borderRadius: 10,
-  border: '1px solid #111',
-  background: '#111',
-  color: '#fff',
-  cursor: 'pointer',
-}
-const ipt: React.CSSProperties = {
-  padding: '10px 12px',
-  borderRadius: 10,
-  border: '1px solid #ddd',
-  width: '100%',
-  boxSizing: 'border-box',
-  background: '#fff',
-  color: '#111',
-}
-const gridTwoCols: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))',
-  gap: 12,
-}
-const gridWide: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-  gap: 12,
-}
-const title: React.CSSProperties = { fontWeight: 700, marginBottom: 12, fontSize: 20 }
+const headerTitle: React.CSSProperties = { fontSize: 16, fontWeight: 700 }
+const meta: React.CSSProperties = { fontSize: 12, color: '#667085' }
+const input: React.CSSProperties = { padding: '8px 10px', border: '1px solid #D0D5DD', borderRadius: 10, background:'#fff' }
 
-export default function GoalsTLPage() {
-  const [me, setMe] = useState<Advisor | null>(null)
-  const [list, setList] = useState<Advisor[]>([])
-  const [error, setError] = useState('')
+export default function ReportPage(){
+  const [me, setMe] = useState<Me | null>(null)
+  const [advisors, setAdvisors] = useState<{ user_id: string, email: string, full_name: string | null }[]>([])
+  const today = new Date()
+  const [fromKey, setFromKey] = useState(toMonthKey(addMonths(today, -5)))
+  const [toKey, setToKey] = useState(toMonthKey(today))
+  const [advisorUid, setAdvisorUid] = useState<string>('')
+  const [myTeam, setMyTeam] = useState<boolean>(false)
+
+  const [goals, setGoals] = useState<GoalsRow[]>([])
+  const [prog, setProg] = useState<ProgressRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
 
-  const [advisorUserId, setAdvisorUserId] = useState<string>('')
-  const [monthKey, setMonthKey] = useState<string>(toMonthKey(new Date())) // YYYY-MM
+  useEffect(()=>{ (async()=>{
+    setLoading(true); setErr('')
+    try{
+      const { data: auth } = await supabase.auth.getUser()
+      const uid = auth.user?.id
+      if (!uid){ setErr('Utente non autenticato'); setLoading(false); return }
 
-  const year = useMemo(() => Number(monthKey.slice(0, 4)), [monthKey])
-  const month = useMemo(() => Number(monthKey.slice(5, 7)), [monthKey])
+      const { data: meRow, error: meErr } = await supabase
+        .from('advisors')
+        .select('id,user_id,email,full_name,role')
+        .eq('user_id', uid)
+        .maybeSingle()
+      if (meErr) throw meErr
+      if (!meRow){ setErr('Profilo non trovato'); setLoading(false); return }
 
-  const [annual, setAnnual] = useState<AnnualGoals | null>(null)
-  const [monthly, setMonthly] = useState<MonthlyGoals | null>(null)
-  const [progress, setProgress] = useState<MonthlyProgress[]>([])
-  const [saving, setSaving] = useState(false)
+      setMe({ id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role })
+      setAdvisorUid(uid)
 
-  /* ===== Bootstrap: me + lista advisors (no Admin selezionabili) ===== */
-  useEffect(() => {
-    ;(async () => {
-      setLoading(true)
-      setError('')
-      try {
-        const u = await supabase.auth.getUser()
-        const email = u.data.user?.email
-        if (!email) throw new Error('Utente non autenticato')
-
-        const { data: meRow, error: meErr } = await supabase
+      if (meRow.role === 'Admin' || meRow.role === 'Team Lead'){
+        const { data: list, error: lerr } = await supabase
           .from('advisors')
-          .select('id,user_id,full_name,email,role,team_lead_user_id')
-          .eq('email', email)
-          .maybeSingle()
-        if (meErr || !meRow) throw new Error(meErr?.message || 'Advisor non trovato')
-
-        const meAdv: Advisor = {
-          id: meRow.id,
-          user_id: meRow.user_id,
-          full_name: meRow.full_name,
-          email: meRow.email,
-          role: meRow.role as Role,
-          team_lead_user_id: meRow.team_lead_user_id,
-        }
-        setMe(meAdv)
-
-        let selectable: Advisor[] = []
-
-        if (meAdv.role === 'Admin') {
-          const { data, error } = await supabase
-            .from('advisors')
-            .select('id,user_id,full_name,email,role,team_lead_user_id')
-            .in('role', ['Team Lead', 'Junior'] as Role[])
-            .order('role', { ascending: false })
-            .order('full_name', { ascending: true })
-          if (error) throw error
-          selectable = (data || []) as Advisor[]
-          const firstTL = selectable.find((a) => a.role === 'Team Lead')
-          setAdvisorUserId(firstTL?.user_id || selectable[0]?.user_id || '')
-        } else if (meAdv.role === 'Team Lead') {
-          const { data, error } = await supabase
-            .from('advisors')
-            .select('id,user_id,full_name,email,role,team_lead_user_id')
-            .or(`user_id.eq.${meAdv.user_id},team_lead_user_id.eq.${meAdv.user_id}`)
-            .not('role', 'eq', 'Admin')
-            .order('role', { ascending: false })
-            .order('full_name', { ascending: true })
-          if (error) throw error
-          selectable = (data || []) as Advisor[]
-          setAdvisorUserId(meAdv.user_id)
-        } else {
-          selectable = [meAdv]
-          setAdvisorUserId(meAdv.user_id)
-        }
-
-        setList(selectable)
-      } catch (e: any) {
-        setError(e.message || 'Errore inizializzazione')
-      } finally {
-        setLoading(false)
+          .select('user_id,email,full_name')
+          .order('full_name', { ascending: true })
+        if (lerr) throw lerr
+        setAdvisors((list||[]).filter(x=>!!x.user_id) as any)
       }
-    })()
-  }, [])
+    } catch(ex:any){ setErr(ex.message || 'Errore bootstrap') }
+    finally{ setLoading(false) }
+  })() },[])
 
-  /* ===== Caricamento dati (annual/monthly/progress) ===== */
-  useEffect(() => {
-    ;(async () => {
-      if (!advisorUserId || !year) return
-      setError('')
-      const ann = await getAnnual(advisorUserId, year)
-      const mon = await getMonthly(advisorUserId, year, month)
-      const prog = await getProgress(advisorUserId, year)
-      setAnnual(ann)
-      setMonthly(mon)
-      setProgress(prog)
-    })()
-  }, [advisorUserId, year, month])
+  useEffect(()=>{ (async()=>{
+    if (!advisorUid || !me) return
+    setLoading(true); setErr('')
+    try{
+      const rng = monthRange(fromKey, toKey)
+      const years = Array.from(new Set(rng.map(r=>r.y)))
 
-  /* ===== Permessi ===== */
-  const canEdit = useMemo(() => {
-    if (!me) return false
-    if (me.role === 'Admin') return true
-    if (me.role === 'Team Lead') return advisorUserId !== me.user_id // TL non modifica i propri
-    return false // Junior solo lettura
-  }, [me, advisorUserId])
+      let scopeUserIds: string[] = [advisorUid]
+      if (myTeam && (me.role==='Team Lead' || me.role==='Admin')) {
+        const teamLead = me.role==='Admin' ? advisorUid : me.user_id
+        const { data: team, error: teamErr } = await supabase
+          .from('advisors')
+          .select('user_id,team_lead_user_id')
+          .or(`user_id.eq.${teamLead},team_lead_user_id.eq.${teamLead}`)
+        if (teamErr) throw teamErr
+        scopeUserIds = (team||[]).map(r=>r.user_id).filter(Boolean)
+      }
 
-  const isJuniorView = me?.role === 'Junior'
-  const advisorSelectDisabled = isJuniorView
-
-  /* ===== Azioni ===== */
-  const onReset = async () => {
-    if (!advisorUserId || !canEdit) return
-    if (!window.confirm('Resettare i campi alla situazione salvata?')) return
-    const ann = await getAnnual(advisorUserId, year)
-    const mon = await getMonthly(advisorUserId, year, month)
-    setAnnual(ann)
-    setMonthly(mon)
-  }
-
-  // Salvataggio robusto (no upsert)
-  const onSave = async () => {
-    if (!canEdit) return alert('Non autorizzato')
-    if (!advisorUserId) return alert('Seleziona un advisor')
-
-    setSaving(true)
-    setError('')
-    try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15000) // timeout 15s
-
-      if (annual) await saveAnnual(annual, { signal: controller.signal })
-      if (monthly) await saveMonthly(monthly, { signal: controller.signal })
-
-      clearTimeout(timer)
-      setSaving(false)
-      alert('Obiettivi salvati')
-    } catch (e: any) {
-      setSaving(false)
-      setError(e?.message || 'Errore di salvataggio')
-      console.error('save error', e)
-      alert(`Errore di salvataggio: ${e?.message || e}`)
-    }
-  }
-
-  const selectedAdv = useMemo(
-    () => list.find((t) => t.user_id === advisorUserId) || null,
-    [list, advisorUserId]
-  )
-
-  const ro =
-    !canEdit
-      ? {
-          disabled: true,
-          readOnly: true,
-          style: { ...ipt, background: '#f8fafc', color: '#555', cursor: 'not-allowed' } as React.CSSProperties,
+      const progRows: ProgressRow[] = []
+      for (const y of years){
+        const months = rng.filter(r=>r.y===y).map(r=>r.m)
+        const { data, error } = await supabase
+          .from('v_progress_monthly')
+          .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+          .eq('year', y)
+          .in('month', months)
+          .in('advisor_user_id', scopeUserIds)
+        if (error) throw error
+        if (myTeam){
+          const acc = groupSumByYM(data||[])
+          progRows.push(...acc)
+        } else {
+          progRows.push(...(data||[]))
         }
-      : {}
+      }
+      setProg(progRows)
+
+      const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, isTeam: myTeam })
+        .catch(async ()=> await loadGoalsMonthlyFromViews({ rng, years, scopeUserIds, isTeam: myTeam }))
+
+      setGoals(goalsRows)
+    } catch(ex:any){ setErr(ex.message || 'Errore caricamento dati') }
+    finally{ setLoading(false) }
+  })() }, [advisorUid, fromKey, toKey, myTeam, me])
+
+  const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey), [goals, prog, fromKey, toKey])
+  const totals = useMemo(()=> aggregateTotals(rows), [rows])
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      <div style={title}>Obiettivi</div>
-
-      {error && <div style={{ color: '#c00' }}>{error}</div>}
-      {loading && <div>Caricamento…</div>}
-
-      {/* FILTRI */}
-      <div style={{ ...box }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
-          <div style={{ minWidth: 260 }}>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Advisor</div>
-            <select
-              value={advisorUserId}
-              onChange={(e) => setAdvisorUserId(e.target.value)}
-              style={ipt}
-              disabled={advisorSelectDisabled}
-            >
-              {isJuniorView ? (
-                <option value={me?.user_id || ''}>{me?.full_name || me?.email}</option>
-              ) : (
-                <>
-                  <option value="">—</option>
-                  {list
-                    .filter((a) => a.role !== 'Admin') // sicurezza extra
-                    .map((a) => (
-                      <option key={a.user_id} value={a.user_id}>
-                        {a.full_name || a.email} {a.role !== 'Junior' ? `(${a.role})` : ''}
-                      </option>
-                    ))}
-                </>
-              )}
-            </select>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Mese</div>
-            <input type="month" value={monthKey} onChange={(e) => setMonthKey(e.target.value)} style={ipt} />
-          </div>
-
-          {!isJuniorView && (
-            <div>
-              <button style={btn} onClick={() => setMonthKey(toMonthKey(new Date()))}>
-                Mese corrente
-              </button>
-            </div>
+    <div style={{ display:'grid', gap:16 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+        <div style={{ fontSize:20, fontWeight:800 }}>Report — Andamento vs Obiettivi</div>
+        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+          <label style={meta}>Dal</label>
+          <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={input} />
+          <label style={meta}>al</label>
+          <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={input} />
+          {me && (me.role==='Team Lead' || me.role==='Admin') && (
+            <label style={{ display:'inline-flex', alignItems:'center', gap:8, ...meta }}>
+              <input type="checkbox" checked={myTeam} onChange={e=>setMyTeam(e.target.checked)} />
+              Tutto il Team
+            </label>
+          )}
+          {me && (me.role==='Admin' || me.role==='Team Lead') ? (
+            <>
+              <label style={meta}>Advisor</label>
+              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={input}>
+                {me && <option value={me.user_id}>— {me.full_name || me.email} (me)</option>}
+                {advisors.filter(a=>a.user_id!==me?.user_id).map(a=> (
+                  <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
+                ))}
+              </select>
+            </>
+          ) : (
+            <div style={meta}>Advisor: solo me</div>
           )}
         </div>
       </div>
 
-      {/* ANNUALE */}
-      <div style={box}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700 }}>
-            Obiettivi Annuali — {selectedAdv ? selectedAdv.full_name || selectedAdv.email : '—'} — {year}
-          </div>
-          {canEdit && (
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button style={btn} onClick={onReset}>Reset</button>
-              <button style={cta} onClick={onSave} disabled={saving}>
-                {saving ? 'Salvataggio…' : 'Salva'}
-              </button>
-            </div>
-          )}
-        </div>
+      {err && <div style={{ ...card, color:'#c00' }}>{err}</div>}
 
-        {/* Riga 1: Appuntamenti + Contratti */}
-        <div style={gridTwoCols}>
-          {annualInput(
-            'Nr. Appuntamenti',
-            annual?.target_consulenze ?? 0,
-            (v) =>
-              setAnnual((p) =>
-                p ? { ...p, target_consulenze: v } : makeAnnual(advisorUserId, year, { target_consulenze: v })
-              ),
-            ro
-          )}
-          {annualInput(
-            'Nr. Contratti',
-            annual?.target_contratti ?? 0,
-            (v) =>
-              setAnnual((p) =>
-                p ? { ...p, target_contratti: v } : makeAnnual(advisorUserId, year, { target_contratti: v })
-              ),
-            ro
-          )}
+      <div style={{
+        display:'grid',
+        gap:16,
+        gridTemplateColumns: typeof window !== 'undefined' && window.innerWidth < 1024
+          ? '1fr'
+          : 'minmax(0,1.25fr) minmax(300px,0.75fr)'
+      }}>
+        <div style={{ display:'grid', gap:16 }}>
+          <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
+          <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
+          <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
+          <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
+          <MetricCard title="Vita Premi Ricorrenti" field="prod_vpr" rows={rows} format="currency" />
+          <MetricCard title="Vita Premi Unici" field="prod_vpu" rows={rows} format="currency" />
         </div>
-
-        {/* Riga 2: Produzione */}
-        <div style={{ ...gridWide, marginTop: 12 }}>
-          {annualInput(
-            'Produzione Danni Non Auto (€)',
-            annual?.target_prod_danni ?? 0,
-            (v) =>
-              setAnnual((p) =>
-                p ? { ...p, target_prod_danni: v } : makeAnnual(advisorUserId, year, { target_prod_danni: v })
-              ),
-            ro
-          )}
-          {annualInput(
-            'Produzione Vita Protection (€)',
-            annual?.target_prod_vprot ?? 0,
-            (v) =>
-              setAnnual((p) =>
-                p ? { ...p, target_prod_vprot: v } : makeAnnual(advisorUserId, year, { target_prod_vprot: v })
-              ),
-            ro
-          )}
-          {annualInput(
-            'Produzione Vita Premi Ricorrenti (€)',
-            annual?.target_prod_vpr ?? 0,
-            (v) =>
-              setAnnual((p) =>
-                p ? { ...p, target_prod_vpr: v } : makeAnnual(advisorUserId, year, { target_prod_vpr: v })
-              ),
-            ro
-          )}
-          {annualInput(
-            'Produzione Vita Premi Unici (€)',
-            annual?.target_prod_vpu ?? 0,
-            (v) =>
-              setAnnual((p) =>
-                p ? { ...p, target_prod_vpu: v } : makeAnnual(advisorUserId, year, { target_prod_vpu: v })
-              ),
-            ro
-          )}
+        <div style={{ display:'grid', gap:16, alignContent:'start' }}>
+          <MirrorCard title="Appuntamenti" goal={totals.goal.consulenze} actual={totals.actual.consulenze} format="int" />
+          <MirrorCard title="Contratti" goal={totals.goal.contratti} actual={totals.actual.contratti} format="int" />
+          <MirrorCard title="Danni Non Auto" goal={totals.goal.prod_danni} actual={totals.actual.prod_danni} format="currency" />
+          <MirrorCard title="Vita Protection" goal={totals.goal.prod_vprot} actual={totals.actual.prod_vprot} format="currency" />
+          <MirrorCard title="Vita Premi Ricorrenti" goal={totals.goal.prod_vpr} actual={totals.actual.prod_vpr} format="currency" />
+          <MirrorCard title="Vita Premi Unici" goal={totals.goal.prod_vpu} actual={totals.actual.prod_vpu} format="currency" />
         </div>
       </div>
 
-      {/* MENSILE */}
-      <div style={box}>
-        <div style={{ fontWeight: 700, marginBottom: 12 }}>Obiettivi Mensili — {monthKey}</div>
+      {loading && <div style={{ color:'#666' }}>Caricamento…</div>}
+    </div>
+  )
+}
 
-        {/* Riga 1: Appuntamenti + Contratti */}
-        <div style={gridTwoCols}>
-          {monthlyInput(
-            'Nr. Appuntamenti',
-            monthly?.target_consulenze ?? 0,
-            (v) =>
-              setMonthly((p) =>
-                p ? { ...p, target_consulenze: v } : makeMonthly(advisorUserId, year, month, { target_consulenze: v })
-              ),
-            ro
-          )}
-          {monthlyInput(
-            'Nr. Contratti',
-            monthly?.target_contratti ?? 0,
-            (v) =>
-              setMonthly((p) =>
-                p ? { ...p, target_contratti: v } : makeMonthly(advisorUserId, year, month, { target_contratti: v })
-              ),
-            ro
-          )}
-        </div>
+function MetricCard({
+  title, field, rows, format
+}:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
+  const totGoal = rows.reduce((s,r)=> s + (r.goal[field]||0), 0)
+  const totAct  = rows.reduce((s,r)=> s + (r.actual[field]||0), 0)
+  const pct = totGoal>0 ? (totAct / totGoal) : 0
 
-        {/* Riga 2: Produzione */}
-        <div style={{ ...gridWide, marginTop: 12 }}>
-          {monthlyInput(
-            'Produzione Danni Non Auto (€)',
-            monthly?.target_prod_danni ?? 0,
-            (v) =>
-              setMonthly((p) =>
-                p ? { ...p, target_prod_danni: v } : makeMonthly(advisorUserId, year, month, { target_prod_danni: v })
-              ),
-            ro
-          )}
-          {monthlyInput(
-            'Produzione Vita Protection (€)',
-            monthly?.target_prod_vprot ?? 0,
-            (v) =>
-              setMonthly((p) =>
-                p ? { ...p, target_prod_vprot: v } : makeMonthly(advisorUserId, year, month, { target_prod_vprot: v })
-              ),
-            ro
-          )}
-          {monthlyInput(
-            'Produzione Vita Premi Ricorrenti (€)',
-            monthly?.target_prod_vpr ?? 0,
-            (v) =>
-              setMonthly((p) =>
-                p ? { ...p, target_prod_vpr: v } : makeMonthly(advisorUserId, year, month, { target_prod_vpr: v })
-              ),
-            ro
-          )}
-          {monthlyInput(
-            'Produzione Vita Premi Unici (€)',
-            monthly?.target_prod_vpu ?? 0,
-            (v) =>
-              setMonthly((p) =>
-                p ? { ...p, target_prod_vpu: v } : makeMonthly(advisorUserId, year, month, { target_prod_vpu: v })
-              ),
-            ro
-          )}
+  return (
+    <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+        <div style={headerTitle}>{title}</div>
+        <div style={{ fontSize:14 }}>
+          <b>{fmt(totAct, format)}</b> / {fmt(totGoal, format)}
+          <span style={{
+            marginLeft:8,
+            color: pct>=1 ? '#067647' : pct>=0.7 ? '#B54708' : '#B42318',
+            fontWeight: 700
+          }}>{(pct*100).toFixed(0)}%</span>
         </div>
       </div>
+      <Bars rows={rows} field={field} format={format} />
+    </div>
+  )
+}
 
-      {/* PROGRESSO ANNO */}
-      <div style={box}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Andamento {year}</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px,1fr))', gap: 12 }}>
-          <SparkCard label="Appuntamenti" data={progress.map((p) => p.consulenze)} />
-          <SparkCard label="Contratti" data={progress.map((p) => p.contratti)} />
-          <SparkCard
-            label="Produzione (€)"
-            data={progress.map((p) => p.prod_danni + p.prod_vprot + p.prod_vpr + p.prod_vpu)}
-            fmt="€"
-          />
-        </div>
+function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency' }){
+  const W = Math.max(640, rows.length*64)
+  const H = 160
+  const pad = { l:40, r:20, t:10, b:30 }
+  const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
+  const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
+  const barW = Math.max(16, step*0.36)
+
+  return (
+    <div style={{ overflowX:'auto' }}>
+      <svg width={W} height={H}>
+        <line x1={pad.l} y1={H-pad.b} x2={W-pad.r} y2={H-pad.b} stroke="#EAECF0" />
+        {rows.map((r, i) => {
+          const x = pad.l + i*step + 8
+          const gVal = r.goal[field]||0
+          const aVal = r.actual[field]||0
+          const gH = (gVal/maxVal) * (H - pad.b - pad.t)
+          const aH = (aVal/maxVal) * (H - pad.b - pad.t)
+          const baseY = H - pad.b
+          return (
+            <g key={i}>
+              <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#EEF2F6" rx="6" />
+              <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#98A2B3" rx="6" />
+              <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle" fill="#667085">{r.label}</text>
+              <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
+              <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
+            </g>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
+function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number, actual:number, format:'int'|'currency' }){
+  const pct = goal>0 ? Math.min(100, Math.round((actual/goal)*1000)/10) : 0
+  const H = 120, pad = { t:10, b:24 }
+  const maxVal = Math.max(1, goal)
+  const gH = (goal/maxVal) * (H - pad.t - pad.b)
+
+  return (
+    <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+        <div style={headerTitle}>{title}</div>
+        <div style={{ fontSize:13, fontWeight:700, color: pct>=100? '#067647' : pct>=70? '#B54708' : '#B42318' }}>{pct}%</div>
+      </div>
+      <div style={meta}>
+        Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
+      </div>
+      <div style={{ height:H }}>
+        <svg width="100%" height={H} viewBox={`0 0 200 ${H}`} preserveAspectRatio="none">
+          <rect x="90" y={H - pad.b - gH} width="20" height={gH} fill="#EEF2F6" rx="6" />
+          <text x="100" y={H - pad.b - gH - 4} fontSize="10" textAnchor="middle" fill="#667085">{fmt(goal, format)}</text>
+          <text x="100" y={H - 6} fontSize="10" textAnchor="middle" fill="#667085">Obiettivo periodo</text>
+        </svg>
       </div>
     </div>
   )
 }
 
-/* ===== Helper UI ===== */
-function annualInput(label: string, value: number, onChange: (v: number) => void, ro: any) {
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{label}</div>
-      <input
-        type="number"
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value || 0))}
-        style={ro.style || ipt}
-        disabled={ro.disabled}
-        readOnly={ro.readOnly}
-      />
-    </div>
-  )
-}
-function monthlyInput(label: string, value: number, onChange: (v: number) => void, ro: any) {
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{label}</div>
-      <input
-        type="number"
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value || 0))}
-        style={ro.style || ipt}
-        disabled={ro.disabled}
-        readOnly={ro.readOnly}
-      />
-    </div>
-  )
+type YM = { y:number, m:number }
+type MergedRow = {
+  y: number
+  m: number
+  label: string
+  goal: Record<keyof GoalsRow, number>
+  actual: Record<keyof GoalsRow, number>
 }
 
-function toMonthKey(d: Date) {
+function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, toKey:string): MergedRow[]{
+  const rng = monthRange(fromKey, toKey)
+  const k = (y:number,m:number)=> `${y}-${m}`
+  const gmap = new Map<string, GoalsRow>()
+  const amap = new Map<string, ProgressRow>()
+  goals.forEach(g=>gmap.set(k(g.year,g.month), g))
+  prog.forEach(a=>amap.set(k(a.year,a.month), a))
+  const fields: (keyof GoalsRow)[] = ['advisor_user_id','year','month','consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
+  const metrics: (keyof GoalsRow)[] = ['consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
+  const out: MergedRow[] = []
+  for(const {y,m} of rng){
+    const g = gmap.get(k(y,m))
+    const a = amap.get(k(y,m))
+    const row: MergedRow = {
+      y, m,
+      label: `${String(m).padStart(2,'0')}/${String(y).slice(2)}`,
+      goal: Object.fromEntries(fields.map(f=>[f, 0])) as any,
+      actual: Object.fromEntries(fields.map(f=>[f, 0])) as any,
+    }
+    for(const f of metrics){
+      row.goal[f] = (g as any)?.[f] || 0
+      row.actual[f] = (a as any)?.[f] || 0
+    }
+    out.push(row)
+  }
+  return out
+}
+
+function aggregateTotals(rows: MergedRow[]){
+  const sum = (f: keyof GoalsRow, kind:'goal'|'actual') => rows.reduce((s,r)=> s + (r[kind][f] || 0), 0)
+  return {
+    goal: {
+      consulenze: sum('consulenze','goal'),
+      contratti: sum('contratti','goal'),
+      prod_danni: sum('prod_danni','goal'),
+      prod_vprot: sum('prod_vprot','goal'),
+      prod_vpr: sum('prod_vpr','goal'),
+      prod_vpu: sum('prod_vpu','goal'),
+    },
+    actual: {
+      consulenze: sum('consulenze','actual'),
+      contratti: sum('contratti','actual'),
+      prod_danni: sum('prod_danni','actual'),
+      prod_vprot: sum('prod_vprot','actual'),
+      prod_vpr: sum('prod_vpr','actual'),
+      prod_vpu: sum('prod_vpu','actual'),
+    }
+  }
+}
+
+async function loadGoalsMonthlyFromGoalsTable({
+  rng, years, scopeUserIds, isTeam
+}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
+  const rows: GoalsRow[] = []
+  for (const y of years){
+    const months = rng.filter(r=>r.y===y).map(r=>r.m)
+    const { data, error } = await supabase
+      .from('goals_monthly')
+      .select('advisor_user_id,year,month,target_consulenze,target_contratti,target_prod_danni,target_prod_vprot,target_prod_vpr,target_prod_vpu')
+      .eq('year', y)
+      .in('month', months)
+      .in('advisor_user_id', scopeUserIds)
+    if (error) throw error
+
+    if (isTeam){
+      const map = new Map<string, GoalsRow>()
+      for(const g of (data||[])){
+        const k = `${g.year}-${g.month}`
+        const acc = map.get(k) || {
+          advisor_user_id: 'TEAM',
+          year: g.year, month: g.month,
+          consulenze: 0, contratti: 0,
+          prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
+        }
+        acc.consulenze += g.target_consulenze || 0
+        acc.contratti  += g.target_contratti  || 0
+        acc.prod_danni += g.target_prod_danni || 0
+        acc.prod_vprot += g.target_prod_vprot || 0
+        acc.prod_vpr   += g.target_prod_vpr   || 0
+        acc.prod_vpu   += g.target_prod_vpu   || 0
+        map.set(k, acc)
+      }
+      rows.push(...map.values())
+    } else {
+      rows.push(...(data||[]).map((g:any)=>({
+        advisor_user_id: g.advisor_user_id,
+        year: g.year,
+        month: g.month,
+        consulenze: g.target_consulenze || 0,
+        contratti: g.target_contratti || 0,
+        prod_danni: g.target_prod_danni || 0,
+        prod_vprot: g.target_prod_vprot || 0,
+        prod_vpr: g.target_prod_vpr || 0,
+        prod_vpu: g.target_prod_vpu || 0,
+      })))
+    }
+  }
+  return rows
+}
+
+async function loadGoalsMonthlyFromViews({
+  rng, years, scopeUserIds, isTeam
+}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
+  const rows: GoalsRow[] = []
+  for(const y of years){
+    const months = rng.filter(r=>r.y===y).map(r=>r.m)
+    if (isTeam){
+      const { data, error } = await supabase
+        .from('v_team_goals_monthly_sum')
+        .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
+        .eq('year', y)
+        .in('month', months)
+      if (error) throw error
+      for(const r of (data||[])){
+        rows.push({
+          advisor_user_id: 'TEAM',
+          year: r.year, month: r.month,
+          consulenze: r.consulenze || 0,
+          contratti: r.contratti || 0,
+          prod_danni: r.danni_non_auto || 0,
+          prod_vprot: r.vita_protection || 0,
+          prod_vpr: r.vita_ricorrenti || 0,
+          prod_vpu: r.vita_unici || 0,
+        })
+      }
+    } else {
+      const { data, error } = await supabase
+        .from('v_goals_monthly')
+        .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+        .in('advisor_user_id', scopeUserIds.slice(0,1))
+        .eq('year', y)
+        .in('month', months)
+      if (error) throw error
+      rows.push(...(data||[]))
+    }
+  }
+  return rows
+}
+
+function fmt(v:number, mode:'int'|'currency'){
+  if (mode==='int') return String(Math.round(v||0))
+  try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(v||0) }catch{ return String(v||0) }
+}
+
+function toMonthKey(d: Date){
   const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  return `${y}-${m}`
+  const m = d.getMonth()+1
+  return `${y}-${String(m).padStart(2,'0')}`
+}
+function addMonths(d: Date, delta: number){
+  const dd = new Date(d.getTime())
+  dd.setMonth(dd.getMonth()+delta)
+  return dd
+}
+function monthRange(fromKey:string, toKey:string): {y:number,m:number}[]{
+  const [fy,fm] = fromKey.split('-').map(n=>parseInt(n,10))
+  const [ty,tm] = toKey.split('-').map(n=>parseInt(n,10))
+  const out: {y:number,m:number}[] = []
+  let y=fy, m=fm
+  while (y<ty || (y===ty && m<=tm)){
+    out.push({ y, m })
+    m++; if (m>12){ m=1; y++ }
+  }
+  return out
 }
 
-/* ===== Data access ===== */
-async function getAnnual(advisor_user_id: string, year: number): Promise<AnnualGoals> {
-  const { data, error } = await supabase
-    .from('goals')
-    .select(
-      'advisor_user_id,year,target_consulenze,target_contratti,target_prod_danni,target_prod_vprot,target_prod_vpr,target_prod_vpu'
-    )
-    .eq('advisor_user_id', advisor_user_id)
-    .eq('year', year)
-    .maybeSingle()
-  if (error && (error as any).code !== 'PGRST116') throw error
-  if (!data)
-    return {
-      advisor_user_id,
-      year,
-      target_consulenze: 0,
-      target_contratti: 0,
-      target_prod_danni: 0,
-      target_prod_vprot: 0,
-      target_prod_vpr: 0,
-      target_prod_vpu: 0,
+function groupSumByYM(data: any[]): ProgressRow[] {
+  const byKey = new Map<string, ProgressRow>()
+  const k = (y:number,m:number)=>`${y}-${m}`
+  for(const r of data){
+    const key = k(r.year, r.month)
+    const acc = byKey.get(key) || {
+      advisor_user_id: 'TEAM',
+      year: r.year, month: r.month,
+      consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
     }
-  return data as AnnualGoals
-}
-
-async function getMonthly(advisor_user_id: string, year: number, month: number): Promise<MonthlyGoals> {
-  const { data, error } = await supabase
-    .from('goals_monthly')
-    .select(
-      'advisor_user_id,year,month,target_consulenze,target_contratti,target_prod_danni,target_prod_vprot,target_prod_vpr,target_prod_vpu'
-    )
-    .eq('advisor_user_id', advisor_user_id)
-    .eq('year', year)
-    .eq('month', month)
-    .maybeSingle()
-  if (error && (error as any).code !== 'PGRST116') throw error
-  if (!data)
-    return {
-      advisor_user_id,
-      year,
-      month,
-      target_consulenze: 0,
-      target_contratti: 0,
-      target_prod_danni: 0,
-      target_prod_vprot: 0,
-      target_prod_vpr: 0,
-      target_prod_vpu: 0,
-    }
-  return data as MonthlyGoals
-}
-
-async function getProgress(advisor_user_id: string, year: number): Promise<MonthlyProgress[]> {
-  const { data, error } = await supabase
-    .from('v_progress_monthly')
-    .select('month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-    .eq('advisor_user_id', advisor_user_id)
-    .eq('year', year)
-    .order('month', { ascending: true })
-  if (error) throw error
-  const arr = (data || []) as any[]
-  const byMonth: Record<number, MonthlyProgress> = {}
-  for (let m = 1; m <= 12; m++)
-    byMonth[m] = { month: m, consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0 }
-  for (const r of arr) {
-    byMonth[r.month] = {
-      month: r.month,
-      consulenze: r.consulenze,
-      contratti: r.contratti,
-      prod_danni: r.prod_danni,
-      prod_vprot: r.prod_vprot,
-      prod_vpr: r.prod_vpr,
-      prod_vpu: r.prod_vpu,
-    }
+    acc.consulenze += r.consulenze || 0
+    acc.contratti  += r.contratti  || 0
+    acc.prod_danni += r.prod_danni || 0
+    acc.prod_vprot += r.prod_vprot || 0
+    acc.prod_vpr   += r.prod_vpr   || 0
+    acc.prod_vpu   += r.prod_vpu   || 0
+    byKey.set(key, acc)
   }
-  return Object.values(byMonth).sort((a, b) => a.month - b.month)
-}
-
-/* ===== Helpers per costruire stato "vuoto" ===== */
-function makeAnnual(advisor_user_id: string, year: number, patch: Partial<AnnualGoals> = {}): AnnualGoals {
-  return {
-    advisor_user_id,
-    year,
-    target_consulenze: 0,
-    target_contratti: 0,
-    target_prod_danni: 0,
-    target_prod_vprot: 0,
-    target_prod_vpr: 0,
-    target_prod_vpu: 0,
-    ...patch,
-  }
-}
-
-function makeMonthly(
-  advisor_user_id: string,
-  year: number,
-  month: number,
-  patch: Partial<MonthlyGoals> = {}
-): MonthlyGoals {
-  return {
-    advisor_user_id,
-    year,
-    month,
-    target_consulenze: 0,
-    target_contratti: 0,
-    target_prod_danni: 0,
-    target_prod_vprot: 0,
-    target_prod_vpr: 0,
-    target_prod_vpu: 0,
-    ...patch,
-  }
-}
-
-/* ===== Salvataggio robusto (no upsert) ===== */
-async function saveAnnual(g: AnnualGoals, opts?: { signal?: AbortSignal }) {
-  const { data: exists } = await supabase
-    .from('goals')
-    .select('advisor_user_id,year')
-    .eq('advisor_user_id', g.advisor_user_id)
-    .eq('year', g.year)
-    .maybeSingle()
-    .throwOnError()
-
-  if (exists) {
-    await supabase
-      .from('goals')
-      .update(
-        {
-          target_consulenze: g.target_consulenze,
-          target_contratti: g.target_contratti,
-          target_prod_danni: g.target_prod_danni,
-          target_prod_vprot: g.target_prod_vprot,
-          target_prod_vpr: g.target_prod_vpr,
-          target_prod_vpu: g.target_prod_vpu,
-        },
-        { returning: 'minimal' } as any
-      )
-      .eq('advisor_user_id', g.advisor_user_id)
-      .eq('year', g.year)
-      // @ts-ignore
-      .abortSignal(opts?.signal)
-      .throwOnError()
-  } else {
-    await supabase
-      .from('goals')
-      .insert({ ...g }, { returning: 'minimal' } as any)
-      // @ts-ignore
-      .abortSignal(opts?.signal)
-      .throwOnError()
-  }
-}
-
-/** PATCH: valorizza ym (NOT NULL) in insert/update */
-async function saveMonthly(g: MonthlyGoals, opts?: { signal?: AbortSignal }) {
-  // Se la colonna 'ym' è stringa "YYYY-MM"
-  const ym = `${g.year}-${String(g.month).padStart(2, '0')}`
-  // Se invece nel tuo schema 'ym' è intero tipo 202510, sostituisci con:
-  // const ym = Number(`${g.year}${String(g.month).padStart(2, '0')}`)
-
-  const { data: exists } = await supabase
-    .from('goals_monthly')
-    .select('advisor_user_id,year,month')
-    .eq('advisor_user_id', g.advisor_user_id)
-    .eq('year', g.year)
-    .eq('month', g.month)
-    .maybeSingle()
-    .throwOnError()
-
-  if (exists) {
-    await supabase
-      .from('goals_monthly')
-      .update(
-        {
-          ym, // manteniamo valorizzato anche in update
-          target_consulenze: g.target_consulenze,
-          target_contratti: g.target_contratti,
-          target_prod_danni: g.target_prod_danni,
-          target_prod_vprot: g.target_prod_vprot,
-          target_prod_vpr: g.target_prod_vpr,
-          target_prod_vpu: g.target_prod_vpu,
-        },
-        { returning: 'minimal' } as any
-      )
-      .eq('advisor_user_id', g.advisor_user_id)
-      .eq('year', g.year)
-      .eq('month', g.month)
-      // @ts-ignore
-      .abortSignal(opts?.signal)
-      .throwOnError()
-  } else {
-    await supabase
-      .from('goals_monthly')
-      .insert(
-        [
-          {
-            advisor_user_id: g.advisor_user_id,
-            year: g.year,
-            month: g.month,
-            ym, // <-- NOT NULL: ora lo inviamo
-            target_consulenze: g.target_consulenze,
-            target_contratti: g.target_contratti,
-            target_prod_danni: g.target_prod_danni,
-            target_prod_vprot: g.target_prod_vprot,
-            target_prod_vpr: g.target_prod_vpr,
-            target_prod_vpu: g.target_prod_vpu,
-          },
-        ],
-        { returning: 'minimal' } as any
-      )
-      // @ts-ignore
-      .abortSignal(opts?.signal)
-      .throwOnError()
-  }
-}
-
-/* ===== Spark mini-chart ===== */
-function SparkCard({ label, data, fmt }: { label: string; data: number[]; fmt?: '€' }) {
-  return (
-    <div style={{ ...box }}>
-      <div style={{ fontSize: 12, color: '#666' }}>{label}</div>
-      <Sparkline data={data} />
-      <div style={{ marginTop: 8, fontWeight: 700 }}>{fmt === '€' ? formatCurrency(sum(data)) : sum(data)}</div>
-    </div>
-  )
-}
-function Sparkline({ data }: { data: number[] }) {
-  if (!data || data.length === 0) return null
-  const max = Math.max(1, ...data)
-  const pts = data.map((v, i) => ({ x: i * (100 / (data.length - 1 || 1)), y: 30 - (v / max) * 30 }))
-  const d = pts.map((p, i) => (i === 0 ? `M ${p.x},${p.y}` : ` L ${p.x},${p.y}`)).join('')
-  return (
-    <svg viewBox="0 0 100 30" preserveAspectRatio="none" style={{ width: '100%', height: 40, marginTop: 8 }}>
-      <path d={d} fill="none" stroke="currentColor" strokeWidth={1.5} />
-    </svg>
-  )
-}
-function sum(arr: number[]) {
-  return arr.reduce((a, b) => a + b, 0)
-}
-function formatCurrency(n: number) {
-  try {
-    return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
-  } catch {
-    return `€ ${n.toFixed(0)}`
-  }
+  return Array.from(byKey.values())
 }
