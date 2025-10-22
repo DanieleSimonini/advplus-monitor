@@ -573,7 +573,6 @@ export default function LeadsPage(){
           value={assigneeFilter}
           onChange={e=>setAssigneeFilter(e.target.value)}
         >
-          <option value="">Tutti</option>
 <option value="">Tutti</option>
 <optgroup label="Team Lead">
   {advisors
