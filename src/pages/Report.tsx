@@ -1,25 +1,17 @@
+// ReportPage.tsx — Patch layout + obiettivi da "pagina obiettivi" con %
+// NOTE: mantiene tutte le funzionalità esistenti; aggiunge solo:
+// - mirror panel allineato nello stile (spaziature, altezze, label)
+// - lettura obiettivi dalla tabella `goals` (pagina Obiettivi) con fallback sulle viste
+// - percentuali mostrate sia nelle carte a sinistra (totali) che nelle carte specchio
+
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
-/**
- * Report.tsx — Andamento vs Obiettivi (mensile, per Advisor)
- * - Filtri: Advisor (se Admin/TL), periodo Dal mese / Al mese (default: ultimi 6 mesi)
- * - Grafici: bar chart SVG semplice per ciascun indicatore vs target
- * - Indicatori: consulenze, contratti, prod_danni, prod_vprot, prod_vpr, prod_vpu
- * - Regole visibilità:
- *   • Junior: vede solo i propri dati (advisor selezionato = me, disabilitato)
- *   • Team Lead/Admin: possono scegliere l'advisor dal menu
- *   • Filtro “Il Mio Team”: TL → il proprio team; Admin → il team del TL selezionato
- *
- * Patch: aggiunta colonna destra con “grafici speculari” che mostrano solo l’Obiettivo del periodo
- *        (somma degli obiettivi mensili nel range) e % di completamento per ogni voce.
- */
-
+// ===== Tipi base (immutati rispetto alla tua struttura) =====
 type Role = 'Admin' | 'Team Lead' | 'Junior'
-
 type Me = { id: string; user_id: string; email: string; full_name: string | null; role: Role }
 
-type GoalsRow = {
+type ProgressRow = {
   advisor_user_id: string
   year: number
   month: number
@@ -31,37 +23,48 @@ type GoalsRow = {
   prod_vpu: number
 }
 
-type ProgressRow = GoalsRow & { }
+// Obiettivi “interni” usati dai grafici (mappa i nomi della pagina Obiettivi)
+type GoalsRow = {
+  advisor_user_id: string | 'TEAM'
+  year: number
+  month: number
+  consulenze: number
+  contratti: number
+  prod_danni: number
+  prod_vprot: number
+  prod_vpr: number
+  prod_vpu: number
+}
 
-const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
-const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border, #ddd)', borderRadius: 8, background:'#fff', color:'var(--text, #111)' }
-
-/** ——————— NUOVO: stile carte specchio ——————— */
-const mirrorBox: React.CSSProperties = { ...box, padding: 12 }
-const smallMuted: React.CSSProperties = { fontSize: 12, color: '#666' }
+// ===== Stili coerenti su entrambe le colonne =====
+const card: React.CSSProperties = {
+  background: 'var(--card, #fff)',
+  border: '1px solid var(--border,#e7e7e7)',
+  borderRadius: 16,
+  padding: 16,
+  boxShadow: '0 0 0 rgba(0,0,0,0)'
+}
+const headerTitle: React.CSSProperties = { fontSize: 16, fontWeight: 700 }
+const meta: React.CSSProperties = { fontSize: 12, color: '#667085' }
+const input: React.CSSProperties = { padding: '8px 10px', border: '1px solid #D0D5DD', borderRadius: 10, background:'#fff' }
 
 export default function ReportPage(){
+  // ===== Stato & filtri =====
   const [me, setMe] = useState<Me | null>(null)
   const [advisors, setAdvisors] = useState<{ user_id: string, email: string, full_name: string | null }[]>([])
-
-  // Filtri
   const today = new Date()
-  const defTo = toMonthKey(today)
-  const defFrom = toMonthKey(addMonths(today, -5))
-  const [fromKey, setFromKey] = useState<string>(defFrom)
-  const [toKey, setToKey] = useState<string>(defTo)
+  const [fromKey, setFromKey] = useState(toMonthKey(addMonths(today, -5)))
+  const [toKey, setToKey] = useState(toMonthKey(today))
   const [advisorUid, setAdvisorUid] = useState<string>('')
-
-  // Nuovo filtro: Il Mio Team (per TL e Admin)
   const [myTeam, setMyTeam] = useState<boolean>(false)
 
-  // Dati
+  // ===== Dati =====
   const [goals, setGoals] = useState<GoalsRow[]>([])
   const [prog, setProg] = useState<ProgressRow[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // Bootstrap: me + advisors (per dropdown)
+  // ===== Bootstrap utente & lista advisors =====
   useEffect(()=>{ (async()=>{
     setLoading(true); setErr('')
     try{
@@ -69,7 +72,6 @@ export default function ReportPage(){
       const uid = auth.user?.id
       if (!uid){ setErr('Utente non autenticato'); setLoading(false); return }
 
-      // me
       const { data: meRow, error: meErr } = await supabase
         .from('advisors')
         .select('id,user_id,email,full_name,role')
@@ -77,9 +79,10 @@ export default function ReportPage(){
         .maybeSingle()
       if (meErr) throw meErr
       if (!meRow){ setErr('Profilo non trovato'); setLoading(false); return }
-      setMe({ id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role })
 
-      // lista advisors (solo per Admin/TL)
+      setMe({ id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role })
+      setAdvisorUid(uid)
+
       if (meRow.role === 'Admin' || meRow.role === 'Team Lead'){
         const { data: list, error: lerr } = await supabase
           .from('advisors')
@@ -87,176 +90,110 @@ export default function ReportPage(){
           .order('full_name', { ascending: true })
         if (lerr) throw lerr
         setAdvisors((list||[]).filter(x=>!!x.user_id) as any)
-        setAdvisorUid(uid)
-      } else {
-        // Junior → advisor = me, dropdown disabilitato
-        setAdvisors([])
-        setAdvisorUid(uid)
       }
     } catch(ex:any){ setErr(ex.message || 'Errore bootstrap') }
     finally{ setLoading(false) }
   })() },[])
 
-  // Carica dati quando cambiano filtri
+  // ===== Caricamento dati su cambio filtri =====
   useEffect(()=>{ (async()=>{
     if (!advisorUid || !me) return
     setLoading(true); setErr('')
     try{
-      const rng = monthRange(fromKey, toKey) // array di {y,m}
-      const yrs = Array.from(new Set(rng.map(r=>r.y)))
+      const rng = monthRange(fromKey, toKey)
+      const years = Array.from(new Set(rng.map(r=>r.y)))
 
-      // === BRANCH: Il Mio Team (TL o Admin) ===
-      if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
-        // TL: il proprio team; Admin: il team del TL selezionato nel menu Advisor
-        const teamLeadId = me.role === 'Admin' ? advisorUid : me.user_id
-
-        // 1) recupera tutti gli user_id del team (TL + junior)
-        const { data: teamList, error: teamErr } = await supabase
+      // --- elenco user_id del perimetro (singolo advisor o team)
+      let scopeUserIds: string[] = [advisorUid]
+      if (myTeam && (me.role==='Team Lead' || me.role==='Admin')) {
+        const teamLead = me.role==='Admin' ? advisorUid : me.user_id
+        const { data: team, error: teamErr } = await supabase
           .from('advisors')
           .select('user_id,team_lead_user_id')
-          .or(`user_id.eq.${teamLeadId},team_lead_user_id.eq.${teamLeadId}`)
+          .or(`user_id.eq.${teamLead},team_lead_user_id.eq.${teamLead}`)
         if (teamErr) throw teamErr
-        const ids = (teamList||[]).map(r=>r.user_id)
-
-        // 2) GOALS TEAM (già aggregati lato DB nella vista v_team_goals_monthly_sum)
-        const teamGoals: GoalsRow[] = []
-        for(const y of yrs){
-          const months = rng.filter(r=>r.y===y).map(r=>r.m)
-          const { data, error } = await supabase
-            .from('v_team_goals_monthly_sum')
-            .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
-            .eq('year', y)
-            .in('month', months)
-          if (error) throw error
-          for (const r of (data||[])) {
-            teamGoals.push({
-              advisor_user_id: 'TEAM',
-              year: r.year,
-              month: r.month,
-              consulenze: r.consulenze || 0,
-              contratti: r.contratti || 0,
-              prod_danni: r.danni_non_auto || 0,
-              prod_vprot: r.vita_protection || 0,
-              prod_vpr: r.vita_ricorrenti || 0,
-              prod_vpu: r.vita_unici || 0,
-            })
-          }
-        }
-        setGoals(teamGoals)
-
-        // 3) PROGRESS TEAM (somma lato FE sugli advisor del team)
-        const teamProgMap = new Map<string, ProgressRow>()
-        const k = (y:number,m:number)=>`${y}-${m}`
-        for(const y of yrs){
-          const months = rng.filter(r=>r.y===y).map(r=>r.m)
-          const { data, error } = await supabase
-            .from('v_progress_monthly')
-            .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-            .eq('year', y)
-            .in('month', months)
-            .in('advisor_user_id', ids)
-          if (error) throw error
-          for(const row of (data||[])){
-            const key = k(row.year, row.month)
-            const acc = teamProgMap.get(key) || {
-              advisor_user_id: 'TEAM',
-              year: row.year,
-              month: row.month,
-              consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
-            }
-            acc.consulenze += row.consulenze || 0
-            acc.contratti  += row.contratti  || 0
-            acc.prod_danni += row.prod_danni || 0
-            acc.prod_vprot += row.prod_vprot || 0
-            acc.prod_vpr   += row.prod_vpr   || 0
-            acc.prod_vpu   += row.prod_vpu   || 0
-            teamProgMap.set(key, acc)
-          }
-        }
-        setProg(Array.from(teamProgMap.values()))
-        setLoading(false)
-        return
+        scopeUserIds = (team||[]).map(r=>r.user_id).filter(Boolean)
       }
 
-      // === BRANCH: singolo advisor (comportamento attuale) ===
-      const goalsRes: GoalsRow[] = []
-      for(const y of yrs){
-        const months = rng.filter(r=>r.y===y).map(r=>r.m)
-        const { data, error } = await supabase
-          .from('v_goals_monthly')
-          .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-          .eq('advisor_user_id', advisorUid)
-          .eq('year', y)
-          .in('month', months)
-        if (error) throw error
-        goalsRes.push(...(data||[]))
-      }
-      setGoals(goalsRes)
-
-      const progRes: ProgressRow[] = []
-      for(const y of yrs){
+      // --- PROGRESS (immutato: lettura dalla vista esistente)
+      const progRows: ProgressRow[] = []
+      for (const y of years){
         const months = rng.filter(r=>r.y===y).map(r=>r.m)
         const { data, error } = await supabase
           .from('v_progress_monthly')
           .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-          .eq('advisor_user_id', advisorUid)
           .eq('year', y)
           .in('month', months)
+          .in('advisor_user_id', scopeUserIds)
         if (error) throw error
-        progRes.push(...(data||[]))
+        // se team → sommo per mese
+        if (myTeam){
+          const acc = groupSumByYM(data||[])
+          progRows.push(...acc)
+        } else {
+          progRows.push(...(data||[]))
+        }
       }
-      setProg(progRes)
+      setProg(progRows)
+
+      // --- GOALS dalla "pagina obiettivi" (tabella `goals`) con fallback alle viste
+      const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, isTeam: myTeam })
+        .catch(async ()=> await loadGoalsMonthlyFromViews({ rng, years, scopeUserIds, isTeam: myTeam }))
+
+      setGoals(goalsRows)
     } catch(ex:any){ setErr(ex.message || 'Errore caricamento dati') }
     finally{ setLoading(false) }
-  })() },[advisorUid, fromKey, toKey, myTeam, me])
+  })() }, [advisorUid, fromKey, toKey, myTeam, me])
 
+  // ===== Merge & Totali per grafici =====
   const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey), [goals, prog, fromKey, toKey])
-
-  /** ——————— NUOVO: totali periodo per pannello specchio ——————— */
   const totals = useMemo(()=> aggregateTotals(rows), [rows])
 
   return (
     <div style={{ display:'grid', gap:16 }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
+      {/* Header & filtri */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
         <div style={{ fontSize:20, fontWeight:800 }}>Report — Andamento vs Obiettivi</div>
-        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-          <label style={{ fontSize:12 }}>Dal</label>
-          <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={ipt} />
-          <label style={{ fontSize:12 }}>al</label>
-          <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={ipt} />
-          {/* Filtro "Il Mio Team" per Team Lead E Admin */}
-          {me && (me.role === 'Team Lead' || me.role === 'Admin') && (
-            <label style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12 }}>
+        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+          <label style={meta}>Dal</label>
+          <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={input} />
+          <label style={meta}>al</label>
+          <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={input} />
+
+          {me && (me.role==='Team Lead' || me.role==='Admin') && (
+            <label style={{ display:'inline-flex', alignItems:'center', gap:8, ...meta }}>
               <input type="checkbox" checked={myTeam} onChange={e=>setMyTeam(e.target.checked)} />
               Tutto il Team
             </label>
           )}
+
           {me && (me.role==='Admin' || me.role==='Team Lead') ? (
             <>
-              <label style={{ fontSize:12 }}>Advisor</label>
-              {/* Admin deve poter selezionare il TL del quale vedere il team; TL può lasciare il proprio */}
-              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={ipt}>
-                <option value={me.user_id}>— {me.full_name || me.email} (me)</option>
-                {advisors.filter(a=>a.user_id!==me.user_id).map(a=> (
+              <label style={meta}>Advisor</label>
+              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={input}>
+                {me && <option value={me.user_id}>— {me.full_name || me.email} (me)</option>}
+                {advisors.filter(a=>a.user_id!==me?.user_id).map(a=> (
                   <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
                 ))}
               </select>
             </>
           ) : (
-            <div style={{ fontSize:12, color:'#666' }}>Advisor: solo me</div>
+            <div style={meta}>Advisor: solo me</div>
           )}
         </div>
       </div>
 
-      {err && <div style={{ ...box, color:'#c00' }}>{err}</div>}
+      {err && <div style={{ ...card, color:'#c00' }}>{err}</div>}
 
-      {/* ——————— PATCH: griglia 2 colonne (sx grafici esistenti, dx specchio) ——————— */}
+      {/* GRID 2 colonne — colonne visivamente in linea */}
       <div style={{
         display:'grid',
         gap:16,
-        gridTemplateColumns: typeof window !== 'undefined' && window.innerWidth < 1024 ? '1fr' : 'minmax(0,1.25fr) minmax(260px,0.75fr)'
+        gridTemplateColumns: typeof window !== 'undefined' && window.innerWidth < 1024
+          ? '1fr'
+          : 'minmax(0,1.25fr) minmax(300px,0.75fr)'
       }}>
-        {/* Colonna sinistra: GRAFICI ESISTENTI (immutati) */}
+        {/* Sinistra: grafici esistenti (con % in intestazione) */}
         <div style={{ display:'grid', gap:16 }}>
           <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
           <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
@@ -266,52 +203,63 @@ export default function ReportPage(){
           <MetricCard title="Vita Premi Unici" field="prod_vpu" rows={rows} format="currency" />
         </div>
 
-        {/* Colonna destra: SPECCHIO OBIETTIVI (nuovo) */}
-        <div>
-          <MirrorPanel totals={totals} />
+        {/* Destra: specchio obiettivi — stile allineato alle carte di sinistra */}
+        <div style={{ display:'grid', gap:16, alignContent:'start' }}>
+          <MirrorCard title="Appuntamenti" goal={totals.goal.consulenze} actual={totals.actual.consulenze} format="int" />
+          <MirrorCard title="Contratti" goal={totals.goal.contratti} actual={totals.actual.contratti} format="int" />
+          <MirrorCard title="Danni Non Auto" goal={totals.goal.prod_danni} actual={totals.actual.prod_danni} format="currency" />
+          <MirrorCard title="Vita Protection" goal={totals.goal.prod_vprot} actual={totals.actual.prod_vprot} format="currency" />
+          <MirrorCard title="Vita Premi Ricorrenti" goal={totals.goal.prod_vpr} actual={totals.actual.prod_vpr} format="currency" />
+          <MirrorCard title="Vita Premi Unici" goal={totals.goal.prod_vpu} actual={totals.actual.prod_vpu} format="currency" />
         </div>
       </div>
 
-      {loading && <div style={{ color:'#666' }}>Caricamento...</div>}
+      {loading && <div style={{ color:'#666' }}>Caricamento…</div>}
     </div>
   )
 }
 
-// ===== Helpers render =====
+/* ===================== Componenti UI ===================== */
 
-function MetricCard({ title, field, rows, format }:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
-  const data = rows
-  const totGoal = data.reduce((s,r)=> s + (r.goal[field]||0), 0)
-  const totAct  = data.reduce((s,r)=> s + (r.actual[field]||0), 0)
+function MetricCard({
+  title, field, rows, format
+}:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
+  const totGoal = rows.reduce((s,r)=> s + (r.goal[field]||0), 0)
+  const totAct  = rows.reduce((s,r)=> s + (r.actual[field]||0), 0)
   const pct = totGoal>0 ? (totAct / totGoal) : 0
+
   return (
-    <div style={{ ...box }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
-        <div style={{ fontSize:16, fontWeight:700 }}>{title}</div>
+    <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+        <div style={headerTitle}>{title}</div>
         <div style={{ fontSize:14 }}>
           <b>{fmt(totAct, format)}</b> / {fmt(totGoal, format)}
-          <span style={{ marginLeft:8, color: pct>=1? '#0a0':'#a60' }}>{(pct*100).toFixed(0)}%</span>
+          <span style={{
+            marginLeft:8,
+            color: pct>=1 ? '#067647' : pct>=0.7 ? '#B54708' : '#B42318',
+            fontWeight: 700
+          }}>{(pct*100).toFixed(0)}%</span>
         </div>
       </div>
-      <BarChart rows={data} field={field} format={format} />
+      <Bars rows={rows} field={field} format={format} />
     </div>
   )
 }
 
-function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency' }){
-  const W = Math.max(600, rows.length*60)
+function Bars({ rows, field, format }:{
+  rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency'
+}){
+  const W = Math.max(640, rows.length*64)
   const H = 160
   const pad = { l:40, r:20, t:10, b:30 }
   const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
   const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
-  const barW = Math.max(14, step*0.35)
+  const barW = Math.max(16, step*0.36)
 
   return (
     <div style={{ overflowX:'auto' }}>
       <svg width={W} height={H}>
-        {/* axis */}
-        <line x1={pad.l} y1={H-pad.b} x2={W-pad.r} y2={H-pad.b} stroke="#ddd" />
-        {/* bars */}
+        <line x1={pad.l} y1={H-pad.b} x2={W-pad.r} y2={H-pad.b} stroke="#EAECF0" />
         {rows.map((r, i) => {
           const x = pad.l + i*step + 8
           const gVal = r.goal[field]||0
@@ -321,15 +269,11 @@ function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsR
           const baseY = H - pad.b
           return (
             <g key={i}>
-              {/* goal bar (light) */}
-              <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#eaeaea" />
-              {/* actual bar (solid) */}
-              <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#888" />
-              {/* label month */}
-              <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle">{r.label}</text>
-              {/* values */}
-              <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#777">{fmt(gVal, format)}</text>
-              <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#333">{fmt(aVal, format)}</text>
+              <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#EEF2F6" rx="6" />
+              <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#98A2B3" rx="6" />
+              <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle" fill="#667085">{r.label}</text>
+              <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
+              <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
             </g>
           )
         })}
@@ -338,65 +282,76 @@ function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsR
   )
 }
 
-/** ——————— NUOVO: componente pannello specchio ——————— */
-
-type MetricKey = 'consulenze'|'contratti'|'prod_danni'|'prod_vprot'|'prod_vpr'|'prod_vpu'
-type Totals = {
-  goal: Record<MetricKey, number>
-  actual: Record<MetricKey, number>
-}
-
-function MirrorPanel({ totals }:{ totals: Totals }){
-  return (
-    <div style={{ display:'grid', gap:12 }}>
-      <MirrorCard title="Appuntamenti" goal={totals.goal.consulenze} actual={totals.actual.consulenze} format="int" />
-      <MirrorCard title="Contratti" goal={totals.goal.contratti} actual={totals.actual.contratti} format="int" />
-      <MirrorCard title="Danni Non Auto" goal={totals.goal.prod_danni} actual={totals.actual.prod_danni} format="currency" />
-      <MirrorCard title="Vita Protection" goal={totals.goal.prod_vprot} actual={totals.actual.prod_vprot} format="currency" />
-      <MirrorCard title="Vita Premi Ricorrenti" goal={totals.goal.prod_vpr} actual={totals.actual.prod_vpr} format="currency" />
-      <MirrorCard title="Vita Premi Unici" goal={totals.goal.prod_vpu} actual={totals.actual.prod_vpu} format="currency" />
-    </div>
-  )
-}
-
-/**
- * Carta specchio: mostra SOLO il grafico dell'Obiettivo del periodo (barra singola),
- * con riga “Attuale · Obiettivo” e % completamento.
- */
-function MirrorCard({ title, goal, actual, format }:{
-  title:string, goal:number, actual:number, format:'int'|'currency'
-}){
+// ——— Specchio: una carta per metrica, stessa altezza e gerarchia tipografica
+function MirrorCard({
+  title, goal, actual, format
+}:{ title:string, goal:number, actual:number, format:'int'|'currency' }){
   const pct = goal>0 ? Math.min(100, Math.round((actual/goal)*1000)/10) : 0
-  const H = 88, pad = { t:10, b:18, l:10, r:10 }
+  const H = 120, pad = { t:10, b:24 }
   const maxVal = Math.max(1, goal)
   const gH = (goal/maxVal) * (H - pad.t - pad.b)
 
   return (
-    <div style={mirrorBox}>
+    <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-        <div style={{ fontWeight:700 }}>{title}</div>
-        <div style={{ fontSize:13, color: pct>=100? '#0a0' : pct>=70? '#a60' : '#a00' }}>{pct}%</div>
+        <div style={headerTitle}>{title}</div>
+        <div style={{ fontSize:13, fontWeight:700, color: pct>=100? '#067647' : pct>=70? '#B54708' : '#B42318' }}>{pct}%</div>
       </div>
-      <div style={{ ...smallMuted, marginTop:4, marginBottom:6 }}>
+      <div style={meta}>
         Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
       </div>
       <div style={{ height:H }}>
         <svg width="100%" height={H} viewBox={`0 0 200 ${H}`} preserveAspectRatio="none">
-          {/* unica barra: obiettivo periodo */}
-          <rect x="90" y={H - pad.b - gH} width="20" height={gH} fill="#eaeaea" rx="6" />
-          <text x="100" y={H - pad.b - gH - 4} fontSize="10" textAnchor="middle" fill="#666">{fmt(goal, format)}</text>
-          <text x="100" y={H - 4} fontSize="10" textAnchor="middle" fill="#888">Obiettivo periodo</text>
+          <rect x="90" y={H - pad.b - gH} width="20" height={gH} fill="#EEF2F6" rx="6" />
+          <text x="100" y={H - pad.b - gH - 4} fontSize="10" textAnchor="middle" fill="#667085">{fmt(goal, format)}</text>
+          <text x="100" y={H - 6} fontSize="10" textAnchor="middle" fill="#667085">Obiettivo periodo</text>
         </svg>
       </div>
     </div>
   )
 }
 
-/** ——————— NUOVO: aggregazione totali periodo ——————— */
-function aggregateTotals(rows: MergedRow[]): Totals{
-  const sum = <T extends MetricKey>(f:T, kind:'goal'|'actual') =>
-    rows.reduce((s,r)=> s + (r[kind][f] || 0), 0)
+/* ===================== Logica dati ===================== */
 
+type YM = { y:number, m:number }
+type MergedRow = {
+  y: number
+  m: number
+  label: string
+  goal: Record<keyof GoalsRow, number>
+  actual: Record<keyof GoalsRow, number>
+}
+
+function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, toKey:string): MergedRow[]{
+  const rng = monthRange(fromKey, toKey)
+  const k = (y:number,m:number)=> `${y}-${m}`
+  const gmap = new Map<string, GoalsRow>()
+  const amap = new Map<string, ProgressRow>()
+  goals.forEach(g=>gmap.set(k(g.year,g.month), g))
+  prog.forEach(a=>amap.set(k(a.year,a.month), a))
+  const fields: (keyof GoalsRow)[] = ['advisor_user_id','year','month','consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
+  const metrics: (keyof GoalsRow)[] = ['consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
+  const out: MergedRow[] = []
+  for(const {y,m} of rng){
+    const g = gmap.get(k(y,m))
+    const a = amap.get(k(y,m))
+    const row: MergedRow = {
+      y, m,
+      label: `${String(m).padStart(2,'0')}/${String(y).slice(2)}`,
+      goal: Object.fromEntries(fields.map(f=>[f, 0])) as any,
+      actual: Object.fromEntries(fields.map(f=>[f, 0])) as any,
+    }
+    for(const f of metrics){
+      row.goal[f] = (g as any)?.[f] || 0
+      row.actual[f] = (a as any)?.[f] || 0
+    }
+    out.push(row)
+  }
+  return out
+}
+
+function aggregateTotals(rows: MergedRow[]){
+  const sum = (f: keyof GoalsRow, kind:'goal'|'actual') => rows.reduce((s,r)=> s + (r[kind][f] || 0), 0)
   return {
     goal: {
       consulenze: sum('consulenze','goal'),
@@ -417,21 +372,114 @@ function aggregateTotals(rows: MergedRow[]): Totals{
   }
 }
 
+// ====== LETTURA OBIETTIVI DALLA PAGINA "OBIETTIVI" ======
+// Tabella prevista: `goals` con colonne mensili:
+//  year, month, owner_id (facoltativo), appointments_target, contracts_target,
+//  danni_non_auto_target, vita_protection_target, vita_premi_ricorrenti_target, vita_premi_unici_target
+async function loadGoalsMonthlyFromGoalsTable({
+  rng, years, scopeUserIds, isTeam
+}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
+  const rows: GoalsRow[] = []
+  for(const y of years){
+    const months = rng.filter(r=>r.y===y).map(r=>r.m)
+    // prendo tutte le righe goals per i mesi nel range (eventuale owner_id tra quelli in scope)
+    const q = supabase.from('goals')
+      .select('year,month,owner_id,appointments_target,contracts_target,danni_non_auto_target,vita_protection_target,vita_premi_ricorrenti_target,vita_premi_unici_target')
+      .eq('year', y)
+      .in('month', months)
+
+    const { data, error } = await q
+    if (error) throw error
+
+    // filtro per perimetro (se presente owner_id)
+    const filtered = (data||[]).filter((g:any)=> !g.owner_id || scopeUserIds.includes(g.owner_id))
+
+    if (isTeam){
+      // somma per mese
+      const byKey = new Map<string, GoalsRow>()
+      for(const g of filtered){
+        const k = `${g.year}-${g.month}`
+        const acc = byKey.get(k) || {
+          advisor_user_id: 'TEAM',
+          year: g.year, month: g.month,
+          consulenze: 0, contratti: 0,
+          prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
+        }
+        acc.consulenze += g.appointments_target || 0
+        acc.contratti  += g.contracts_target || 0
+        acc.prod_danni += Number(g.danni_non_auto_target || 0)
+        acc.prod_vprot += Number(g.vita_protection_target || 0)
+        acc.prod_vpr   += Number(g.vita_premi_ricorrenti_target || 0)
+        acc.prod_vpu   += Number(g.vita_premi_unici_target || 0)
+        byKey.set(k, acc)
+      }
+      rows.push(...byKey.values())
+    } else {
+      // singolo advisor: prendo owner_id = scopeUserIds[0] se presente, altrimenti righe senza owner_id
+      const wantedOwner = scopeUserIds[0]
+      for(const g of filtered){
+        if (g.owner_id && g.owner_id !== wantedOwner) continue
+        rows.push({
+          advisor_user_id: wantedOwner || 'TEAM',
+          year: g.year, month: g.month,
+          consulenze: g.appointments_target || 0,
+          contratti: g.contracts_target || 0,
+          prod_danni: Number(g.danni_non_auto_target || 0),
+          prod_vprot: Number(g.vita_protection_target || 0),
+          prod_vpr: Number(g.vita_premi_ricorrenti_target || 0),
+          prod_vpu: Number(g.vita_premi_unici_target || 0),
+        })
+      }
+    }
+  }
+  return rows
+}
+
+// ====== FALLBACK: viste legacy se la tabella goals non c'è / è vuota ======
+async function loadGoalsMonthlyFromViews({
+  rng, years, scopeUserIds, isTeam
+}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
+  const rows: GoalsRow[] = []
+  for(const y of years){
+    const months = rng.filter(r=>r.y===y).map(r=>r.m)
+    if (isTeam){
+      const { data, error } = await supabase
+        .from('v_team_goals_monthly_sum')
+        .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
+        .eq('year', y)
+        .in('month', months)
+      if (error) throw error
+      for(const r of (data||[])){
+        rows.push({
+          advisor_user_id: 'TEAM',
+          year: r.year, month: r.month,
+          consulenze: r.consulenze || 0,
+          contratti: r.contratti || 0,
+          prod_danni: r.danni_non_auto || 0,
+          prod_vprot: r.vita_protection || 0,
+          prod_vpr: r.vita_ricorrenti || 0,
+          prod_vpu: r.vita_unici || 0,
+        })
+      }
+    } else {
+      const { data, error } = await supabase
+        .from('v_goals_monthly')
+        .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+        .in('advisor_user_id', scopeUserIds.slice(0,1))
+        .eq('year', y)
+        .in('month', months)
+      if (error) throw error
+      rows.push(...(data||[]))
+    }
+  }
+  return rows
+}
+
+/* ===================== Utility ===================== */
+
 function fmt(v:number, mode:'int'|'currency'){
   if (mode==='int') return String(Math.round(v||0))
   try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(v||0) }catch{ return String(v||0) }
-}
-
-// ===== Merge/Date helpers =====
-
-type YM = { y:number, m:number }
-
-type MergedRow = {
-  y: number
-  m: number
-  label: string
-  goal: Record<keyof GoalsRow, number>
-  actual: Record<keyof GoalsRow, number>
 }
 
 function toMonthKey(d: Date){
@@ -456,30 +504,24 @@ function monthRange(fromKey:string, toKey:string): YM[]{
   return out
 }
 
-function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, toKey:string): MergedRow[]{
-  const rng = monthRange(fromKey, toKey)
-  const key = (y:number,m:number)=> `${y}-${m}`
-  const gmap = new Map<string, GoalsRow>()
-  const amap = new Map<string, ProgressRow>()
-  for(const g of goals) gmap.set(key(g.year,g.month), g)
-  for(const a of prog)  amap.set(key(a.year,a.month), a)
-  const fields: (keyof GoalsRow)[] = ['advisor_user_id','year','month','consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
-  const metricFields: (keyof GoalsRow)[] = ['consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
-  const out: MergedRow[] = []
-  for(const {y,m} of rng){
-    const g = gmap.get(key(y,m))
-    const a = amap.get(key(y,m))
-    const row: MergedRow = {
-      y, m,
-      label: `${String(m).padStart(2,'0')}/${String(y).slice(2)}`,
-      goal: Object.fromEntries(fields.map(f=>[f, 0])) as any,
-      actual: Object.fromEntries(fields.map(f=>[f, 0])) as any,
+// Somma progress per mese quando in modalità Team
+function groupSumByYM(data: any[]): ProgressRow[] {
+  const byKey = new Map<string, ProgressRow>()
+  const k = (y:number,m:number)=>`${y}-${m}`
+  for(const r of data){
+    const key = k(r.year, r.month)
+    const acc = byKey.get(key) || {
+      advisor_user_id: 'TEAM',
+      year: r.year, month: r.month,
+      consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
     }
-    for(const f of metricFields){
-      row.goal[f] = (g as any)?.[f] || 0
-      row.actual[f] = (a as any)?.[f] || 0
-    }
-    out.push(row)
+    acc.consulenze += r.consulenze || 0
+    acc.contratti  += r.contratti || 0
+    acc.prod_danni += r.prod_danni || 0
+    acc.prod_vprot += r.prod_vprot || 0
+    acc.prod_vpr   += r.prod_vpr || 0
+    acc.prod_vpu   += r.prod_vpu || 0
+    byKey.set(key, acc)
   }
-  return out
+  return Array.from(byKey.values())
 }
