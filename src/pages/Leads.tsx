@@ -748,7 +748,7 @@ export default function LeadsPage(){
         <div style={{ display:'grid', gap:12 }}>
           {(meRole==='Admin' || meRole==='Team Lead') && (
             <div>
-              <div style={label}>Assegna a Junior</div>
+              <div style={label}>Assegna a</div>
               <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
                 <option value="">— Scegli —</option>
                 {advisors.filter(a=>a.role==='Junior' && a.user_id).map(a => (
