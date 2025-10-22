@@ -341,12 +341,20 @@ async function getProgress(advisor_user_id:string, year:number): Promise<Monthly
   return Object.values(byMonth).sort((a,b)=>a.month-b.month)
 }
 
+
+
+// Helper per colonna YM (intero YYYYMM)
+
+function ymAsInt(y:number, m:number){ return y*100 + m }
+
 async function upsertAnnual(g: AnnualGoals){
   const { error } = await supabase.from('goals').upsert({ ...g }, { onConflict:'advisor_user_id,year' })
   if (error) throw error
 }
 async function upsertMonthly(g: MonthlyGoals){
-  const { error } = await supabase.from('goals_monthly').upsert({ ...g }, { onConflict:'advisor_user_id,year,month' })
+  // Patch: includiamo 'ym' per rispettare il vincolo NOT NULL in DB
+  const payload = { ...g, ym: ymAsInt(g.year, g.month) }
+  const { error } = await supabase.from('goals_monthly').upsert(payload, { onConflict:'advisor_user_id,year,month' })
   if (error) throw error
 }
 
