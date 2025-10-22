@@ -559,8 +559,8 @@ export default function LeadsPage(){
     style={{
       display:'grid',
       gridTemplateColumns: (meRole==='Admin' || meRole==='Team Lead')
-        ? 'minmax(180px,1fr) 170px'
-        : '1fr 170px',               // se non Admin/TL lo lasciamo vuoto a sinistra per allineare il bottone
+        ? 'minmax(180px,1fr) 1fr'
+        : '1fr 1fr',               // se non Admin/TL lo lasciamo vuoto a sinistra per allineare il bottone
       alignItems:'end',
       gap:8
     }}
@@ -602,9 +602,7 @@ export default function LeadsPage(){
       <button
         className="brand-btn"
         onClick={()=>setOnlyWorking(v=>!v)}
-        style={ onlyWorking
-          ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' }
-          : {} }
+        style={{ width:'100%', ...(onlyWorking ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }}
       >
         In Lavorazione
       </button>
