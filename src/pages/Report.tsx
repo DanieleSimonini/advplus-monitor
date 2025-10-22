@@ -10,6 +10,9 @@ import { supabase } from '@/supabaseClient'
  *   • Junior: vede solo i propri dati (advisor selezionato = me, disabilitato)
  *   • Team Lead/Admin: possono scegliere l'advisor dal menu
  *   • Filtro “Il Mio Team”: TL → il proprio team; Admin → il team del TL selezionato
+ *
+ * Patch: aggiunta colonna destra con “grafici speculari” che mostrano solo l’Obiettivo del periodo
+ *        (somma degli obiettivi mensili nel range) e % di completamento per ogni voce.
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -32,6 +35,10 @@ type ProgressRow = GoalsRow & { }
 
 const box: React.CSSProperties = { background: 'var(--card, #fff)', border: '1px solid var(--border, #eee)', borderRadius: 16, padding: 16 }
 const ipt: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border, #ddd)', borderRadius: 8, background:'#fff', color:'var(--text, #111)' }
+
+/** ——————— NUOVO: stile carte specchio ——————— */
+const mirrorBox: React.CSSProperties = { ...box, padding: 12 }
+const smallMuted: React.CSSProperties = { fontSize: 12, color: '#666' }
 
 export default function ReportPage(){
   const [me, setMe] = useState<Me | null>(null)
@@ -205,6 +212,9 @@ export default function ReportPage(){
 
   const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey), [goals, prog, fromKey, toKey])
 
+  /** ——————— NUOVO: totali periodo per pannello specchio ——————— */
+  const totals = useMemo(()=> aggregateTotals(rows), [rows])
+
   return (
     <div style={{ display:'grid', gap:16 }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
@@ -240,55 +250,26 @@ export default function ReportPage(){
 
       {err && <div style={{ ...box, color:'#c00' }}>{err}</div>}
 
-      {/* === NUOVA SEZIONE: Grafici specchio — Solo obiettivo del periodo === */}
-      <div style={{ ...box, display:'grid', gap:12 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div style={{ fontSize:16, fontWeight:700 }}>Obiettivi del periodo (solo target & completamento)</div>
-          <small style={{ color:'#666' }}>Periodo: {prettyRange(fromKey, toKey)}</small>
+      {/* ——————— PATCH: griglia 2 colonne (sx grafici esistenti, dx specchio) ——————— */}
+      <div style={{
+        display:'grid',
+        gap:16,
+        gridTemplateColumns: typeof window !== 'undefined' && window.innerWidth < 1024 ? '1fr' : 'minmax(0,1.25fr) minmax(260px,0.75fr)'
+      }}>
+        {/* Colonna sinistra: GRAFICI ESISTENTI (immutati) */}
+        <div style={{ display:'grid', gap:16 }}>
+          <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
+          <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
+          <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
+          <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
+          <MetricCard title="Vita Premi Ricorrenti" field="prod_vpr" rows={rows} format="currency" />
+          <MetricCard title="Vita Premi Unici" field="prod_vpu" rows={rows} format="currency" />
         </div>
 
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0,1fr))', gap:12 }}>
-          <TargetOnlyBar
-            label="Appuntamenti"
-            {...totalsFor(rows, 'consulenze')}
-            format="int"
-          />
-          <TargetOnlyBar
-            label="Contratti"
-            {...totalsFor(rows, 'contratti')}
-            format="int"
-          />
-          <TargetOnlyBar
-            label="Produzione Danni Non Auto"
-            {...totalsFor(rows, 'prod_danni')}
-            format="currency"
-          />
-          <TargetOnlyBar
-            label="Vita Protection"
-            {...totalsFor(rows, 'prod_vprot')}
-            format="currency"
-          />
-          <TargetOnlyBar
-            label="Vita Premi Ricorrenti"
-            {...totalsFor(rows, 'prod_vpr')}
-            format="currency"
-          />
-          <TargetOnlyBar
-            label="Vita Premi Unici"
-            {...totalsFor(rows, 'prod_vpu')}
-            format="currency"
-          />
+        {/* Colonna destra: SPECCHIO OBIETTIVI (nuovo) */}
+        <div>
+          <MirrorPanel totals={totals} />
         </div>
-      </div>
-
-      {/* === Sezione originale con grafici mensili (non toccata) === */}
-      <div style={{ display:'grid', gap:16 }}>
-        <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
-        <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
-        <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
-        <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
-        <MetricCard title="Vita Premi Ricorrenti" field="prod_vpr" rows={rows} format="currency" />
-        <MetricCard title="Vita Premi Unici" field="prod_vpu" rows={rows} format="currency" />
       </div>
 
       {loading && <div style={{ color:'#666' }}>Caricamento...</div>}
@@ -313,32 +294,6 @@ function MetricCard({ title, field, rows, format }:{ title:string, field: keyof 
         </div>
       </div>
       <BarChart rows={data} field={field} format={format} />
-    </div>
-  )
-}
-
-/** NUOVO: “grafico speculare” minimal — SOLO obiettivo del periodo + % completamento */
-function TargetOnlyBar({
-  label,
-  totalActual,
-  totalGoal,
-  format
-}:{ label:string, totalActual:number, totalGoal:number, format:'int'|'currency' }){
-  const pct = totalGoal>0 ? (totalActual/totalGoal) : 0
-  const widthPct = Math.max(0, Math.min(1, pct)) * 100
-  return (
-    <div style={{ border:'1px solid var(--border, #eee)', borderRadius:12, padding:12, display:'grid', gap:8 }}>
-      <div style={{ fontWeight:700 }}>{label}</div>
-      <div style={{ fontSize:12, color:'#666' }}>
-        {fmt(totalActual, format)} / {fmt(totalGoal, format)}
-      </div>
-      <div style={{ height:10, background:'#f2f2f2', borderRadius:999, overflow:'hidden' }}>
-        <div style={{ width:`${widthPct}%`, height:'100%', background:'var(--brand-primary-600, #0029ae)' }} />
-      </div>
-      <div style={{ fontSize:12 }}>
-        Completamento: {(pct*100).toFixed(0)}%
-        {totalGoal===0 ? ' (nessun obiettivo impostato)' : (pct>1 ? ' (oltre 100%)' : '')}
-      </div>
     </div>
   )
 }
@@ -381,6 +336,85 @@ function BarChart({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsR
       </svg>
     </div>
   )
+}
+
+/** ——————— NUOVO: componente pannello specchio ——————— */
+
+type MetricKey = 'consulenze'|'contratti'|'prod_danni'|'prod_vprot'|'prod_vpr'|'prod_vpu'
+type Totals = {
+  goal: Record<MetricKey, number>
+  actual: Record<MetricKey, number>
+}
+
+function MirrorPanel({ totals }:{ totals: Totals }){
+  return (
+    <div style={{ display:'grid', gap:12 }}>
+      <MirrorCard title="Appuntamenti" goal={totals.goal.consulenze} actual={totals.actual.consulenze} format="int" />
+      <MirrorCard title="Contratti" goal={totals.goal.contratti} actual={totals.actual.contratti} format="int" />
+      <MirrorCard title="Danni Non Auto" goal={totals.goal.prod_danni} actual={totals.actual.prod_danni} format="currency" />
+      <MirrorCard title="Vita Protection" goal={totals.goal.prod_vprot} actual={totals.actual.prod_vprot} format="currency" />
+      <MirrorCard title="Vita Premi Ricorrenti" goal={totals.goal.prod_vpr} actual={totals.actual.prod_vpr} format="currency" />
+      <MirrorCard title="Vita Premi Unici" goal={totals.goal.prod_vpu} actual={totals.actual.prod_vpu} format="currency" />
+    </div>
+  )
+}
+
+/**
+ * Carta specchio: mostra SOLO il grafico dell'Obiettivo del periodo (barra singola),
+ * con riga “Attuale · Obiettivo” e % completamento.
+ */
+function MirrorCard({ title, goal, actual, format }:{
+  title:string, goal:number, actual:number, format:'int'|'currency'
+}){
+  const pct = goal>0 ? Math.min(100, Math.round((actual/goal)*1000)/10) : 0
+  const H = 88, pad = { t:10, b:18, l:10, r:10 }
+  const maxVal = Math.max(1, goal)
+  const gH = (goal/maxVal) * (H - pad.t - pad.b)
+
+  return (
+    <div style={mirrorBox}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+        <div style={{ fontWeight:700 }}>{title}</div>
+        <div style={{ fontSize:13, color: pct>=100? '#0a0' : pct>=70? '#a60' : '#a00' }}>{pct}%</div>
+      </div>
+      <div style={{ ...smallMuted, marginTop:4, marginBottom:6 }}>
+        Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
+      </div>
+      <div style={{ height:H }}>
+        <svg width="100%" height={H} viewBox={`0 0 200 ${H}`} preserveAspectRatio="none">
+          {/* unica barra: obiettivo periodo */}
+          <rect x="90" y={H - pad.b - gH} width="20" height={gH} fill="#eaeaea" rx="6" />
+          <text x="100" y={H - pad.b - gH - 4} fontSize="10" textAnchor="middle" fill="#666">{fmt(goal, format)}</text>
+          <text x="100" y={H - 4} fontSize="10" textAnchor="middle" fill="#888">Obiettivo periodo</text>
+        </svg>
+      </div>
+    </div>
+  )
+}
+
+/** ——————— NUOVO: aggregazione totali periodo ——————— */
+function aggregateTotals(rows: MergedRow[]): Totals{
+  const sum = <T extends MetricKey>(f:T, kind:'goal'|'actual') =>
+    rows.reduce((s,r)=> s + (r[kind][f] || 0), 0)
+
+  return {
+    goal: {
+      consulenze: sum('consulenze','goal'),
+      contratti: sum('contratti','goal'),
+      prod_danni: sum('prod_danni','goal'),
+      prod_vprot: sum('prod_vprot','goal'),
+      prod_vpr: sum('prod_vpr','goal'),
+      prod_vpu: sum('prod_vpu','goal'),
+    },
+    actual: {
+      consulenze: sum('consulenze','actual'),
+      contratti: sum('contratti','actual'),
+      prod_danni: sum('prod_danni','actual'),
+      prod_vprot: sum('prod_vprot','actual'),
+      prod_vpr: sum('prod_vpr','actual'),
+      prod_vpu: sum('prod_vpu','actual'),
+    }
+  }
 }
 
 function fmt(v:number, mode:'int'|'currency'){
@@ -448,19 +482,4 @@ function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, to
     out.push(row)
   }
   return out
-}
-
-/** NUOVO: calcolo rapidi dei totali periodo per i grafici specchio */
-function totalsFor(rows: MergedRow[], field: keyof GoalsRow): { totalActual:number, totalGoal:number }{
-  const totalGoal = rows.reduce((s,r)=> s + (r.goal[field]||0), 0)
-  const totalActual = rows.reduce((s,r)=> s + (r.actual[field]||0), 0)
-  return { totalActual, totalGoal }
-}
-
-/** NUOVO: stringa leggibile del range selezionato */
-function prettyRange(fromKey:string, toKey:string){
-  const [fy,fm] = fromKey.split('-').map(n=>parseInt(n,10))
-  const [ty,tm] = toKey.split('-').map(n=>parseInt(n,10))
-  const m = (n:number)=> String(n).padStart(2,'0')
-  return `${m(fm)}/${fy} → ${m(tm)}/${ty}`
 }
