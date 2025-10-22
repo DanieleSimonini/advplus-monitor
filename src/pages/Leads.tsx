@@ -574,14 +574,25 @@ export default function LeadsPage(){
           onChange={e=>setAssigneeFilter(e.target.value)}
         >
           <option value="">Tutti</option>
-          {advisors
-            .filter(a=>a.role==='Junior' && a.user_id)
-            .map(a => (
-              <option key={a.user_id!} value={a.user_id!}>
-                {a.full_name || a.email}
-              </option>
-            ))}
-        </select>
+<option value="">Tutti</option>
+<optgroup label="Team Lead">
+  {advisors
+    .filter(a => a.role === 'Team Lead' && a.user_id)
+    .map(a => (
+      <option key={a.user_id!} value={a.user_id!}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>
+<optgroup label="Junior">
+  {advisors
+    .filter(a => a.role === 'Junior' && a.user_id)
+    .map(a => (
+      <option key={a.user_id!} value={a.user_id!}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>        </select>
       </div>
     ) : (
       <div /> /* placeholder per mantenere l'allineamento */
@@ -751,9 +762,24 @@ export default function LeadsPage(){
               <div style={label}>Assegna a</div>
               <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
                 <option value="">— Scegli —</option>
-                {advisors.filter(a=>a.role==='Junior' && a.user_id).map(a => (
-                  <option key={a.user_id||a.email} value={a.user_id||''}>{a.full_name || a.email}</option>
-                ))}
+<optgroup label="Team Lead">
+  {advisors
+    .filter(a => a.role === 'Team Lead' && a.user_id)
+    .map(a => (
+      <option key={a.user_id || a.email} value={a.user_id || ''}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>
+<optgroup label="Junior">
+  {advisors
+    .filter(a => a.role === 'Junior' && a.user_id)
+    .map(a => (
+      <option key={a.user_id || a.email} value={a.user_id || ''}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>
               </select>
             </div>
           )}
