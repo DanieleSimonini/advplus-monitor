@@ -1,4 +1,5 @@
-// ReportPage.tsx — Patch: usa goals_monthly per obiettivi + layout allineato + %
+
+// ReportPage.tsx — Patch: obiettivi visibili sopra le colonne + mirror a torta
 // Mantiene le funzionalità esistenti, legge gli obiettivi dalla pagina Obiettivi (tabella goals_monthly).
 
 import React, { useEffect, useMemo, useState } from 'react'
@@ -222,10 +223,11 @@ function MetricCard({
   )
 }
 
+// ⇩⇩⇩ PATCH: padding superiore aumentato e label spostate più in alto
 function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency' }){
   const W = Math.max(640, rows.length*64)
-  const H = 160
-  const pad = { l:40, r:20, t:10, b:30 }
+  const H = 180 // era 160
+  const pad = { l:40, r:20, t:30, b:30 } // t era 10 → ora 30 per lasciare spazio alle etichette
   const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
   const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
   const barW = Math.max(16, step*0.36)
@@ -246,8 +248,9 @@ function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, 
               <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#EEF2F6" rx="6" />
               <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#98A2B3" rx="6" />
               <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle" fill="#667085">{r.label}</text>
-              <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
-              <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
+              {/* etichette alzate per evitare tagli */}
+              <text x={x + barW/2} y={baseY - gH - 8} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
+              <text x={x + barW + 6 + barW/2} y={baseY - aH - 8} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
             </g>
           )
         })}
@@ -256,26 +259,53 @@ function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, 
   )
 }
 
+// ⇩⇩⇩ PATCH: mirror trasformato in grafico a torta (progressivo)
 function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number, actual:number, format:'int'|'currency' }){
   const pct = goal>0 ? Math.min(100, Math.round((actual/goal)*1000)/10) : 0
-  const H = 120, pad = { t:10, b:24 }
-  const maxVal = Math.max(1, goal)
-  const gH = (goal/maxVal) * (H - pad.t - pad.b)
+  const HColor = pct>=100? '#067647' : pct>=70? '#B54708' : '#B42318'
+
+  // configurazione pie
+  const size = 140
+  const cx = size/2
+  const cy = size/2
+  const r = 46
+  const strokeW = 12
+
+  // calcolo arco (0 → 360); per 100% disegniamo un cerchio completo
+  const angle = (pct / 100) * 360
+  const largeArc = angle > 180 ? 1 : 0
+  const rad = (deg:number)=> (deg * Math.PI) / 180
+  const x = cx + r * Math.sin(rad(angle))
+  const y = cy - r * Math.cos(rad(angle))
 
   return (
     <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
         <div style={headerTitle}>{title}</div>
-        <div style={{ fontSize:13, fontWeight:700, color: pct>=100? '#067647' : pct>=70? '#B54708' : '#B42318' }}>{pct}%</div>
+        <div style={{ fontSize:13, fontWeight:700, color: HColor }}>{pct}%</div>
       </div>
       <div style={meta}>
         Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
       </div>
-      <div style={{ height:H }}>
-        <svg width="100%" height={H} viewBox={`0 0 200 ${H}`} preserveAspectRatio="none">
-          <rect x="90" y={H - pad.b - gH} width="20" height={gH} fill="#EEF2F6" rx="6" />
-          <text x="100" y={H - pad.b - gH - 4} fontSize="10" textAnchor="middle" fill="#667085">{fmt(goal, format)}</text>
-          <text x="100" y={H - 6} fontSize="10" textAnchor="middle" fill="#667085">Obiettivo periodo</text>
+      <div style={{ display:'grid', placeItems:'center', paddingTop:4, paddingBottom:8 }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {/* background */}
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEF2F6" strokeWidth={strokeW} />
+          {/* progress */}
+          {pct >= 100 ? (
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#98A2B3" strokeWidth={strokeW} />
+          ) : (
+            <path
+              d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`}
+              stroke="#98A2B3"
+              strokeWidth={strokeW}
+              fill="none"
+            />
+          )}
+          {/* label */}
+          <text x={cx} y={cy+4} textAnchor="middle" fontSize="16" fontWeight="bold" fill="#111827">
+            {pct.toFixed(0)}%
+          </text>
         </svg>
       </div>
     </div>
@@ -357,6 +387,7 @@ async function loadGoalsMonthlyFromGoalsTable({
 
     if (isTeam){
       const map = new Map<string, GoalsRow>()
+
       for(const g of (data||[])){
         const k = `${g.year}-${g.month}`
         const acc = map.get(k) || {
