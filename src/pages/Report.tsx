@@ -218,7 +218,7 @@ export default function ReportPage(){
           {me && (me.role === 'Team Lead' || me.role === 'Admin') && (
             <label style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12 }}>
               <input type="checkbox" checked={myTeam} onChange={e=>setMyTeam(e.target.checked)} />
-              Il Mio Team
+              Tutto il Team
             </label>
           )}
           {me && (me.role==='Admin' || me.role==='Team Lead') ? (
