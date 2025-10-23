@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react'
 import { supabase } from '@/supabaseClient'
-import * as XLSX from 'xlsx' // NEW: support for XLSX
+import * as XLSX from 'xlsx'
 
 type RawRow = Record<string, any>
 type ValidRow = {
@@ -22,13 +22,11 @@ const ipt: React.CSSProperties = { padding:'8px 10px', borderRadius:8, border:'1
 const th: React.CSSProperties  = { textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #eee', background:'#fafafa' }
 const td: React.CSSProperties  = { padding:'6px 8px', borderBottom:'1px solid #f5f5f5' }
 
-// NEW: intestazioni attese (riusate in validazione/import già esistente)
+// NEW: intestazioni attese per XLSX/CSV (coerenti con validazione)
 const EXPECTED_HEADERS = [
   'is_agency_client','email','phone','first_name','last_name',
   'company_name','city','address','source','owner_email'
 ]
-
-// NEW: utilità per normalizzare chiavi
 const normalizeKey = (k: string) => k?.toString().trim().toLowerCase()
 
 export default function ImportLeadsPage(){
@@ -52,15 +50,15 @@ export default function ImportLeadsPage(){
         const parsed = parseCSV(text)
         setRows(parsed)
       } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
-        const parsed = await parseXLSX(f) // NEW
+        const parsed = await parseXLSX(f)
         setRows(parsed)
       } else {
         setError('Formato non supportato. Usa un file .csv o .xlsx')
       }
     } catch(ex:any){ setError(ex.message || 'Errore lettura file') }
     finally{
-      // reset dell'input per permettere re-upload dello stesso file
-      if (e.target) e.target.value = ''
+      // reset input per permettere re-upload dello stesso file
+      if (e.target) (e.target as HTMLInputElement).value = ''
     }
   }
 
@@ -159,58 +157,16 @@ export default function ImportLeadsPage(){
     const a = document.createElement('a'); a.href=url; a.download='template_leads.csv'; a.click(); URL.revokeObjectURL(url)
   }
 
-  // NEW: download del template XLSX (stessa impaginazione/esempi)
+  // NEW: download template XLSX con stesso schema ed esempi
   function downloadXLSX(){
-    const XLSX_HEADERS = EXPECTED_HEADERS
-    const XLSX_SAMPLE_ROWS = [
-      {
-        is_agency_client: true,
-        email: 'mario.rossi@example.com',
-        phone: null,
-        first_name: 'Mario',
-        last_name: 'Rossi',
-        company_name: null,
-        city: 'Milano',
-        address: 'Via A 1',
-        source: 'Provided',
-        owner_email: 'teamlead@advisoryplus.it',
-      },
-      {
-        is_agency_client: false,
-        email: null,
-        phone: '3331234567',
-        first_name: 'Giulia',
-        last_name: 'Bianchi',
-        company_name: null,
-        city: null,
-        address: 'Self',
-        source: 'junior1@advisoryplus.it',
-        owner_email: null,
-      },
-      {
-        is_agency_client: true,
-        email: 'azienda@example.com',
-        phone: null,
-        first_name: null,
-        last_name: null,
-        company_name: 'Azienda Srl',
-        city: 'Roma',
-        address: 'Via B 2',
-        source: 'Provided',
-        owner_email: 'junior2@advisoryplus.it',
-      },
-    ]
-    const ws = XLSX.utils.json_to_sheet(XLSX_SAMPLE_ROWS, { header: XLSX_HEADERS })
-    // opzionale: larghezza colonne
-    ws['!cols'] = XLSX_HEADERS.map(() => ({ wch: 18 }))
+    const rows = sampleRowsForXLSX()
+    const ws = XLSX.utils.json_to_sheet(rows, { header: EXPECTED_HEADERS })
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'template_leads')
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = 'template_leads.xlsx'; a.click()
-    URL.revokeObjectURL(url)
+    const a = document.createElement('a'); a.href=url; a.download='template_leads.xlsx'; a.click(); URL.revokeObjectURL(url)
   }
 
   return (
@@ -219,11 +175,9 @@ export default function ImportLeadsPage(){
 
       <div style={{ ...box }}>
         <div style={{ display:'grid', gap:10 }}>
-          {/* NEW: accetta anche xls/xlsx */}
           <input ref={fileRef} type="file" accept=".csv,.xls,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={handleFile} />
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={downloadCSV} style={{ ...ipt, cursor:'pointer' }}>Scarica template CSV</button>
-            {/* NEW: template XLSX */}
             <button onClick={downloadXLSX} style={{ ...ipt, cursor:'pointer' }}>Scarica template XLSX</button>
           </div>
           <div style={{ fontSize:12, color:'#666' }}>
@@ -316,38 +270,72 @@ function sampleCSV(){
     'true,mario.rossi@example.com,,Mario,Rossi,,Milano,Via A 1,Provided,teamlead@advisoryplus.it',
     'false,,3331234567,Giulia,Bianchi,,,Self,junior1@advisoryplus.it',
     'true,azienda@example.com,,,,Azienda Srl,Roma,Via B 2,Provided,junior2@advisoryplus.it'
-  ].join('\\n')
+  ].join('\n')
 }
 
-// NEW: parser XLSX che restituisce lo stesso schema del CSV
-async function parseXLSX(file: File): Promise<any[]> {
+// NEW: sample rows for XLSX generation
+function sampleRowsForXLSX(){
+  return [
+    {
+      is_agency_client: true,
+      email: 'mario.rossi@example.com',
+      phone: null,
+      first_name: 'Mario',
+      last_name: 'Rossi',
+      company_name: null,
+      city: 'Milano',
+      address: 'Via A 1',
+      source: 'Provided',
+      owner_email: 'teamlead@advisoryplus.it',
+    },
+    {
+      is_agency_client: false,
+      email: null,
+      phone: '3331234567',
+      first_name: 'Giulia',
+      last_name: 'Bianchi',
+      company_name: null,
+      city: null,
+      address: 'Self',
+      source: 'junior1@advisoryplus.it',
+      owner_email: null,
+    },
+    {
+      is_agency_client: true,
+      email: 'azienda@example.com',
+      phone: null,
+      first_name: null,
+      last_name: null,
+      company_name: 'Azienda Srl',
+      city: 'Roma',
+      address: 'Via B 2',
+      source: 'Provided',
+      owner_email: 'junior2@advisoryplus.it',
+    },
+  ]
+}
+
+// NEW: parse XLSX keeping the same schema as CSV
+async function parseXLSX(file: File): Promise<RawRow[]> {
   const buf = await file.arrayBuffer()
   const wb = XLSX.read(buf, { type: 'array' })
-
-  // scegli \"template_leads\" se presente, altrimenti primo foglio
-  const sheetName = wb.SheetNames.includes('template_leads')
-    ? 'template_leads'
-    : wb.SheetNames[0]
+  const sheetName = wb.SheetNames.includes('template_leads') ? 'template_leads' : wb.SheetNames[0]
   const ws = wb.Sheets[sheetName]
   if (!ws) throw new Error('Nessun foglio valido trovato nel file.')
 
   const raw: any[] = XLSX.utils.sheet_to_json(ws, { defval: null })
+
   if (!raw.length) return []
 
   const normalized = raw.map((row) => {
     const out: Record<string, any> = {}
-    // inizializza tutte le colonne attese a null
     for (const h of EXPECTED_HEADERS) out[h] = null
-
-    // copia valori facendo match case-insensitive delle chiavi
     for (const [k, v] of Object.entries(row)) {
       const nk = normalizeKey(k)
       const match = EXPECTED_HEADERS.find(h => h === nk)
       if (match) out[match] = v
     }
-
-    // coercioni
-    if (out.is_agency_client !== null) {
+    if (out.is_agency_client !== null && out.is_agency_client !== undefined) {
       const iv = String(out.is_agency_client).trim().toLowerCase()
       out.is_agency_client = (iv === 'true' || iv === '1' || iv === 'yes' || iv === 'si' || iv === 'sì')
     }
@@ -360,7 +348,7 @@ async function parseXLSX(file: File): Promise<any[]> {
     return out
   })
 
-  // verifica che le intestazioni attese siano rappresentate
+  // check headers presence
   const missing = EXPECTED_HEADERS.filter(h => !(h in (normalized[0] || {})))
   if (missing.length) {
     throw new Error(
@@ -368,6 +356,5 @@ async function parseXLSX(file: File): Promise<any[]> {
       `Intestazioni attese: ${EXPECTED_HEADERS.join(', ')}`
     )
   }
-
   return normalized
 }
