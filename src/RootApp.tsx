@@ -17,12 +17,14 @@ const GUIDEUP_LOGO = '/guideup-logo.png';
 const APLUS_LOGO   = '/advisoryplus-logo.svg';
 
 type Screen = 'dashboard'|'leads'|'import'|'goals'|'report'|'calendar'|'admin'|'login'
-type Me = { id:string; user_id:string; email:string; full_name?:string|null; role:'Admin'|'Team Lead'|'Junior' }
+type Role = 'Admin'|'Team Lead'|'Junior'
+type Me = { id:string; user_id:string; email:string; full_name?:string|null; role:Role }
 
 export default function RootApp(){
   const [screen, setScreen] = useState<Screen>('dashboard')
   const [me, setMe] = useState<Me|null>(null)
   const [loading, setLoading] = useState(true)
+  const [sessionReady, setSessionReady] = useState(false)
 
   useEffect(()=>{ document.title = 'GuideUp' },[])
 
@@ -31,13 +33,10 @@ export default function RootApp(){
     let unsub: { unsubscribe: () => void } | null = null
     const onFocus = async () => {
       try{
-        // Quando la scheda torna in focus prova a ristabilire la sessione senza disturbare la UI
         const { data: s } = await supabase.auth.getSession()
         if (!s?.session) {
           const { data: r } = await supabase.auth.refreshSession()
-          if (r?.session) {
-            await loadMe(r.session.user.id, { silent: true })
-          }
+          if (r?.session) await loadMe(r.session.user.id, { silent: true, autoprov: true })
         }
       } catch {}
     }
@@ -45,54 +44,28 @@ export default function RootApp(){
     ;(async () => {
       const { data: s } = await supabase.auth.getSession()
       if (s?.session) {
-        await loadMe(s.session.user.id) // iniziale: mostra loading
+        await loadMe(s.session.user.id, { autoprov: true })
+        setSessionReady(true)
       } else {
-        // tentativo di refresh anche senza affidarsi a localStorage
         try {
-          // 1) se c'è storageKey locale prova un refresh "soft"
-          const storageKey = (supabase as any)?.auth?.storageKey || 'advplus-auth'
-          const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
-          if (raw) {
-            await supabase.auth.refreshSession()
-            const { data: s2 } = await supabase.auth.getSession()
-            if (s2?.session) {
-              await loadMe(s2.session.user.id)
-            } else {
-              // 2) ultimo tentativo: scambia eventuali token residui nell'URL
-              try { await supabase.auth.exchangeCodeForSession(window.location.href) } catch {}
-              const { data: s3 } = await supabase.auth.getSession()
-              if (s3?.session) await loadMe(s3.session.user.id)
-              else setLoading(false)
-            }
-          } else {
-            // Nessuna traccia locale: prova comunque refresh + exchange
-            const { data: r } = await supabase.auth.refreshSession()
-            if (r?.session) await loadMe(r.session.user.id)
-            else {
-              try { await supabase.auth.exchangeCodeForSession(window.location.href) } catch {}
-              const { data: s4 } = await supabase.auth.getSession()
-              if (s4?.session) await loadMe(s4.session.user.id)
-              else setLoading(false)
-            }
-          }
+          const { data: r } = await supabase.auth.refreshSession()
+          if (r?.session) await loadMe(r.session.user.id, { autoprov: true })
+          setSessionReady(true)
         } catch {
+          setSessionReady(true)
+        } finally {
           setLoading(false)
         }
       }
 
       // ⬇️ Patch: non rimettiamo loading durante i refresh del token
       const sub = supabase.auth.onAuthStateChange(async (evt, session) => {
-        if (!session) { setMe(null); setLoading(false); return }
-
-        // refresh periodico del token: non toccare la UI
+        if (!session) { setMe(null); setSessionReady(true); setLoading(false); return }
         if (evt === 'TOKEN_REFRESHED') return
-
-        // altri eventi rilevanti (login, update profilo): ricarica anagrafica
-        await loadMe(session.user.id, { silent: false })
+        await loadMe(session.user.id, { silent: false, autoprov: true })
       })
       unsub = sub.data.subscription
 
-      // ascolta focus della finestra per rinfrescare la sessione in background
       if (typeof window !== 'undefined') {
         window.addEventListener('focus', onFocus)
       }
@@ -106,9 +79,10 @@ export default function RootApp(){
     }
   }, [])
 
-  // ⬇️ Patch: possibilità di caricare in modo “silenzioso” (senza mostrare Caricamento…)
-  async function loadMe(uid: string, opts?: { silent?: boolean }){
+  // Carica o crea il profilo advisor per l'utente autenticato
+  async function loadMe(uid: string, opts?: { silent?: boolean; autoprov?: boolean }){
     const silent = !!opts?.silent
+    const autoprov = !!opts?.autoprov
     if (!silent) setLoading(true)
     try{
       // 1) prova per user_id
@@ -134,6 +108,13 @@ export default function RootApp(){
             await supabase.from('advisors').update({ user_id: uid }).eq('id', data.id)
             data.user_id = uid
           }
+
+          // 3) auto-provision: se ancora nessun record e concesso da RLS, crealo (Junior)
+          if (!data && autoprov){
+            const payload = { user_id: uid, email, full_name: null, role: 'Junior' as Role }
+            const ins = await supabase.from('advisors').insert(payload).select('id,user_id,email,full_name,role').maybeSingle()
+            if (!ins.error) data = ins.data as any
+          }
         }
       }
 
@@ -146,14 +127,10 @@ export default function RootApp(){
 
   // ====== RENDER ======
   const wantsReset = typeof window !== 'undefined' && window.location.pathname === '/reset'
-  if (wantsReset) {
-    return <ResetPasswordPage />
-  }
+  if (wantsReset) return <ResetPasswordPage />
 
-  // Gate d'accesso: se non autenticato mostriamo Login (con loghi)
-  if (!loading && !me) {
-    return <LoginPage />
-  }
+  // Gate d'accesso: mostra Login solo quando la sessione è davvero "ready"
+  if (sessionReady && !loading && !me) return <LoginPage />
 
   const NAV_BLUE = '#0029ae'
   const NAV_BORDER = '#e5e7eb'
