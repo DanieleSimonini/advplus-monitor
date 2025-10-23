@@ -56,6 +56,9 @@ export default function CalendarPage(){
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
+  // filtro consulente (raggruppato per ruolo)
+  const [selectedAdvisor, setSelectedAdvisor] = useState<string>('')
+
   // modal editor
   const emptyDraft: { id:string; lead_id:string; ts:string; mode:Mode; notes:string } = { id:'', lead_id:'', ts:'', mode:'inperson', notes:'' }
   const [editingId, setEditingId] = useState<string|null>(null)
@@ -183,15 +186,19 @@ export default function CalendarPage(){
     setAppts(a=> a.filter(x=>x.id!==id))
   }
 
-  // raggruppo appuntamenti per giorno
+  // raggruppo appuntamenti per giorno (applico qui il filtro consulente)
   const apptsByDay = useMemo(()=>{
+    const filtered = selectedAdvisor
+      ? appts.filter(a => a.lead?.owner_id === selectedAdvisor)
+      : appts
+
     const map = new Map<string, Appointment[]>()
-    for (const a of appts){
+    for (const a of filtered){
       const d = new Date(a.ts); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
       const arr = map.get(k) || []; arr.push(a); map.set(k, arr)
     }
     return map
-  }, [appts])
+  }, [appts, selectedAdvisor])
 
   return (
     <div style={{ display:'grid', gap:16 }}>
@@ -205,6 +212,7 @@ export default function CalendarPage(){
             {(me?.role==='Admin') && <option value="all">Tutti</option>}
           </select>
         </div>
+
         <div>
           <div style={label}>Mese</div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
@@ -213,9 +221,42 @@ export default function CalendarPage(){
             <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
           </div>
         </div>
+
         <div>
           <div style={label}>Nuovo</div>
           <button className="brand-btn" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
+        </div>
+
+        {/* Filtro consulente con gruppi Team Lead / Junior */}
+        <div>
+          <div style={label}>Consulente</div>
+          <select
+            style={ipt}
+            value={selectedAdvisor}
+            onChange={e => setSelectedAdvisor(e.target.value)}
+          >
+            <option value="">— Scegli —</option>
+
+            <optgroup label="Team Lead">
+              {advisors
+                .filter(a => a.role === 'Team Lead')
+                .map(a => (
+                  <option key={a.user_id} value={a.user_id}>
+                    {a.full_name || a.email}
+                  </option>
+                ))}
+            </optgroup>
+
+            <optgroup label="Junior">
+              {advisors
+                .filter(a => a.role === 'Junior')
+                .map(a => (
+                  <option key={a.user_id} value={a.user_id}>
+                    {a.full_name || a.email}
+                  </option>
+                ))}
+            </optgroup>
+          </select>
         </div>
       </div>
 
