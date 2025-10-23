@@ -3,7 +3,8 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * Calendar.tsx — Agenda mensile/settimana con CRUD appuntamenti
- * Fix TS: tipizza correttamente `mode` come union 'inperson'|'phone'|'video'
+ * Aggiunta: filtri client-side (Consulente, Modalità, Ricerca) identici alla Dashboard,
+ * senza toccare le query/CRUD.
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -39,6 +40,9 @@ const box: React.CSSProperties = { background:'var(--card, #fff)', border:'1px s
 const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid var(--border,#ddd)', borderRadius:8, background:'#fff' }
 const label: React.CSSProperties = { fontSize:12, color:'var(--muted,#666)' }
 
+// ---------- NUOVO: tipi/stato dei filtri ----------
+type Filters = { mode: Mode|'all'; advisor: string|'all'; q: string }
+
 export default function CalendarPage(){
   // me & advisors
   const [me, setMe] = useState<Advisor|null>(null)
@@ -60,6 +64,9 @@ export default function CalendarPage(){
   const emptyDraft: { id:string; lead_id:string; ts:string; mode:Mode; notes:string } = { id:'', lead_id:'', ts:'', mode:'inperson', notes:'' }
   const [editingId, setEditingId] = useState<string|null>(null)
   const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
+
+  // ---------- NUOVO: stato filtri ----------
+  const [filters, setFilters] = useState<Filters>({ mode: 'all', advisor: 'all', q: '' })
 
   // bootstrap
   useEffect(()=>{ (async()=>{
@@ -176,22 +183,38 @@ export default function CalendarPage(){
     setAppts((rows||[]).map(r=> ({ ...r, lead: leadMap.get(r.lead_id) })) as Appointment[])
   }
   async function deleteAppt(id: string){
-    const ok = confirm('Eliminare l\'appuntamento?')
+    const ok = confirm('Eliminare l\\'appuntamento?')
     if (!ok) return
     const { error } = await supabase.from('appointments').delete().eq('id', id)
     if (error) return alert(error.message)
     setAppts(a=> a.filter(x=>x.id!==id))
   }
 
-  // raggruppo appuntamenti per giorno
+  // ---------- NUOVO: applicazione filtri lato client ----------
+  const visibleAppts = useMemo(()=>{
+    const q = filters.q.trim().toLowerCase()
+    return appts.filter(a => {
+      if (filters.mode !== 'all' && a.mode !== filters.mode) return false
+      if (filters.advisor !== 'all') {
+        if (a.lead?.owner_id !== filters.advisor) return false
+      }
+      if (q) {
+        const name = labelLead(a.lead).toLowerCase()
+        if (!name.includes(q)) return false
+      }
+      return true
+    })
+  }, [appts, filters])
+
+  // raggruppo appuntamenti per giorno (sui visibili)
   const apptsByDay = useMemo(()=>{
     const map = new Map<string, Appointment[]>()
-    for (const a of appts){
+    for (const a of visibleAppts){
       const d = new Date(a.ts); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
       const arr = map.get(k) || []; arr.push(a); map.set(k, arr)
     }
     return map
-  }, [appts])
+  }, [visibleAppts])
 
   return (
     <div style={{ display:'grid', gap:16 }}>
@@ -200,27 +223,78 @@ export default function CalendarPage(){
         <div>
           <div style={label}>Ambito</div>
           <select value={scope} onChange={e=>setScope(e.target.value as any)} style={ipt}>
-            <option value="me">Solo me</option>
-            {(me?.role!=='Junior') && <option value="team">Il mio Team</option>}
-            {(me?.role==='Admin') && <option value="all">Tutti</option>}
+            <option value=\"me\">Solo me</option>
+            {(me?.role!=='Junior') && <option value=\"team\">Il mio Team</option>}
+            {(me?.role==='Admin') && <option value=\"all\">Tutti</option>}
           </select>
         </div>
         <div>
           <div style={label}>Mese</div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),-1)) })}>{'‹'}</button>
-            <input type="month" value={month} onChange={e=>setMonth(e.target.value)} style={ipt} />
-            <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
+            <button className=\"brand-btn\" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),-1)) })}>{'‹'}</button>
+            <input type=\"month\" value={month} onChange={e=>setMonth(e.target.value)} style={ipt} />
+            <button className=\"brand-btn\" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
           </div>
         </div>
         <div>
           <div style={label}>Nuovo</div>
-          <button className="brand-btn" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
+          <button className=\"brand-btn\" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
+        </div>
+
+        {/* ---------- NUOVO: blocco filtri ---------- */}
+        <div>
+          <div style={label}>Consulente</div>
+          <select
+            value={filters.advisor}
+            onChange={e=>setFilters(f=>({ ...f, advisor: e.target.value }))}
+            style={ipt}
+          >
+            <option value=\"all\">Tutti</option>
+            {advisors
+              .filter(a => ownerIds.includes(a.user_id))
+              .map(a => (
+                <option key={a.user_id} value={a.user_id}>
+                  {a.full_name || a.email}
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div>
+          <div style={label}>Modalità</div>
+          <select
+            value={filters.mode}
+            onChange={e=>{
+              const v = e.target.value as Mode|'all'
+              setFilters(f=>({ ...f, mode: (v==='inperson'||v==='phone'||v==='video'||v==='all') ? v : 'all' }))
+            }}
+            style={ipt}
+          >
+            <option value=\"all\">Tutte</option>
+            {MODE_OPTIONS.map(o => <option key={o.db} value={o.db}>{o.label}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <div style={label}>Cerca lead</div>
+          <input
+            placeholder=\"Nome o azienda…\"
+            value={filters.q}
+            onChange={e=>setFilters(f=>({ ...f, q: e.target.value }))}
+            style={ipt}
+          />
+        </div>
+
+        <div>
+          <div style={label}>&nbsp;</div>
+          <button className=\"brand-btn\" onClick={()=>setFilters({ mode:'all', advisor:'all', q:'' })}>
+            Pulisci filtri
+          </button>
         </div>
       </div>
 
       {/* Vista mensile */}
-      <div className="brand-card" style={{ ...box }}>
+      <div className=\"brand-card\" style={{ ...box }}>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8, fontSize:12, color:'var(--muted,#666)', marginBottom:8 }}>
           {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'].map(d=> <div key={d} style={{ textAlign:'center' }}>{d}</div>)}
         </div>
@@ -233,7 +307,7 @@ export default function CalendarPage(){
               <div key={idx} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:8, background: cell.inMonth? '#fff' : '#fafafa' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                   <div style={{ fontSize:12, fontWeight:600, color:isToday? '#0b57d0':'#111' }}>{cell.date.getDate()}</div>
-                  <button title="Nuovo appuntamento" onClick={()=>openCreate(cell.date)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
+                  <button title=\"Nuovo appuntamento\" onClick={()=>openCreate(cell.date)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
                 </div>
                 <div style={{ display:'grid', gap:6 }}>
                   {items.map(a=> (
@@ -241,8 +315,8 @@ export default function CalendarPage(){
                       <div style={{ fontSize:12, fontWeight:600 }}>{new Date(a.ts).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})} · {MODE_OPTIONS.find(m=>m.db===a.mode)?.label}</div>
                       <div style={{ fontSize:12, color:'#374151' }}>{labelLead(a.lead)}</div>
                       <div style={{ display:'flex', gap:6, marginTop:6 }}>
-                        <button title="Modifica" onClick={()=>openEdit(a)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                        <button title="Elimina" onClick={()=>deleteAppt(a.id)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                        <button title=\"Modifica\" onClick={()=>openEdit(a)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                        <button title=\"Elimina\" onClick={()=>deleteAppt(a.id)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                       </div>
                     </div>
                   ))}
@@ -262,13 +336,13 @@ export default function CalendarPage(){
               <div>
                 <div style={label}>Lead</div>
                 <select value={draft.lead_id} onChange={e=>setDraft(d=>({ ...d, lead_id:e.target.value }))} style={ipt}>
-                  <option value="">— Seleziona —</option>
+                  <option value=\"\">— Seleziona —</option>
                   {leads.map(l=> <option key={l.id} value={l.id}>{labelLead(l)}</option>)}
                 </select>
               </div>
               <div>
                 <div style={label}>Data/Ora</div>
-                <input type="datetime-local" value={draft.ts} onChange={e=>setDraft(d=>({ ...d, ts:e.target.value }))} style={ipt} />
+                <input type=\"datetime-local\" value={draft.ts} onChange={e=>setDraft(d=>({ ...d, ts:e.target.value }))} style={ipt} />
               </div>
               <div>
                 <div style={label}>Modalità</div>
@@ -281,8 +355,8 @@ export default function CalendarPage(){
                 <input value={draft.notes||''} onChange={e=>setDraft(d=>({ ...d, notes:e.target.value }))} style={ipt} />
               </div>
               <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-                <button className="brand-btn" onClick={closeEditor}>Annulla</button>
-                <button className="brand-btn" onClick={saveDraft}>Salva</button>
+                <button className=\"brand-btn\" onClick={closeEditor}>Annulla</button>
+                <button className=\"brand-btn\" onClick={saveDraft}>Salva</button>
               </div>
             </div>
           </div>
