@@ -29,23 +29,51 @@ export default function RootApp(){
   // Bootstrap auth (persistenza sessione + onAuthStateChange)
   useEffect(() => {
     let unsub: { unsubscribe: () => void } | null = null
+    const onFocus = async () => {
+      try{
+        // Quando la scheda torna in focus prova a ristabilire la sessione senza disturbare la UI
+        const { data: s } = await supabase.auth.getSession()
+        if (!s?.session) {
+          const { data: r } = await supabase.auth.refreshSession()
+          if (r?.session) {
+            await loadMe(r.session.user.id, { silent: true })
+          }
+        }
+      } catch {}
+    }
 
     ;(async () => {
       const { data: s } = await supabase.auth.getSession()
       if (s?.session) {
         await loadMe(s.session.user.id) // iniziale: mostra loading
       } else {
-        // tentativo di refresh se c'è traccia nel localStorage
+        // tentativo di refresh anche senza affidarsi a localStorage
         try {
+          // 1) se c'è storageKey locale prova un refresh "soft"
           const storageKey = (supabase as any)?.auth?.storageKey || 'advplus-auth'
           const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
           if (raw) {
             await supabase.auth.refreshSession()
             const { data: s2 } = await supabase.auth.getSession()
-            if (s2?.session) await loadMe(s2.session.user.id)
-            else setLoading(false)
+            if (s2?.session) {
+              await loadMe(s2.session.user.id)
+            } else {
+              // 2) ultimo tentativo: scambia eventuali token residui nell'URL
+              try { await supabase.auth.exchangeCodeForSession(window.location.href) } catch {}
+              const { data: s3 } = await supabase.auth.getSession()
+              if (s3?.session) await loadMe(s3.session.user.id)
+              else setLoading(false)
+            }
           } else {
-            setLoading(false)
+            // Nessuna traccia locale: prova comunque refresh + exchange
+            const { data: r } = await supabase.auth.refreshSession()
+            if (r?.session) await loadMe(r.session.user.id)
+            else {
+              try { await supabase.auth.exchangeCodeForSession(window.location.href) } catch {}
+              const { data: s4 } = await supabase.auth.getSession()
+              if (s4?.session) await loadMe(s4.session.user.id)
+              else setLoading(false)
+            }
           }
         } catch {
           setLoading(false)
@@ -63,9 +91,19 @@ export default function RootApp(){
         await loadMe(session.user.id, { silent: false })
       })
       unsub = sub.data.subscription
+
+      // ascolta focus della finestra per rinfrescare la sessione in background
+      if (typeof window !== 'undefined') {
+        window.addEventListener('focus', onFocus)
+      }
     })()
 
-    return () => { if (unsub) unsub.unsubscribe() }
+    return () => { 
+      if (unsub) unsub.unsubscribe()
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onFocus)
+      }
+    }
   }, [])
 
   // ⬇️ Patch: possibilità di caricare in modo “silenzioso” (senza mostrare Caricamento…)
