@@ -3,7 +3,7 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * Dashboard.tsx — Funnel + "Lead non contattati" (UX migliorata)
- * - Filtri Advisor (Me/Team/All) e Periodo (mese da / a)
+ * - Filtri Advisor (Solo me / Tutti / Team Lead / Junior) e Periodo (mese da / a)
  * - KPI + grafico ad imbuto vero (trapezi SVG con % di conversione)
  * - Riquadro evidenziato "Lead non contattati" (scope-aware)
  */
@@ -14,14 +14,14 @@ type Advisor = { id?: string; user_id: string; full_name: string|null; email: st
 
 type Period = { fromMonthKey: string; toMonthKey: string }
 
-type Kpi
-
+// ✅ Nuovo tipo filtro owner
 type OwnerFilter =
-  | { type: 'none' }                        // nessuna scelta nel select (placeholder)
   | { type: 'me' }
   | { type: 'all' }
-  | { type: 'user'; userId: string }        // Junior singolo
-  | { type: 'teamlead'; userId: string }    // Team Lead (TL + junior del TL) = {
+  | { type: 'user', userId: string }      // Junior singolo
+  | { type: 'teamlead', userId: string }  // Team Lead (TL + junior del TL)
+
+type Kpi = {
   contacts: number
   appointments: number
   proposals: number
@@ -57,24 +57,18 @@ function periodToRange(p: Period){
   return { start: a.start, end: b.end }
 }
 
-function ownersToQuery(sel: OwnerFilter, me: Advisor|null, advisors: Advisor[]): string[] {
+// 🔁 Filtro owners aggiornato alle nuove opzioni
+function ownersToQuery(sel: OwnerFilter, me: Advisor|null, advisors: Advisor[]): string[]{
   if (!me) return []
 
-  if (me.role === 'Junior') return [me.user_id]
-
-  if (sel.type === 'me')  return [me.user_id]
+  if (sel.type === 'me') return [me.user_id]
   if (sel.type === 'all') return advisors.map(a => a.user_id)
   if (sel.type === 'user') return [sel.userId]
   if (sel.type === 'teamlead') {
-    const team = advisors.filter(a =>
-      a.user_id === sel.userId || a.team_lead_user_id === sel.userId
-    )
+    const team = advisors.filter(a => a.user_id === sel.userId || a.team_lead_user_id === sel.userId)
     return team.map(a => a.user_id)
   }
   return []
-}
-  // all
-  return advisors.map(a=>a.user_id)
 }
 
 async function fetchLeadIds(ownerIds: string[]): Promise<string[]>{
@@ -258,25 +252,9 @@ function Funnel({ steps }:{ steps: { label:string; value:number }[] }) {
 export default function DashboardPage(){
   const [me, setMe] = useState<Advisor|null>(null)
   const [advisors, setAdvisors] = useState<Advisor[]>([])
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>({ type: 'me' })
 
-// liste per il select
-const teamLeads = useMemo(() => advisors.filter(a => a.role === 'Team Lead'), [advisors])
-const juniors   = useMemo(() => advisors.filter(a => a.role === 'Junior'), [advisors])
-
-// parser value <select>
-function parseOwnerValue(v: string): OwnerFilter {
-  if (v === '') return { type: 'none' }
-  if (v.startsWith('tl:')) return { type: 'teamlead', userId: v.slice(3) }
-  if (v.startsWith('u:'))  return { type: 'user',     userId: v.slice(2) }
-  return { type: 'none' }
-}
-
-// value controllato del <select>
-const selectValue =
-  ownerFilter.type === 'teamlead' ? `tl:${ownerFilter.userId}` :
-  ownerFilter.type === 'user'     ? `u:${ownerFilter.userId}`  :
-  ''
+  // 🔁 nuovo stato filtro
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>({ type:'me' })
   const [period, setPeriod] = useState<Period>(defaultPeriod())
 
   const [loading, setLoading] = useState(true)
@@ -303,7 +281,31 @@ const selectValue =
     } finally { setLoading(false) }
   })() },[])
 
-  const owners = useMemo(()=> ownersToQuery(ownerFilter, me, advisors), [ownerFilter, me, advisors])
+  // 🔁 helper: parsing e valore stringa della select
+  function parseOwnerValue(v: string): OwnerFilter {
+    if (v === 'me') return { type:'me' }
+    if (v === 'all') return { type:'all' }
+    if (v.startsWith('tl:')) return { type:'teamlead', userId: v.slice(3) }
+    if (v.startsWith('u:')) return { type:'user', userId: v.slice(2) }
+    return { type:'me' }
+  }
+
+  const ownerValue = useMemo(() => {
+    if (ownerFilter.type==='me') return 'me'
+    if (ownerFilter.type==='all') return 'all'
+    if (ownerFilter.type==='teamlead') return `tl:${ownerFilter.userId}`
+    if (ownerFilter.type==='user') return `u:${ownerFilter.userId}`
+    return 'me'
+  }, [ownerFilter])
+
+  const teamLeads = useMemo(() => advisors.filter(a => a.role === 'Team Lead'), [advisors])
+  const juniors   = useMemo(() => advisors.filter(a => a.role === 'Junior'), [advisors])
+
+  const owners = useMemo(
+    () => ownersToQuery(ownerFilter, me, advisors),
+    // dipendo da ownerValue per semplicità (è derivato da ownerFilter e cambia insieme)
+    [ownerValue, me, advisors]
+  )
   const { start, end } = useMemo(()=> periodToRange(period), [period])
 
   // ricarica KPI + funnel + notContacted quando cambiano filtri
@@ -343,55 +345,36 @@ const selectValue =
       {/* Filtri */}
       <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
         <div>
-  <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Advisor</div>
+          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Advisor</div>
+          <select
+            value={ownerValue}
+            onChange={e=>setOwnerFilter(parseOwnerValue(e.target.value))}
+            style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }}
+          >
+            <option value="me">Solo me</option>
+            {(me?.role==='Admin') && <option value="all">Tutti</option>}
 
-  {/* Chip rapidi per Solo me / Tutti */}
-  <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8 }}>
-    <button
-      type="button"
-      onClick={() => setOwnerFilter({ type: 'me' })}
-      aria-pressed={ownerFilter.type === 'me'}
-      style={{ padding:'4px 10px', border:'1px solid #ddd', borderRadius:16, background:'#fff' }}
-    >
-      Solo me
-    </button>
-    {me?.role === 'Admin' && (
-      <button
-        type="button"
-        onClick={() => setOwnerFilter({ type: 'all' })}
-        aria-pressed={ownerFilter.type === 'all'}
-        style={{ padding:'4px 10px', border:'1px solid #ddd', borderRadius:16, background:'#fff' }}
-      >
-        Tutti
-      </button>
-    )}
-  </div>
+            {(me?.role==='Admin') && teamLeads.length > 0 && (
+              <optgroup label="Team Lead">
+                {teamLeads.map(tl => (
+                  <option key={tl.user_id} value={`tl:${tl.user_id}`}>
+                    {tl.full_name || tl.email}
+                  </option>
+                ))}
+              </optgroup>
+            )}
 
-  {/* Select con placeholder e gruppi (come screenshot) */}
-  <select
-    value={selectValue}
-    onChange={e => setOwnerFilter(parseOwnerValue(e.target.value))}
-    style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8, minWidth:280 }}
-  >
-    <option value="" disabled>— Scegli —</option>
-
-    <optgroup label="Team Lead">
-      {teamLeads.map(tl => (
-        <option key={tl.user_id} value={`tl:${tl.user_id}`}>
-          {tl.full_name || tl.email}
-        </option>
-      ))}
-    </optgroup>
-
-    <optgroup label="Junior">
-      {juniors.map(j => (
-        <option key={j.user_id} value={`u:${j.user_id}`}>
-          {j.full_name || j.email}
-        </option>
-      ))}
-    </optgroup>
-  </select>
-</div>
+            {(me?.role==='Admin') && juniors.length > 0 && (
+              <optgroup label="Junior">
+                {juniors.map(j => (
+                  <option key={j.user_id} value={`u:${j.user_id}`}>
+                    {j.full_name || j.email}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
         <div>
           <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Dal mese</div>
           <input type="month" value={period.fromMonthKey} onChange={e=>setPeriod(p=>({ ...p, fromMonthKey:e.target.value }))} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }} />
