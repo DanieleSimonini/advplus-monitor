@@ -14,7 +14,14 @@ type Advisor = { id?: string; user_id: string; full_name: string|null; email: st
 
 type Period = { fromMonthKey: string; toMonthKey: string }
 
-type Kpi = {
+type Kpi
+
+type OwnerFilter =
+  | { type: 'none' }                        // nessuna scelta nel select (placeholder)
+  | { type: 'me' }
+  | { type: 'all' }
+  | { type: 'user'; userId: string }        // Junior singolo
+  | { type: 'teamlead'; userId: string }    // Team Lead (TL + junior del TL) = {
   contacts: number
   appointments: number
   proposals: number
@@ -50,14 +57,22 @@ function periodToRange(p: Period){
   return { start: a.start, end: b.end }
 }
 
-function ownersToQuery(scope: 'me'|'team'|'all', me: Advisor|null, advisors: Advisor[]): string[]{
+function ownersToQuery(sel: OwnerFilter, me: Advisor|null, advisors: Advisor[]): string[] {
   if (!me) return []
-  if (me.role==='Junior') return [me.user_id]
-  if (scope==='me') return [me.user_id]
-  if (scope==='team'){
-    const team = advisors.filter(a=> a.team_lead_user_id===me.user_id || a.user_id===me.user_id)
-    return team.map(a=>a.user_id)
+
+  if (me.role === 'Junior') return [me.user_id]
+
+  if (sel.type === 'me')  return [me.user_id]
+  if (sel.type === 'all') return advisors.map(a => a.user_id)
+  if (sel.type === 'user') return [sel.userId]
+  if (sel.type === 'teamlead') {
+    const team = advisors.filter(a =>
+      a.user_id === sel.userId || a.team_lead_user_id === sel.userId
+    )
+    return team.map(a => a.user_id)
   }
+  return []
+}
   // all
   return advisors.map(a=>a.user_id)
 }
@@ -243,7 +258,25 @@ function Funnel({ steps }:{ steps: { label:string; value:number }[] }) {
 export default function DashboardPage(){
   const [me, setMe] = useState<Advisor|null>(null)
   const [advisors, setAdvisors] = useState<Advisor[]>([])
-  const [ownerFilter, setOwnerFilter] = useState<'me'|'team'|'all'>('me')
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>({ type: 'me' })
+
+// liste per il select
+const teamLeads = useMemo(() => advisors.filter(a => a.role === 'Team Lead'), [advisors])
+const juniors   = useMemo(() => advisors.filter(a => a.role === 'Junior'), [advisors])
+
+// parser value <select>
+function parseOwnerValue(v: string): OwnerFilter {
+  if (v === '') return { type: 'none' }
+  if (v.startsWith('tl:')) return { type: 'teamlead', userId: v.slice(3) }
+  if (v.startsWith('u:'))  return { type: 'user',     userId: v.slice(2) }
+  return { type: 'none' }
+}
+
+// value controllato del <select>
+const selectValue =
+  ownerFilter.type === 'teamlead' ? `tl:${ownerFilter.userId}` :
+  ownerFilter.type === 'user'     ? `u:${ownerFilter.userId}`  :
+  ''
   const [period, setPeriod] = useState<Period>(defaultPeriod())
 
   const [loading, setLoading] = useState(true)
@@ -310,13 +343,55 @@ export default function DashboardPage(){
       {/* Filtri */}
       <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
         <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Advisor</div>
-          <select value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value as any)} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }}>
-            <option value="me">Solo me</option>
-            {(me?.role!=='Junior') && <option value="team">Il mio Team</option>}
-            {(me?.role==='Admin') && <option value="all">Tutti</option>}
-          </select>
-        </div>
+  <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Advisor</div>
+
+  {/* Chip rapidi per Solo me / Tutti */}
+  <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8 }}>
+    <button
+      type="button"
+      onClick={() => setOwnerFilter({ type: 'me' })}
+      aria-pressed={ownerFilter.type === 'me'}
+      style={{ padding:'4px 10px', border:'1px solid #ddd', borderRadius:16, background:'#fff' }}
+    >
+      Solo me
+    </button>
+    {me?.role === 'Admin' && (
+      <button
+        type="button"
+        onClick={() => setOwnerFilter({ type: 'all' })}
+        aria-pressed={ownerFilter.type === 'all'}
+        style={{ padding:'4px 10px', border:'1px solid #ddd', borderRadius:16, background:'#fff' }}
+      >
+        Tutti
+      </button>
+    )}
+  </div>
+
+  {/* Select con placeholder e gruppi (come screenshot) */}
+  <select
+    value={selectValue}
+    onChange={e => setOwnerFilter(parseOwnerValue(e.target.value))}
+    style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8, minWidth:280 }}
+  >
+    <option value="" disabled>— Scegli —</option>
+
+    <optgroup label="Team Lead">
+      {teamLeads.map(tl => (
+        <option key={tl.user_id} value={`tl:${tl.user_id}`}>
+          {tl.full_name || tl.email}
+        </option>
+      ))}
+    </optgroup>
+
+    <optgroup label="Junior">
+      {juniors.map(j => (
+        <option key={j.user_id} value={`u:${j.user_id}`}>
+          {j.full_name || j.email}
+        </option>
+      ))}
+    </optgroup>
+  </select>
+</div>
         <div>
           <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Dal mese</div>
           <input type="month" value={period.fromMonthKey} onChange={e=>setPeriod(p=>({ ...p, fromMonthKey:e.target.value }))} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }} />
