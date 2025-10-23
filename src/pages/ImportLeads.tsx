@@ -1,6 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react'
 import { supabase } from '@/supabaseClient'
-import * as XLSX from 'xlsx'
 
 type RawRow = Record<string, any>
 type ValidRow = {
@@ -22,13 +21,6 @@ const ipt: React.CSSProperties = { padding:'8px 10px', borderRadius:8, border:'1
 const th: React.CSSProperties  = { textAlign:'left', padding:'6px 8px', borderBottom:'1px solid #eee', background:'#fafafa' }
 const td: React.CSSProperties  = { padding:'6px 8px', borderBottom:'1px solid #f5f5f5' }
 
-// NEW: intestazioni attese per XLSX/CSV (coerenti con validazione)
-const EXPECTED_HEADERS = [
-  'is_agency_client','email','phone','first_name','last_name',
-  'company_name','city','address','source','owner_email'
-]
-const normalizeKey = (k: string) => k?.toString().trim().toLowerCase()
-
 export default function ImportLeadsPage(){
   const [rows, setRows] = useState<RawRow[] | null>(null)
   const [report, setReport] = useState<Report | null>(null)
@@ -49,17 +41,10 @@ export default function ImportLeadsPage(){
         const text = await f.text()
         const parsed = parseCSV(text)
         setRows(parsed)
-      } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
-        const parsed = await parseXLSX(f)
-        setRows(parsed)
       } else {
-        setError('Formato non supportato. Usa un file .csv o .xlsx')
+        setError('Formato non supportato in questa versione. Usa un file .csv')
       }
     } catch(ex:any){ setError(ex.message || 'Errore lettura file') }
-    finally{
-      // reset input per permettere re-upload dello stesso file
-      if (e.target) (e.target as HTMLInputElement).value = ''
-    }
   }
 
   async function validate(){
@@ -157,28 +142,15 @@ export default function ImportLeadsPage(){
     const a = document.createElement('a'); a.href=url; a.download='template_leads.csv'; a.click(); URL.revokeObjectURL(url)
   }
 
-  // NEW: download template XLSX con stesso schema ed esempi
-  function downloadXLSX(){
-    const rows = sampleRowsForXLSX()
-    const ws = XLSX.utils.json_to_sheet(rows, { header: EXPECTED_HEADERS })
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'template_leads')
-    const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href=url; a.download='template_leads.xlsx'; a.click(); URL.revokeObjectURL(url)
-  }
-
   return (
     <div style={{ display:'grid', gap:16 }}>
       <div style={{ fontSize:20, fontWeight:800 }}>Importa Leads</div>
 
       <div style={{ ...box }}>
         <div style={{ display:'grid', gap:10 }}>
-          <input ref={fileRef} type="file" accept=".csv,.xls,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={handleFile} />
+          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} />
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={downloadCSV} style={{ ...ipt, cursor:'pointer' }}>Scarica template CSV</button>
-            <button onClick={downloadXLSX} style={{ ...ipt, cursor:'pointer' }}>Scarica template XLSX</button>
           </div>
           <div style={{ fontSize:12, color:'#666' }}>
             Intestazioni attese: <code>is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email</code>
@@ -245,7 +217,7 @@ function splitCsvLine(line:string, sep:string){
   const out:string[] = []; let cur=''; let inQ=false
   for(let i=0;i<line.length;i++){
     const ch=line[i]
-    if (ch === '\"'){ inQ = !inQ; continue }
+    if (ch === '"'){ inQ = !inQ; continue }
     if (ch === sep && !inQ){ out.push(cur); cur=''; continue }
     cur += ch
   }
@@ -271,90 +243,4 @@ function sampleCSV(){
     'false,,3331234567,Giulia,Bianchi,,,Self,junior1@advisoryplus.it',
     'true,azienda@example.com,,,,Azienda Srl,Roma,Via B 2,Provided,junior2@advisoryplus.it'
   ].join('\n')
-}
-
-// NEW: sample rows for XLSX generation
-function sampleRowsForXLSX(){
-  return [
-    {
-      is_agency_client: true,
-      email: 'mario.rossi@example.com',
-      phone: null,
-      first_name: 'Mario',
-      last_name: 'Rossi',
-      company_name: null,
-      city: 'Milano',
-      address: 'Via A 1',
-      source: 'Provided',
-      owner_email: 'teamlead@advisoryplus.it',
-    },
-    {
-      is_agency_client: false,
-      email: null,
-      phone: '3331234567',
-      first_name: 'Giulia',
-      last_name: 'Bianchi',
-      company_name: null,
-      city: null,
-      address: 'Self',
-      source: 'junior1@advisoryplus.it',
-      owner_email: null,
-    },
-    {
-      is_agency_client: true,
-      email: 'azienda@example.com',
-      phone: null,
-      first_name: null,
-      last_name: null,
-      company_name: 'Azienda Srl',
-      city: 'Roma',
-      address: 'Via B 2',
-      source: 'Provided',
-      owner_email: 'junior2@advisoryplus.it',
-    },
-  ]
-}
-
-// NEW: parse XLSX keeping the same schema as CSV
-async function parseXLSX(file: File): Promise<RawRow[]> {
-  const buf = await file.arrayBuffer()
-  const wb = XLSX.read(buf, { type: 'array' })
-  const sheetName = wb.SheetNames.includes('template_leads') ? 'template_leads' : wb.SheetNames[0]
-  const ws = wb.Sheets[sheetName]
-  if (!ws) throw new Error('Nessun foglio valido trovato nel file.')
-
-  const raw: any[] = XLSX.utils.sheet_to_json(ws, { defval: null })
-
-  if (!raw.length) return []
-
-  const normalized = raw.map((row) => {
-    const out: Record<string, any> = {}
-    for (const h of EXPECTED_HEADERS) out[h] = null
-    for (const [k, v] of Object.entries(row)) {
-      const nk = normalizeKey(k)
-      const match = EXPECTED_HEADERS.find(h => h === nk)
-      if (match) out[match] = v
-    }
-    if (out.is_agency_client !== null && out.is_agency_client !== undefined) {
-      const iv = String(out.is_agency_client).trim().toLowerCase()
-      out.is_agency_client = (iv === 'true' || iv === '1' || iv === 'yes' || iv === 'si' || iv === 'sì')
-    }
-    for (const k of ['email','phone','first_name','last_name','company_name','city','address','source','owner_email']) {
-      if (out[k] !== null && out[k] !== undefined) {
-        out[k] = typeof out[k] === 'number' ? String(out[k]) : String(out[k]).trim()
-        if (out[k] === '') out[k] = null
-      }
-    }
-    return out
-  })
-
-  // check headers presence
-  const missing = EXPECTED_HEADERS.filter(h => !(h in (normalized[0] || {})))
-  if (missing.length) {
-    throw new Error(
-      `Intestazioni mancanti nel foglio \"${sheetName}\": ${missing.join(', ')}. ` +
-      `Intestazioni attese: ${EXPECTED_HEADERS.join(', ')}`
-    )
-  }
-  return normalized
 }
