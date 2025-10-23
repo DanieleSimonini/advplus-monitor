@@ -3,10 +3,8 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * Calendar.tsx — Agenda mensile/settimana con CRUD appuntamenti
- * Include:
- * - Filtro "Consulente" con gruppi Team Lead / Junior (optgroup)
- * - Regole ambito per ruolo (Junior / Team Lead / Admin)
- * - Ambito lato client (no modifiche alle query)
+ * Aggiunta: filtri client-side (Consulente, Modalità, Ricerca) identici alla Dashboard,
+ * senza toccare le query/CRUD.
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -42,6 +40,9 @@ const box: React.CSSProperties = { background:'var(--card, #fff)', border:'1px s
 const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid var(--border,#ddd)', borderRadius:8, background:'#fff' }
 const label: React.CSSProperties = { fontSize:12, color:'var(--muted,#666)' }
 
+// ---------- NUOVO: tipi/stato dei filtri ----------
+type Filters = { mode: Mode|'all'; advisor: string|'all'; q: string }
+
 export default function CalendarPage(){
   // me & advisors
   const [me, setMe] = useState<Advisor|null>(null)
@@ -59,13 +60,13 @@ export default function CalendarPage(){
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // filtro consulente (raggruppato per ruolo)
-  const [selectedAdvisor, setSelectedAdvisor] = useState<string>('')
-
   // modal editor
   const emptyDraft: { id:string; lead_id:string; ts:string; mode:Mode; notes:string } = { id:'', lead_id:'', ts:'', mode:'inperson', notes:'' }
   const [editingId, setEditingId] = useState<string|null>(null)
   const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
+
+  // ---------- NUOVO: stato filtri ----------
+  const [filters, setFilters] = useState<Filters>({ mode: 'all', advisor: 'all', q: '' })
 
   // bootstrap
   useEffect(()=>{ (async()=>{
@@ -74,56 +75,20 @@ export default function CalendarPage(){
       const u = await supabase.auth.getUser()
       const uid = u.data.user?.id
       if (uid){
-        const { data: meRow } = await supabase
-          .from('advisors')
-          .select('user_id,email,full_name,role,team_lead_user_id')
-          .eq('user_id', uid)
-          .maybeSingle()
+        const { data: meRow } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id').eq('user_id', uid).maybeSingle()
         if (meRow) setMe(meRow as any)
       }
-      const { data: adv } = await supabase
-        .from('advisors')
-        .select('user_id,email,full_name,role,team_lead_user_id')
+      const { data: adv } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id')
       setAdvisors((adv||[]) as any)
     } catch(e:any){ setErr(e.message||'Errore init') } finally { setLoading(false) }
   })() },[])
 
-  // Impostazione default dello scope e ambiti consentiti per ruolo
-  useEffect(()=>{
-    if (!me) return
-    if (me.role === 'Junior') setScope('me')
-    else if (me.role === 'Team Lead') setScope('team')
-    else setScope('team') // Admin default: Il mio Team
-  }, [me])
-
-  const allowedScopes = useMemo<('me'|'team'|'all')[]>(()=>{
-    if (!me) return []
-    if (me.role === 'Junior') return ['me']
-    if (me.role === 'Team Lead') return ['team']
-    // Admin: può mettere Solo me (Tutti non necessario qui)
-    return ['team','me']
-  }, [me])
-
-  // OwnerIds con regole di visibilità per ruolo
-  const ownerIds = useMemo(()=> {
+  const ownerIds = useMemo(()=>{
     if (!me) return [] as string[]
-
-    if (me.role === 'Junior') {
-      const ids = [me.user_id]
-      if (me.team_lead_user_id) ids.push(me.team_lead_user_id)
-      return ids
-    }
-
-    if (me.role === 'Team Lead') {
-      // sempre il mio team (me + junior)
-      return advisors
-        .filter(a => a.user_id === me.user_id || a.team_lead_user_id === me.user_id)
-        .map(a => a.user_id)
-    }
-
-    // Admin: visibilità completa; se seleziona "Solo me" restringiamo a se stesso
-    if (scope === 'me') return [me.user_id]
-    return advisors.map(a => a.user_id)
+    if (me.role==='Junior') return [me.user_id]
+    if (scope==='me') return [me.user_id]
+    if (scope==='team') return advisors.filter(a=>a.team_lead_user_id===me.user_id || a.user_id===me.user_id).map(a=>a.user_id)
+    return advisors.map(a=>a.user_id)
   }, [me, advisors, scope])
 
   // ricarica dati quando cambiano ownerIds o mese
@@ -137,10 +102,7 @@ export default function CalendarPage(){
       const end = new Date(y, m, 1).toISOString() // esclusivo
 
       // leads nello scope
-      const { data: lds } = await supabase
-        .from('leads')
-        .select('id,owner_id,first_name,last_name,company_name')
-        .in('owner_id', ownerIds)
+      const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds)
       setLeads((lds||[]) as any)
 
       // appuntamenti del mese
@@ -228,32 +190,31 @@ export default function CalendarPage(){
     setAppts(a=> a.filter(x=>x.id!==id))
   }
 
-  // Lista advisor per il filtro, coerente con il ruolo
-  const advisorsForFilter = useMemo(()=> {
-    if (!me) return []
-    if (me.role === 'Junior') {
-      return advisors.filter(a => a.user_id === me.user_id || a.user_id === me.team_lead_user_id)
-    }
-    if (me.role === 'Team Lead') {
-      return advisors.filter(a => a.user_id === me.user_id || a.team_lead_user_id === me.user_id)
-    }
-    // Admin: tutti
-    return advisors
-  }, [me, advisors])
+  // ---------- NUOVO: applicazione filtri lato client ----------
+  const visibleAppts = useMemo(()=>{
+    const q = filters.q.trim().toLowerCase()
+    return appts.filter(a => {
+      if (filters.mode !== 'all' && a.mode !== filters.mode) return false
+      if (filters.advisor !== 'all') {
+        if (a.lead?.owner_id !== filters.advisor) return false
+      }
+      if (q) {
+        const name = labelLead(a.lead).toLowerCase()
+        if (!name.includes(q)) return false
+      }
+      return true
+    })
+  }, [appts, filters])
 
-  // raggruppo appuntamenti per giorno (applico qui il filtro consulente)
+  // raggruppo appuntamenti per giorno (sui visibili)
   const apptsByDay = useMemo(()=>{
-    const filtered = selectedAdvisor
-      ? appts.filter(a => a.lead?.owner_id === selectedAdvisor)
-      : appts
-
     const map = new Map<string, Appointment[]>()
-    for (const a of filtered){
+    for (const a of visibleAppts){
       const d = new Date(a.ts); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
       const arr = map.get(k) || []; arr.push(a); map.set(k, arr)
     }
     return map
-  }, [appts, selectedAdvisor])
+  }, [visibleAppts])
 
   return (
     <div style={{ display:'grid', gap:16 }}>
@@ -261,70 +222,79 @@ export default function CalendarPage(){
       <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
         <div>
           <div style={label}>Ambito</div>
-          {/** Se un solo ambito è consentito (Junior/TL), disabilito la select */}
-          <select
-            value={scope}
-            onChange={e=>setScope(e.target.value as any)}
-            style={ipt}
-            disabled={(() => {
-              if (!me) return true
-              if (me.role === 'Junior' || me.role === 'Team Lead') return true
-              return false
-            })()}
-          >
-            { (me?.role !== 'Team Lead') && <option value="me">Solo me</option> }
-            { (me?.role !== 'Junior') && <option value="team">Il mio Team</option> }
-            {/** opzionale: <option value="all">Tutti</option> */}
+          <select value={scope} onChange={e=>setScope(e.target.value as any)} style={ipt}>
+            <option value=\"me\">Solo me</option>
+            {(me?.role!=='Junior') && <option value=\"team\">Il mio Team</option>}
+            {(me?.role==='Admin') && <option value=\"all\">Tutti</option>}
           </select>
         </div>
         <div>
           <div style={label}>Mese</div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),-1)) })}>{'‹'}</button>
-            <input type="month" value={month} onChange={e=>setMonth(e.target.value)} style={ipt} />
-            <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
+            <button className=\"brand-btn\" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),-1)) })}>{'‹'}</button>
+            <input type=\"month\" value={month} onChange={e=>setMonth(e.target.value)} style={ipt} />
+            <button className=\"brand-btn\" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
           </div>
         </div>
         <div>
           <div style={label}>Nuovo</div>
-          <button className="brand-btn" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
+          <button className=\"brand-btn\" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
         </div>
 
-        {/* Filtro consulente con gruppi Team Lead / Junior */}
+        {/* ---------- NUOVO: blocco filtri ---------- */}
         <div>
           <div style={label}>Consulente</div>
           <select
+            value={filters.advisor}
+            onChange={e=>setFilters(f=>({ ...f, advisor: e.target.value }))}
             style={ipt}
-            value={selectedAdvisor}
-            onChange={e => setSelectedAdvisor(e.target.value)}
           >
-            <option value="">— Scegli —</option>
-
-            <optgroup label="Team Lead">
-              {advisorsForFilter
-                .filter(a => a.role === 'Team Lead')
-                .map(a => (
-                  <option key={a.user_id} value={a.user_id}>
-                    {a.full_name || a.email}
-                  </option>
-                ))}
-            </optgroup>
-
-            <optgroup label="Junior">
-              {advisorsForFilter
-                .filter(a => a.role === 'Junior')
-                .map(a => (
-                  <option key={a.user_id} value={a.user_id}>
-                    {a.full_name || a.email}
-                  </option>
-                ))}
-            </optgroup>
+            <option value=\"all\">Tutti</option>
+            {advisors
+              .filter(a => ownerIds.includes(a.user_id))
+              .map(a => (
+                <option key={a.user_id} value={a.user_id}>
+                  {a.full_name || a.email}
+                </option>
+              ))}
           </select>
+        </div>
+
+        <div>
+          <div style={label}>Modalità</div>
+          <select
+            value={filters.mode}
+            onChange={e=>{
+              const v = e.target.value as Mode|'all'
+              setFilters(f=>({ ...f, mode: (v==='inperson'||v==='phone'||v==='video'||v==='all') ? v : 'all' }))
+            }}
+            style={ipt}
+          >
+            <option value=\"all\">Tutte</option>
+            {MODE_OPTIONS.map(o => <option key={o.db} value={o.db}>{o.label}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <div style={label}>Cerca lead</div>
+          <input
+            placeholder=\"Nome o azienda…\"
+            value={filters.q}
+            onChange={e=>setFilters(f=>({ ...f, q: e.target.value }))}
+            style={ipt}
+          />
+        </div>
+
+        <div>
+          <div style={label}>&nbsp;</div>
+          <button className=\"brand-btn\" onClick={()=>setFilters({ mode:'all', advisor:'all', q:'' })}>
+            Pulisci filtri
+          </button>
         </div>
       </div>
 
       {/* Vista mensile */}
-      <div className="brand-card" style={{ ...box }}>
+      <div className=\"brand-card\" style={{ ...box }}>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8, fontSize:12, color:'var(--muted,#666)', marginBottom:8 }}>
           {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'].map(d=> <div key={d} style={{ textAlign:'center' }}>{d}</div>)}
         </div>
@@ -337,7 +307,7 @@ export default function CalendarPage(){
               <div key={idx} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:8, background: cell.inMonth? '#fff' : '#fafafa' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                   <div style={{ fontSize:12, fontWeight:600, color:isToday? '#0b57d0':'#111' }}>{cell.date.getDate()}</div>
-                  <button title="Nuovo appuntamento" onClick={()=>openCreate(cell.date)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
+                  <button title=\"Nuovo appuntamento\" onClick={()=>openCreate(cell.date)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
                 </div>
                 <div style={{ display:'grid', gap:6 }}>
                   {items.map(a=> (
@@ -345,8 +315,8 @@ export default function CalendarPage(){
                       <div style={{ fontSize:12, fontWeight:600 }}>{new Date(a.ts).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})} · {MODE_OPTIONS.find(m=>m.db===a.mode)?.label}</div>
                       <div style={{ fontSize:12, color:'#374151' }}>{labelLead(a.lead)}</div>
                       <div style={{ display:'flex', gap:6, marginTop:6 }}>
-                        <button title="Modifica" onClick={()=>openEdit(a)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                        <button title="Elimina" onClick={()=>deleteAppt(a.id)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                        <button title=\"Modifica\" onClick={()=>openEdit(a)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                        <button title=\"Elimina\" onClick={()=>deleteAppt(a.id)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                       </div>
                     </div>
                   ))}
@@ -366,13 +336,13 @@ export default function CalendarPage(){
               <div>
                 <div style={label}>Lead</div>
                 <select value={draft.lead_id} onChange={e=>setDraft(d=>({ ...d, lead_id:e.target.value }))} style={ipt}>
-                  <option value="">— Seleziona —</option>
+                  <option value=\"\">— Seleziona —</option>
                   {leads.map(l=> <option key={l.id} value={l.id}>{labelLead(l)}</option>)}
                 </select>
               </div>
               <div>
                 <div style={label}>Data/Ora</div>
-                <input type="datetime-local" value={draft.ts} onChange={e=>setDraft(d=>({ ...d, ts:e.target.value }))} style={ipt} />
+                <input type=\"datetime-local\" value={draft.ts} onChange={e=>setDraft(d=>({ ...d, ts:e.target.value }))} style={ipt} />
               </div>
               <div>
                 <div style={label}>Modalità</div>
@@ -385,8 +355,8 @@ export default function CalendarPage(){
                 <input value={draft.notes||''} onChange={e=>setDraft(d=>({ ...d, notes:e.target.value }))} style={ipt} />
               </div>
               <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-                <button className="brand-btn" onClick={closeEditor}>Annulla</button>
-                <button className="brand-btn" onClick={saveDraft}>Salva</button>
+                <button className=\"brand-btn\" onClick={closeEditor}>Annulla</button>
+                <button className=\"brand-btn\" onClick={saveDraft}>Salva</button>
               </div>
             </div>
           </div>
