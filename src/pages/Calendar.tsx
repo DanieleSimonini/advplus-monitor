@@ -3,7 +3,10 @@ import { supabase } from '@/supabaseClient'
 
 /**
  * Calendar.tsx — Agenda mensile/settimana con CRUD appuntamenti
- * Fix TS: tipizza correttamente `mode` come union 'inperson'|'phone'|'video'
+ * Include:
+ * - Filtro "Consulente" con gruppi Team Lead / Junior (optgroup)
+ * - Regole ambito per ruolo (Junior / Team Lead / Admin)
+ * - Ambito lato client (no modifiche alle query)
  */
 
 type Role = 'Admin' | 'Team Lead' | 'Junior'
@@ -71,20 +74,56 @@ export default function CalendarPage(){
       const u = await supabase.auth.getUser()
       const uid = u.data.user?.id
       if (uid){
-        const { data: meRow } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id').eq('user_id', uid).maybeSingle()
+        const { data: meRow } = await supabase
+          .from('advisors')
+          .select('user_id,email,full_name,role,team_lead_user_id')
+          .eq('user_id', uid)
+          .maybeSingle()
         if (meRow) setMe(meRow as any)
       }
-      const { data: adv } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id')
+      const { data: adv } = await supabase
+        .from('advisors')
+        .select('user_id,email,full_name,role,team_lead_user_id')
       setAdvisors((adv||[]) as any)
     } catch(e:any){ setErr(e.message||'Errore init') } finally { setLoading(false) }
   })() },[])
 
-  const ownerIds = useMemo(()=>{
+  // Impostazione default dello scope e ambiti consentiti per ruolo
+  useEffect(()=>{
+    if (!me) return
+    if (me.role === 'Junior') setScope('me')
+    else if (me.role === 'Team Lead') setScope('team')
+    else setScope('team') // Admin default: Il mio Team
+  }, [me])
+
+  const allowedScopes = useMemo<('me'|'team'|'all')[]>(()=>{
+    if (!me) return []
+    if (me.role === 'Junior') return ['me']
+    if (me.role === 'Team Lead') return ['team']
+    // Admin: può mettere Solo me (Tutti non necessario qui)
+    return ['team','me']
+  }, [me])
+
+  // OwnerIds con regole di visibilità per ruolo
+  const ownerIds = useMemo(()=> {
     if (!me) return [] as string[]
-    if (me.role==='Junior') return [me.user_id]
-    if (scope==='me') return [me.user_id]
-    if (scope==='team') return advisors.filter(a=>a.team_lead_user_id===me.user_id || a.user_id===me.user_id).map(a=>a.user_id)
-    return advisors.map(a=>a.user_id)
+
+    if (me.role === 'Junior') {
+      const ids = [me.user_id]
+      if (me.team_lead_user_id) ids.push(me.team_lead_user_id)
+      return ids
+    }
+
+    if (me.role === 'Team Lead') {
+      // sempre il mio team (me + junior)
+      return advisors
+        .filter(a => a.user_id === me.user_id || a.team_lead_user_id === me.user_id)
+        .map(a => a.user_id)
+    }
+
+    // Admin: visibilità completa; se seleziona "Solo me" restringiamo a se stesso
+    if (scope === 'me') return [me.user_id]
+    return advisors.map(a => a.user_id)
   }, [me, advisors, scope])
 
   // ricarica dati quando cambiano ownerIds o mese
@@ -98,7 +137,10 @@ export default function CalendarPage(){
       const end = new Date(y, m, 1).toISOString() // esclusivo
 
       // leads nello scope
-      const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds)
+      const { data: lds } = await supabase
+        .from('leads')
+        .select('id,owner_id,first_name,last_name,company_name')
+        .in('owner_id', ownerIds)
       setLeads((lds||[]) as any)
 
       // appuntamenti del mese
@@ -179,12 +221,25 @@ export default function CalendarPage(){
     setAppts((rows||[]).map(r=> ({ ...r, lead: leadMap.get(r.lead_id) })) as Appointment[])
   }
   async function deleteAppt(id: string){
-    const ok = confirm('Eliminare l\'appuntamento?')
+    const ok = confirm('Eliminare l\\'appuntamento?')
     if (!ok) return
     const { error } = await supabase.from('appointments').delete().eq('id', id)
     if (error) return alert(error.message)
     setAppts(a=> a.filter(x=>x.id!==id))
   }
+
+  // Lista advisor per il filtro, coerente con il ruolo
+  const advisorsForFilter = useMemo(()=> {
+    if (!me) return []
+    if (me.role === 'Junior') {
+      return advisors.filter(a => a.user_id === me.user_id || a.user_id === me.team_lead_user_id)
+    }
+    if (me.role === 'Team Lead') {
+      return advisors.filter(a => a.user_id === me.user_id || a.team_lead_user_id === me.user_id)
+    }
+    // Admin: tutti
+    return advisors
+  }, [me, advisors])
 
   // raggruppo appuntamenti per giorno (applico qui il filtro consulente)
   const apptsByDay = useMemo(()=>{
@@ -206,13 +261,22 @@ export default function CalendarPage(){
       <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
         <div>
           <div style={label}>Ambito</div>
-          <select value={scope} onChange={e=>setScope(e.target.value as any)} style={ipt}>
-            <option value="me">Solo me</option>
-            {(me?.role!=='Junior') && <option value="team">Il mio Team</option>}
-            {(me?.role==='Admin') && <option value="all">Tutti</option>}
+          {/** Se un solo ambito è consentito (Junior/TL), disabilito la select */}
+          <select
+            value={scope}
+            onChange={e=>setScope(e.target.value as any)}
+            style={ipt}
+            disabled={(() => {
+              if (!me) return true
+              if (me.role === 'Junior' || me.role === 'Team Lead') return true
+              return false
+            })()}
+          >
+            { (me?.role !== 'Team Lead') && <option value="me">Solo me</option> }
+            { (me?.role !== 'Junior') && <option value="team">Il mio Team</option> }
+            {/** opzionale: <option value="all">Tutti</option> */}
           </select>
         </div>
-
         <div>
           <div style={label}>Mese</div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
@@ -221,7 +285,6 @@ export default function CalendarPage(){
             <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
           </div>
         </div>
-
         <div>
           <div style={label}>Nuovo</div>
           <button className="brand-btn" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
@@ -238,7 +301,7 @@ export default function CalendarPage(){
             <option value="">— Scegli —</option>
 
             <optgroup label="Team Lead">
-              {advisors
+              {advisorsForFilter
                 .filter(a => a.role === 'Team Lead')
                 .map(a => (
                   <option key={a.user_id} value={a.user_id}>
@@ -248,7 +311,7 @@ export default function CalendarPage(){
             </optgroup>
 
             <optgroup label="Junior">
-              {advisors
+              {advisorsForFilter
                 .filter(a => a.role === 'Junior')
                 .map(a => (
                   <option key={a.user_id} value={a.user_id}>
