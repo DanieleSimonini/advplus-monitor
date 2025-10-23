@@ -31,7 +31,8 @@ export default function RootApp(){
   // Bootstrap auth (persistenza sessione + onAuthStateChange)
   useEffect(() => {
     let unsub: { unsubscribe: () => void } | null = null
-    const onFocus = async () => {
+
+    const trySilentRefresh = async () => {
       try{
         const { data: s } = await supabase.auth.getSession()
         if (!s?.session) {
@@ -40,6 +41,20 @@ export default function RootApp(){
         }
       } catch {}
     }
+
+    // On focus OR when tab becomes visible → prova refresh senza toccare la UI
+    const onFocus = () => { trySilentRefresh() }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        // riattiva auto refresh di supabase quando torni visibile
+        try { (supabase as any).auth?.startAutoRefresh?.() } catch {}
+        trySilentRefresh()
+      } else {
+        // in background i browser throttano i timer: spegni l'auto refresh per sicurezza
+        try { (supabase as any).auth?.stopAutoRefresh?.() } catch {}
+      }
+    }
+    const onOnline = () => { if (document.visibilityState === 'visible') trySilentRefresh() }
 
     ;(async () => {
       const { data: s } = await supabase.auth.getSession()
@@ -50,15 +65,12 @@ export default function RootApp(){
         try {
           const { data: r } = await supabase.auth.refreshSession()
           if (r?.session) await loadMe(r.session.user.id, { autoprov: true })
-          setSessionReady(true)
-        } catch {
-          setSessionReady(true)
         } finally {
+          setSessionReady(true)
           setLoading(false)
         }
       }
 
-      // ⬇️ Patch: non rimettiamo loading durante i refresh del token
       const sub = supabase.auth.onAuthStateChange(async (evt, session) => {
         if (!session) { setMe(null); setSessionReady(true); setLoading(false); return }
         if (evt === 'TOKEN_REFRESHED') return
@@ -68,6 +80,10 @@ export default function RootApp(){
 
       if (typeof window !== 'undefined') {
         window.addEventListener('focus', onFocus)
+        document.addEventListener('visibilitychange', onVisibility)
+        window.addEventListener('online', onOnline)
+        // set initial mode based on current visibility
+        onVisibility()
       }
     })()
 
@@ -75,7 +91,10 @@ export default function RootApp(){
       if (unsub) unsub.unsubscribe()
       if (typeof window !== 'undefined') {
         window.removeEventListener('focus', onFocus)
+        document.removeEventListener('visibilitychange', onVisibility)
+        window.removeEventListener('online', onOnline)
       }
+      try { (supabase as any).auth?.startAutoRefresh?.() } catch {}
     }
   }, [])
 
