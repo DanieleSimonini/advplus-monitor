@@ -5,7 +5,7 @@ import { supabase } from '@/supabaseClient'
  * Leads.tsx — Elenco (sinistra) + Scheda (destra)
  * Sinistra: paginazione, filtri (assegnatario, stato, contattato/appuntamento/proposta/contratto),
  * ricerca per Cognome+Nome, ordinamenti richiesti, esportazione CSV con aggregati.
- * Destra: invariata rispetto alla tua versione… con aggiunta di guard dei permessi lato UI.
+ * Destra: invariata rispetto alla tua versione.
  */
 
 // === Opzioni UI ===
@@ -196,41 +196,6 @@ export default function LeadsPage(){
   // aggregati per leadId
   const [aggs, setAggs] = useState<Record<string, Aggs>>({})
 
-  // ====== Permessi UI ======
-  const selectedLead = useMemo(
-    () => leads.find(l => l.id === (selectedId || '')) || null,
-    [leads, selectedId]
-  )
-
-  function ownerRoleOf(lead?: Lead | null){
-    if (!lead) return undefined
-    return advisors.find(a => a.user_id === lead.owner_id)?.role as Role | undefined
-  }
-
-  function isOwnerJunior(lead?: Lead | null){
-    return ownerRoleOf(lead) === 'Junior'
-  }
-
-  function canEditLead(lead?: Lead | null){
-    if (!lead) return false
-    if (meRole === 'Admin') return true
-    // TL o Junior possono modificare solo i lead di cui sono owner
-    return lead.owner_id === meUid
-  }
-
-  function canDeleteLead(lead?: Lead | null){
-    // Solo Admin elimina
-    return meRole === 'Admin'
-  }
-
-  function canAddChild(lead?: Lead | null){
-    if (!lead) return false
-    if (meRole === 'Admin') return true
-    if (meRole === 'Team Lead') return isOwnerJunior(lead) // TL → solo sui lead dei Junior
-    // Junior → solo sui propri
-    return lead.owner_id === meUid
-  }
-
   // bootstrap
   useEffect(()=>{ (async()=>{
     setLoading(true); setErr('')
@@ -399,10 +364,11 @@ export default function LeadsPage(){
   }
 
   async function saveLead(){
+    const isEditingLocal = Boolean(form?.id);
     const msg = validateForm(form)
     if (msg){ alert(msg); return }
     const payload = {
-      owner_id: form.owner_id || meUid || null,
+      owner_id: isEditingLocal ? (form.owner_id ?? null) : (form.owner_id || meUid || null),
       is_agency_client: form.is_agency_client,
       first_name: form.first_name||null,
       last_name: form.last_name||null,
@@ -414,19 +380,10 @@ export default function LeadsPage(){
       source: (form.source||null) as any,
       is_working: form.is_working ?? true,
     }
-
-    if (editingLeadId){
-      const target = leads.find(x => x.id === editingLeadId)
-      if (!canEditLead(target)){ alert('Non hai i permessi per modificare questo lead.'); return }
-      const { error } = await supabase.from('leads').update(payload).eq('id', editingLeadId)
+    if (isEditingLocal){
+      const { error } = await supabase.from('leads').update(payload).eq('id', form.id as string)
       if (error){ alert(error.message); return }
     } else {
-      // creazione permessa sempre; TL può assegnare a Junior
-      if (selectedId && !canEditLead(selectedLead)){
-        // caso particolare: stai guardando una scheda non tua → non creare per errore
-        alert('Non puoi modificare questa scheda. Usa + Nuovo per creare un lead.')
-        return
-      }
       const { error } = await supabase.from('leads').insert(payload)
       if (error){ alert(error.message); return }
     }
@@ -435,8 +392,6 @@ export default function LeadsPage(){
   }
 
   async function deleteLead(id: string){
-    const target = leads.find(x => x.id === id)
-    if (!canDeleteLead(target)){ alert('Solo un Admin può eliminare un lead.'); return }
     const ok = confirm('Eliminare definitivamente il lead?')
     if (!ok) return
     const { error } = await supabase.from('leads').delete().eq('id', id)
@@ -454,11 +409,6 @@ export default function LeadsPage(){
   // ====== ELENCO SINISTRA: filtri + ricerca + sort + paginazione ======
   const filteredSorted = useMemo(()=>{
     let arr = [...leads]
-
-    // Junior vede solo i propri lead
-    if (meRole === 'Junior'){
-      arr = arr.filter(l => l.owner_id === meUid)
-    }
 
     // i. filtro assegnatario (solo se impostato)
     if (assigneeFilter) arr = arr.filter(l => l.owner_id === assigneeFilter)
@@ -522,7 +472,7 @@ export default function LeadsPage(){
     })
 
     return arr
-  }, [leads, assigneeFilter, onlyWorking, onlyContacted, onlyAppointment, onlyProposal, onlyContract, q, sortBy, aggs, meRole, meUid])
+  }, [leads, assigneeFilter, onlyWorking, onlyContacted, onlyAppointment, onlyProposal, onlyContract, q, sortBy, aggs])
 
   // paginazione: 10 per pagina
   const totalPages = Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE))
@@ -742,12 +692,7 @@ export default function LeadsPage(){
                   }}>
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
                     <div
-                      onClick={()=>{
-                        setSelectedId(l.id!);
-                        loadLeadIntoForm(l);
-                        if (canEditLead(l)) setEditingLeadId(l.id!);
-                        else setEditingLeadId(null);
-                      }}
+                      onClick={()=>{ setSelectedId(l.id!); setEditingLeadId(l.id!); loadLeadIntoForm(l) }}
                       style={{ cursor:'pointer' }}>
                       <div style={{ fontWeight:600 }}>
                         {leadLabel(l)}
@@ -764,12 +709,8 @@ export default function LeadsPage(){
                       </div>
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      {canEditLead(l) && (
-                        <button title="Modifica" onClick={()=>{ setEditingLeadId(l.id!); setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      )}
-                      {canDeleteLead(l) && (
-                        <button title="Elimina" onClick={()=>{ void deleteLead(l.id!) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-                      )}
+                      <button title="Modifica" onClick={()=>{ setEditingLeadId(l.id!); setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Elimina" onClick={()=>{ void deleteLead(l.id!) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 </div>
@@ -791,22 +732,14 @@ export default function LeadsPage(){
         )}
       </div>
 
-      {/* ===================== SCHEDA (DESTRA) — con guard permessi ===================== */}
+      {/* ===================== SCHEDA (DESTRA) — invariata ===================== */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
           <div style={{ fontSize:16, fontWeight:700 }}>
-            {editingLeadId
-              ? `Modifica — ${leadLabel(form as any)}`
-              : (selectedId ? `Scheda — ${leadLabel(form as any)}` : 'Nuovo Lead')}
+            {isEditing ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
           </div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            {/* Mostra Salva solo quando sto modificando e ho i permessi; Crea solo quando non c'è una selezione */}
-            {editingLeadId && canEditLead(selectedLead) && (
-              <button className="brand-btn" onClick={saveLead}>Salva</button>
-            )}
-            {!selectedId && !editingLeadId && (
-              <button className="brand-btn" onClick={saveLead}>Crea</button>
-            )}
+            <button className="brand-btn" onClick={saveLead}>{isEditing ? 'Salva' : 'Crea'}</button>
             <button className="brand-btn" onClick={()=>clearForm()}>Reset</button>
             <button
               className="brand-btn"
@@ -822,7 +755,7 @@ export default function LeadsPage(){
         </div>
 
         <div style={{ display:'grid', gap:12 }}>
-          {(meRole==='Admin' || meRole==='Team Lead') && (!editingLeadId || canEditLead(selectedLead)) && (
+          {(meRole==='Admin' || meRole==='Team Lead') && (
             <div>
               <div style={label}>Assegna a</div>
               <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
@@ -944,7 +877,6 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiornare contatti su questo lead'); return }
                       const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                       const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
                       if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
@@ -952,9 +884,8 @@ export default function LeadsPage(){
                     <button className="brand-btn" onClick={()=>{ setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }) }}>Annulla</button>
                   </div>
                 ) : (
-                  <button className="brand-btn" disabled={!canAddChild(selectedLead)} onClick={async()=>{
+                  <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiungere contatti a questo lead'); return }
                     const payload = { lead_id: selectedId, ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                     const { error } = await supabase.from('activities').insert(payload)
                     if (error) alert(error.message); else { setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
@@ -972,13 +903,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingActId(r.id); setActDraft({ ts: r.ts? r.ts.slice(0,16):'', channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{
-                        if (!selectedId) return;
-                        if (!canAddChild(selectedLead)){ alert('Non hai i permessi per eliminare contatti su questo lead'); return }
-                        const ok = confirm('Eliminare il contatto?'); if (!ok) return;
-                        const { error } = await supabase.from('activities').delete().eq('id', r.id);
-                        if (error) alert(error.message); else await loadActivities(selectedId)
-                      }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contatto?'); if (!ok) return; const { error } = await supabase.from('activities').delete().eq('id', r.id); if (error) alert(error.message); else await loadActivities(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -1010,7 +935,6 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiornare appuntamenti su questo lead'); return }
                       const payload = { ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                       const { error } = await supabase.from('appointments').update(payload).eq('id', editingAppId)
                       if (error) alert(error.message); else { setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
@@ -1018,9 +942,8 @@ export default function LeadsPage(){
                     <button className="brand-btn" onClick={()=>{ setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }) }}>Annulla</button>
                   </div>
                 ) : (
-                  <button className="brand-btn" disabled={!canAddChild(selectedLead)} onClick={async()=>{
+                  <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiungere appuntamenti a questo lead'); return }
                     const payload = { lead_id: selectedId, ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                     const { error } = await supabase.from('appointments').insert(payload)
                     if (error) alert(error.message); else { setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
@@ -1038,13 +961,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingAppId(r.id); setAppDraft({ ts: r.ts? r.ts.slice(0,16):'', mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{
-                        if (!selectedId) return;
-                        if (!canAddChild(selectedLead)){ alert('Non hai i permessi per eliminare appuntamenti su questo lead'); return }
-                        const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return;
-                        const { error } = await supabase.from('appointments').delete().eq('id', r.id);
-                        if (error) alert(error.message); else await loadAppointments(selectedId)
-                      }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return; const { error } = await supabase.from('appointments').delete().eq('id', r.id); if (error) alert(error.message); else await loadAppointments(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -1079,7 +996,6 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiornare proposte su questo lead'); return }
                       const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
                       const { error } = await supabase.from('proposals').update(payload).eq('id', editingPropId)
                       if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
@@ -1087,9 +1003,8 @@ export default function LeadsPage(){
                     <button className="brand-btn" onClick={()=>{ setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }) }}>Annulla</button>
                   </div>
                 ) : (
-                  <button className="brand-btn" disabled={!canAddChild(selectedLead)} onClick={async()=>{
+                  <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiungere proposte a questo lead'); return }
                     const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
                     const { error } = await supabase.from('proposals').insert(payload)
                     if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
@@ -1107,13 +1022,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingPropId(r.id); setPropDraft({ ts: r.ts? r.ts.slice(0,16):'', line: r.line||'', amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{
-                        if (!selectedId) return;
-                        if (!canAddChild(selectedLead)){ alert('Non hai i permessi per eliminare proposte su questo lead'); return }
-                        const ok = confirm('Eliminare la proposta?'); if (!ok) return;
-                        const { error } = await supabase.from('proposals').delete().eq('id', r.id);
-                        if (error) alert(error.message); else await loadProposals(selectedId)
-                      }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare la proposta?'); if (!ok) return; const { error } = await supabase.from('proposals').delete().eq('id', r.id); if (error) alert(error.message); else await loadProposals(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
@@ -1150,7 +1059,6 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiornare contratti su questo lead'); return }
                       const payload = { ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
                       const { error } = await supabase.from('contracts').update(payload).eq('id', editingCtrId)
                       if (error) alert(error.message); else { setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
@@ -1158,9 +1066,8 @@ export default function LeadsPage(){
                     <button className="brand-btn" onClick={()=>{ setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }) }}>Annulla</button>
                   </div>
                 ) : (
-                  <button className="brand-btn" disabled={!canAddChild(selectedLead)} onClick={async()=>{
+                  <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    if (!canAddChild(selectedLead)){ alert('Non hai i permessi per aggiungere contratti a questo lead'); return }
                     const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), line: ctrDraft.contract_type, notes: ctrDraft.notes||null }
                     const { error } = await supabase.from('contracts').insert(payload)
                     if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
@@ -1178,13 +1085,7 @@ export default function LeadsPage(){
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
                       <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id); setCtrDraft({ ts: r.ts? r.ts.slice(0,16):'', contract_type: r.contract_type, amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{
-                        if (!selectedId) return;
-                        if (!canAddChild(selectedLead)){ alert('Non hai i permessi per eliminare contratti su questo lead'); return }
-                        const ok = confirm('Eliminare il contratto?'); if (!ok) return;
-                        const { error } = await supabase.from('contracts').delete().eq('id', r.id);
-                        if (error) alert(error.message); else await loadContracts(selectedId)
-                      }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
+                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contratto?'); if (!ok) return; const { error } = await supabase.from('contracts').delete().eq('id', r.id); if (error) alert(error.message); else await loadContracts(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
                 ))}
