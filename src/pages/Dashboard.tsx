@@ -1,3 +1,4 @@
+
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
@@ -301,6 +302,12 @@ export default function DashboardPage(){
   const teamLeads = useMemo(() => advisors.filter(a => a.role === 'Team Lead'), [advisors])
   const juniors   = useMemo(() => advisors.filter(a => a.role === 'Junior'), [advisors])
 
+  // 🔁 NEW: solo i Junior del mio team (per TL)
+  const myTeamJuniors = useMemo(() => {
+    if (!me) return []
+    return advisors.filter(a => a.team_lead_user_id === me.user_id)
+  }, [advisors, me])
+
   const owners = useMemo(
     () => ownersToQuery(ownerFilter, me, advisors),
     // dipendo da ownerValue per semplicità (è derivato da ownerFilter e cambia insieme)
@@ -351,7 +358,10 @@ export default function DashboardPage(){
             onChange={e=>setOwnerFilter(parseOwnerValue(e.target.value))}
             style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }}
           >
+            {/* Sempre visibile */}
             <option value="me">Solo me</option>
+
+            {/* ADMIN → comportamento invariato (opzioni globali) */}
             {(me?.role==='Admin') && <option value="all">Tutti</option>}
 
             {(me?.role==='Admin') && teamLeads.length > 0 && (
@@ -373,6 +383,32 @@ export default function DashboardPage(){
                 ))}
               </optgroup>
             )}
+
+            {/* TEAM LEAD → stesse sezioni ma ristrette al proprio team */}
+            {(me?.role==='Team Lead') && (
+              <>
+                {/* "Totale team" (TL + suoi junior) */}
+                <option value={`tl:${me.user_id}`}>Totale team</option>
+
+                {/* Sezione Team Lead (solo se stesso, in scope di team) */}
+                <optgroup label="Team Lead">
+                  <option value={`tl:${me.user_id}`}>
+                    {me.full_name || me.email}
+                  </option>
+                </optgroup>
+
+                {/* Solo i propri junior */}
+                {myTeamJuniors.length > 0 && (
+                  <optgroup label="Junior">
+                    {myTeamJuniors.map(j => (
+                      <option key={j.user_id} value={`u:${j.user_id}`}>
+                        {j.full_name || j.email}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </>
+            )}
           </select>
         </div>
         <div>
@@ -393,7 +429,7 @@ export default function DashboardPage(){
           <div style={{ fontSize:12, color:'#666' }}>Contatti</div>
           <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contacts||0)}</div>
         </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
+        <div style={{ background:'#fff', border:'1px solid '#eee', borderRadius:12, padding:12 }}>
           <div style={{ fontSize:12, color:'#666' }}>Appuntamenti</div>
           <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.appointments||0)}</div>
         </div>
