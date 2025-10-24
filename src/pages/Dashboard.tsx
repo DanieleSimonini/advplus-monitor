@@ -429,7 +429,7 @@ export default function DashboardPage(){
           <div style={{ fontSize:12, color:'#666' }}>Contatti</div>
           <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contacts||0)}</div>
         </div>
-        <div style={{ background:'#fff', border:'1px solid '#eee', borderRadius:12, padding:12 }}>
+        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
           <div style={{ fontSize:12, color:'#666' }}>Appuntamenti</div>
           <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.appointments||0)}</div>
         </div>
