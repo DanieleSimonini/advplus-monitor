@@ -364,11 +364,12 @@ export default function LeadsPage(){
   }
 
   async function saveLead(){
-    const isEditingLocal = Boolean(form?.id);
     const msg = validateForm(form)
     if (msg){ alert(msg); return }
-    const payload = {
-      owner_id: isEditingLocal ? (form.owner_id ?? null) : (form.owner_id || meUid || null),
+    
+    const payloadOwnerId = editingLeadId ? (form.owner_id ?? null) : (form.owner_id || meUid || null)
+const payload = {
+      owner_id: payloadOwnerId,
       is_agency_client: form.is_agency_client,
       first_name: form.first_name||null,
       last_name: form.last_name||null,
@@ -380,8 +381,8 @@ export default function LeadsPage(){
       source: (form.source||null) as any,
       is_working: form.is_working ?? true,
     }
-    if (isEditingLocal){
-      const { error } = await supabase.from('leads').update(payload).eq('id', form.id as string)
+    if (editingLeadId){
+      const { error } = await supabase.from('leads').update(payload).eq('id', editingLeadId)
       if (error){ alert(error.message); return }
     } else {
       const { error } = await supabase.from('leads').insert(payload)
@@ -736,10 +737,10 @@ export default function LeadsPage(){
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
           <div style={{ fontSize:16, fontWeight:700 }}>
-            {isEditing ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
+            {editingLeadId ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
           </div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            <button className="brand-btn" onClick={saveLead}>{isEditing ? 'Salva' : 'Crea'}</button>
+            <button className="brand-btn" onClick={saveLead}>{editingLeadId? 'Salva' : 'Crea'}</button>
             <button className="brand-btn" onClick={()=>clearForm()}>Reset</button>
             <button
               className="brand-btn"
