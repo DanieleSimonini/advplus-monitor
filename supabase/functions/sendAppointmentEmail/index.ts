@@ -1,5 +1,5 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-import { SMTPClient } from "https://deno.land/x/smtp/mod.ts";
+import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
 
 const SMTP_HOST = Deno.env.get("SMTP_HOST");
 const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465");
