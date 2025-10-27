@@ -1,11 +1,10 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-// Invio email promemoria appuntamento con allegato .ics (SMTPS su 465)
+// Invio email promemoria appuntamento con allegato .ics (SMTPS 465, stile smtp_invite)
 
 import { SmtpClient } from "https://deno.land/x/smtp/mod.ts";
 
-// --- ENV / SMTP ---
 const SMTP_HOST = Deno.env.get("SMTP_HOST") || "";
-const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465"); // 465
+const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465");
 const SMTP_USER = Deno.env.get("SMTP_USER") || "";
 const SMTP_PASS = Deno.env.get("SMTP_PASS") || "";
 const SMTP_FROM =
@@ -16,19 +15,19 @@ const cors = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// --- Helpers ---
+// --- Funzioni di supporto ---
 function tsForICS(d: Date) {
   return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
 }
 
-function buildICS(params: {
+function buildICS({ title, description, start, end, location }: {
   title: string;
   description: string;
   start: Date;
   end: Date;
   location?: string;
 }) {
-  const lines = [
+  return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "CALSCALE:GREGORIAN",
@@ -36,26 +35,26 @@ function buildICS(params: {
     "BEGIN:VEVENT",
     `UID:${Date.now()}@advisoryplus.it`,
     `DTSTAMP:${tsForICS(new Date())}`,
-    `DTSTART:${tsForICS(params.start)}`,
-    `DTEND:${tsForICS(params.end)}`,
-    `SUMMARY:${String(params.title).replace(/\n/g, " ")}`,
-    `DESCRIPTION:${String(params.description).replace(/\n/g, "\\n")}`,
-    params.location ? `LOCATION:${String(params.location).replace(/\n/g, " ")}` : "",
+    `DTSTART:${tsForICS(start)}`,
+    `DTEND:${tsForICS(end)}`,
+    `SUMMARY:${title}`,
+    `DESCRIPTION:${description}`,
+    location ? `LOCATION:${location}` : "",
     "END:VEVENT",
     "END:VCALENDAR",
-  ];
-  return lines.filter(Boolean).join("\r\n");
+  ].filter(Boolean).join("\r\n");
 }
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
 
+// --- ENTRYPOINT ---
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   try {
-    // Verifica config SMTP minima
+    // Validazione Secrets SMTP
     if (!isNonEmptyString(SMTP_HOST) || !isNonEmptyString(SMTP_USER) || !isNonEmptyString(SMTP_PASS)) {
       return new Response(
         JSON.stringify({ error: "SMTP non configurato: verifica SMTP_HOST, SMTP_USER, SMTP_PASS." }),
@@ -63,6 +62,7 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Lettura del body
     const body = await req.json().catch(() => ({}));
     const {
       to_client_email,
@@ -74,45 +74,34 @@ Deno.serve(async (req) => {
       modalita,
       note = "",
       location = "",
-      subject: subjectIn,
-      title: titleIn,
     } = body;
 
-    // Guard essenziali (evita 500 e strani errori della lib)
+    // Controllo parametri obbligatori
     if (!isNonEmptyString(to_client_email) || !isNonEmptyString(ts_iso) || !isNonEmptyString(modalita)) {
       return new Response(
-        JSON.stringify({
-          error: "Parametri mancanti: to_client_email, ts_iso, modalita sono obbligatori.",
-        }),
+        JSON.stringify({ error: "Parametri mancanti: to_client_email, ts_iso, modalita sono obbligatori." }),
         { status: 400, headers: { "Content-Type": "application/json", ...cors } },
       );
     }
 
-    // Normalizzazioni sicure
-    const TO = String(to_client_email).trim();
-    const CC = isNonEmptyString(cc_advisor_email) ? String(cc_advisor_email).trim() : null;
+    // Normalizzazione dati
+    const TO = to_client_email.trim();
+    const CC = isNonEmptyString(cc_advisor_email) ? cc_advisor_email.trim() : null;
     const CLIENTE = isNonEmptyString(cliente_nome) ? cliente_nome.trim() : "Cliente";
     const ADVISOR = isNonEmptyString(advisor_nome) ? advisor_nome.trim() : "Advisory+";
-    const MODE = String(modalita).trim();
+    const MODE = modalita.trim();
     const NOTE = String(note ?? "").trim();
     const LOC = String(location ?? "").trim();
 
-    // Date
+    // Date e file ICS
     const start = new Date(ts_iso);
-    if (isNaN(start.getTime())) {
-      return new Response(
-        JSON.stringify({ error: "ts_iso non è una data valida (ISO 8601)." }),
-        { status: 400, headers: { "Content-Type": "application/json", ...cors } },
-      );
-    }
-    const end = new Date(start.getTime() + Number(durata_minuti) * 60_000);
-
-    // Contenuti email + ICS
-    const titoloICS = isNonEmptyString(titleIn) ? titleIn : `Appuntamento Advisory+ con ${CLIENTE}`;
+    const end = new Date(start.getTime() + durata_minuti * 60_000);
+    const titoloICS = `Appuntamento Advisory+ con ${CLIENTE}`;
     const descrizioneICS = `Modalità: ${MODE}\nNote: ${NOTE || "-"}`;
     const ics = buildICS({ title: titoloICS, description: descrizioneICS, start, end, location: LOC });
 
-    const subject = isNonEmptyString(subjectIn) ? subjectIn : `Promemoria appuntamento – ${CLIENTE}`;
+    // Corpo email
+    const subject = `Promemoria appuntamento – ${CLIENTE}`;
     const dataStr = start.toLocaleDateString("it-IT");
     const oraStr = start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
     const html =
@@ -123,11 +112,11 @@ Deno.serve(async (req) => {
         <p>Cordiali saluti,<br>${ADVISOR}<br>Advisory+</p>
       </div>`;
 
-    // ---------- INVIO SMTP su 465 (TLS implicito) ----------
+    // --- INVIO MAIL (TLS implicito su 465) ---
     const client = new SmtpClient();
     await client.connectTLS({
-      hostname: SMTP_HOST,     // es. mail.advisoryplus.it
-      port: SMTP_PORT,         // 465
+      hostname: SMTP_HOST,
+      port: SMTP_PORT,
       username: SMTP_USER,
       password: SMTP_PASS,
     });
@@ -136,7 +125,7 @@ Deno.serve(async (req) => {
       from: SMTP_FROM,
       to: TO,
       subject,
-      content: html, // HTML come stringa (questa lib lo invia come text/html)
+      content: html,
       attachments: [
         {
           filename: "appuntamento.ics",
@@ -150,6 +139,7 @@ Deno.serve(async (req) => {
     await client.send(message);
     await client.close();
 
+    // Risposta OK
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "Content-Type": "application/json", ...cors },
