@@ -1,5 +1,5 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-import { SMTPClient } from "https://deno.land/x/smtp@v0.6.1/mod.ts";
+import { SMTPClient } from "https://deno.land/x/smtp/mod.ts";
 
 const SMTP_HOST = Deno.env.get("SMTP_HOST");
 const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465");
@@ -13,28 +13,29 @@ const cors = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
 };
 
-// Genera file ICS per Outlook/Google
+// --- Genera file ICS Outlook/Google ---
 function buildICS({ title, description, start, end, location }) {
-  return `
-BEGIN:VCALENDAR
-VERSION:2.0
-CALSCALE:GREGORIAN
-METHOD:REQUEST
-BEGIN:VEVENT
-UID:${Date.now()}@advisoryplus.it
-DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z
-DTSTART:${start.toISOString().replace(/[-:]/g, '').split('.')[0]}Z
-DTEND:${end.toISOString().replace(/[-:]/g, '').split('.')[0]}Z
-SUMMARY:${title}
-DESCRIPTION:${description}
-${location ? `LOCATION:${location}` : ""}
-END:VEVENT
-END:VCALENDAR
-`.trim();
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "CALSCALE:GREGORIAN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `UID:${Date.now()}@advisoryplus.it`,
+    `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").split(".")[0]}Z`,
+    `DTSTART:${start.toISOString().replace(/[-:]/g, "").split(".")[0]}Z`,
+    `DTEND:${end.toISOString().replace(/[-:]/g, "").split(".")[0]}Z`,
+    `SUMMARY:${title}`,
+    `DESCRIPTION:${description}`,
+    location ? `LOCATION:${location}` : "",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+
   try {
     const body = await req.json().catch(() => ({}));
     const {
@@ -52,14 +53,14 @@ Deno.serve(async (req) => {
     if (!to_client_email || !ts_iso || !modalita) {
       return new Response(JSON.stringify({ error: "Parametri mancanti" }), {
         status: 400,
-        headers: { "Content-Type": "application/json", ...cors }
+        headers: { "Content-Type": "application/json", ...cors },
       });
     }
 
     const start = new Date(ts_iso);
     const end = new Date(start.getTime() + durata_minuti * 60_000);
     const titoloICS = `Appuntamento Advisory+ con ${cliente_nome || "Cliente"}`;
-    const descrizioneICS = `Modalità: ${modalita}\nNote: ${note || "-"}`;
+    const descrizioneICS = `Modalità: ${modalita}\nNote: ${note}`;
     const ics = buildICS({ title: titoloICS, description: descrizioneICS, start, end, location });
 
     const subject = `Promemoria appuntamento – ${cliente_nome}`;
@@ -72,13 +73,14 @@ Deno.serve(async (req) => {
       </div>
     `;
 
+    // 🔹 SMTP identico alla tua funzione "smtp_invite"
     const client = new SMTPClient({
       connection: {
         hostname: SMTP_HOST,
         port: SMTP_PORT,
         tls: SMTP_SECURE,
-        auth: { username: SMTP_USER, password: SMTP_PASS }
-      }
+        auth: { username: SMTP_USER, password: SMTP_PASS },
+      },
     });
 
     await client.send({
@@ -89,21 +91,26 @@ Deno.serve(async (req) => {
       content: html,
       html: true,
       attachments: [
-        { filename: "appuntamento.ics", content: ics, contentType: "text/calendar; method=REQUEST" }
-      ]
+        {
+          filename: "appuntamento.ics",
+          content: ics,
+          contentType: "text/calendar; method=REQUEST",
+        },
+      ],
     });
 
     await client.close();
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
-      headers: { "Content-Type": "application/json", ...cors }
+      headers: { "Content-Type": "application/json", ...cors },
     });
 
   } catch (e) {
+    console.error("Errore invio:", e);
     return new Response(JSON.stringify({ error: String(e?.message || e) }), {
       status: 500,
-      headers: { "Content-Type": "application/json", ...cors }
+      headers: { "Content-Type": "application/json", ...cors },
     });
   }
 });
