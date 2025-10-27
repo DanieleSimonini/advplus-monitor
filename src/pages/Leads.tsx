@@ -947,7 +947,43 @@ const payload = {
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
                     const payload = { lead_id: selectedId, ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                     const { error } = await supabase.from('appointments').insert(payload)
-                    if (error) alert(error.message); else { setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
+                    if (error) {
+      alert(error.message);
+    } else {
+      // reset UI + ricarica lista appuntamenti
+      setAppDraft({ ts:'', mode_label:'In presenza', notes:'' });
+      await loadAppointments(selectedId);
+
+      // 🔔 Invio email promemoria appuntamento (non blocca il flusso se fallisce)
+      try {
+        const lead = leads.find(x => x.id === selectedId);
+        const ownerId = (lead?.owner_id ?? form.owner_id) || null;
+        const advisor = advisors.find(a => a.user_id === ownerId) || null;
+        const cliente_nome = [lead?.last_name || '', lead?.first_name || ''].join(' ').trim() || (lead?.company_name || 'Cliente');
+        const to_client_email = (lead?.email || '').trim();
+
+        if (to_client_email) {
+          await supabase.functions.invoke('sendAppointmentEmail', {
+            body: {
+              to_client_email,
+              cc_advisor_email: (advisor?.email || '').trim(),
+              cliente_nome,
+              advisor_nome: (advisor?.full_name || advisor?.email || 'Advisory+'),
+              ts_iso: payload.ts,
+              durata_minuti: 60,
+              modalita: appDraft.mode_label,
+              note: appDraft.notes || '',
+              location: ''
+            }
+          });
+          console.log('📧 Email appuntamento inviata');
+        } else {
+          console.warn('Email cliente assente: invio promemoria saltato.');
+        }
+      } catch (mailErr) {
+        console.error('Errore invio email appuntamento:', mailErr);
+      }
+    }
                   }}>Aggiungi appuntamento</button>
                 )}
               </div>
