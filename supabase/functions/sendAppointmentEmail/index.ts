@@ -13,7 +13,7 @@ const cors = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
 };
 
-// Genera file ICS (Outlook/Google Calendar)
+// Genera file ICS per Outlook/Google
 function buildICS({ title, description, start, end, location }) {
   return `
 BEGIN:VCALENDAR
@@ -36,6 +36,7 @@ END:VCALENDAR
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
+    const body = await req.json().catch(() => ({}));
     const {
       to_client_email,
       cc_advisor_email,
@@ -46,24 +47,29 @@ Deno.serve(async (req) => {
       modalita,
       note = "",
       location = ""
-    } = await req.json();
+    } = body;
 
-    if (!to_client_email || !ts_iso || !modalita)
-      throw new Error("Parametri mancanti");
+    if (!to_client_email || !ts_iso || !modalita) {
+      return new Response(JSON.stringify({ error: "Parametri mancanti" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json", ...cors }
+      });
+    }
 
     const start = new Date(ts_iso);
     const end = new Date(start.getTime() + durata_minuti * 60_000);
-
     const titoloICS = `Appuntamento Advisory+ con ${cliente_nome || "Cliente"}`;
-    const descrizioneICS = `Modalità: ${modalita}\nNote: ${note}`;
+    const descrizioneICS = `Modalità: ${modalita}\nNote: ${note || "-"}`;
     const ics = buildICS({ title: titoloICS, description: descrizioneICS, start, end, location });
 
     const subject = `Promemoria appuntamento – ${cliente_nome}`;
     const html = `
-      <p>Gentile ${cliente_nome},</p>
-      <p>Le ricordiamo l’appuntamento fissato per il giorno <b>${start.toLocaleDateString("it-IT")}</b> alle ore <b>${start.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}</b> in modalità <b>${modalita}</b>.</p>
-      <p><b>Note:</b> ${note || "-"}</p>
-      <p>Cordiali saluti,<br>${advisor_nome}<br>Advisory+</p>
+      <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:#0f172a">
+        <p>Gentile ${cliente_nome},</p>
+        <p>Le ricordiamo l’appuntamento fissato per il giorno <b>${start.toLocaleDateString("it-IT")}</b> alle ore <b>${start.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"})}</b> in modalità <b>${modalita}</b>.</p>
+        <p><b>Note:</b> ${note || "-"}</p>
+        <p>Cordiali saluti,<br>${advisor_nome}<br>Advisory+</p>
+      </div>
     `;
 
     const client = new SMTPClient({
@@ -71,10 +77,7 @@ Deno.serve(async (req) => {
         hostname: SMTP_HOST,
         port: SMTP_PORT,
         tls: SMTP_SECURE,
-        auth: {
-          username: SMTP_USER,
-          password: SMTP_PASS
-        }
+        auth: { username: SMTP_USER, password: SMTP_PASS }
       }
     });
 
@@ -86,11 +89,7 @@ Deno.serve(async (req) => {
       content: html,
       html: true,
       attachments: [
-        {
-          filename: "appuntamento.ics",
-          content: ics,
-          contentType: "text/calendar; method=REQUEST"
-        }
+        { filename: "appuntamento.ics", content: ics, contentType: "text/calendar; method=REQUEST" }
       ]
     });
 
@@ -102,7 +101,7 @@ Deno.serve(async (req) => {
     });
 
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), {
+    return new Response(JSON.stringify({ error: String(e?.message || e) }), {
       status: 500,
       headers: { "Content-Type": "application/json", ...cors }
     });
