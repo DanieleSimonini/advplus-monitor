@@ -1,8 +1,7 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-// Invia email promemoria appuntamento con allegato .ics
-// Allineato allo stile della tua function smtp_invite (stessa lib, stessa API)
+// Invia email promemoria appuntamento con allegato .ics (stessa libreria/approccio di smtp_invite)
 
-import { SMTPClient } from "https://deno.land/x/smtp/mod.ts";
+import { SmtpClient } from "https://deno.land/x/smtp/mod.ts"; // <-- FIX: SmtpClient (non SMTPClient)
 
 // --- Env / SMTP ---
 const SMTP_HOST = Deno.env.get("SMTP_HOST") || "";
@@ -20,7 +19,6 @@ const cors = {
 
 // --- Helpers ---
 function tsForICS(d: Date) {
-  // YYYYMMDDTHHMMSSZ
   return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
 }
 
@@ -58,7 +56,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   try {
-    // Verifica config SMTP (evita errori opachi più avanti)
+    // Verifica config SMTP
     if (!isNonEmptyString(SMTP_HOST) || !isNonEmptyString(SMTP_USER) || !isNonEmptyString(SMTP_PASS)) {
       return new Response(
         JSON.stringify({ error: "SMTP non configurato: verifica SMTP_HOST, SMTP_USER, SMTP_PASS." }),
@@ -67,6 +65,7 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}));
+    // Parametri attesi
     const {
       to_client_email,
       cc_advisor_email,
@@ -81,18 +80,17 @@ Deno.serve(async (req) => {
       title: titleIn,
     } = body;
 
-    // Guard obbligatori
+    // Guard
     if (!isNonEmptyString(to_client_email) || !isNonEmptyString(ts_iso) || !isNonEmptyString(modalita)) {
       return new Response(
         JSON.stringify({
-          error:
-            "Parametri mancanti: to_client_email, ts_iso, modalita sono obbligatori.",
+          error: "Parametri mancanti: to_client_email, ts_iso, modalita sono obbligatori.",
         }),
         { status: 400, headers: { "Content-Type": "application/json", ...cors } },
       );
     }
 
-    // Normalizzazioni sicure
+    // Normalizzazioni
     const TO = String(to_client_email).trim();
     const CC = isNonEmptyString(cc_advisor_email) ? String(cc_advisor_email).trim() : null;
     const CLIENTE = isNonEmptyString(cliente_nome) ? cliente_nome.trim() : "Cliente";
@@ -120,7 +118,7 @@ Deno.serve(async (req) => {
     const dataStr = start.toLocaleDateString("it-IT");
     const oraStr = start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
 
-    // NB: niente `html: true` (come nella tua smtp_invite)
+    // HTML (come in smtp_invite: niente flag html:true)
     const html =
       `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:#0f172a">
         <p>Gentile ${CLIENTE},</p>
@@ -129,8 +127,8 @@ Deno.serve(async (req) => {
         <p>Cordiali saluti,<br>${ADVISOR}<br>Advisory+</p>
       </div>`;
 
-    // SMTP client
-    const client = new SMTPClient({
+    // SMTP client (usa SmtpClient)
+    const client = new SmtpClient({
       connection: {
         hostname: SMTP_HOST,
         port: SMTP_PORT,
@@ -139,22 +137,20 @@ Deno.serve(async (req) => {
       },
     });
 
-    // Prepara il messaggio in modo identico a smtp_invite
     const message: Record<string, unknown> = {
-      from: SMTP_FROM,     // stringa
-      to: TO,              // stringa
-      subject,             // stringa
-      content: html,       // stringa (HTML)
-      // niente `html: true`
+      from: SMTP_FROM,     // string
+      to: TO,              // string
+      subject,             // string
+      content: html,       // string (HTML)
       attachments: [
         {
           filename: "appuntamento.ics",
-          content: String(ics), // forza stringa
+          content: String(ics),
           contentType: "text/calendar; method=REQUEST; charset=utf-8",
         },
       ],
     };
-    if (CC) message.cc = CC; // aggiungi cc solo se presente e valido
+    if (CC) message.cc = CC;
 
     await client.send(message);
     await client.close();
@@ -164,7 +160,6 @@ Deno.serve(async (req) => {
       headers: { "Content-Type": "application/json", ...cors },
     });
   } catch (e) {
-    // Log server-side
     console.error("sendAppointmentEmail error:", e);
     return new Response(JSON.stringify({ error: String(e?.message || e) }), {
       status: 500,
