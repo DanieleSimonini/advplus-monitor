@@ -1,16 +1,15 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-// Invia email promemoria appuntamento con allegato .ics (stessa libreria/approccio di smtp_invite)
+// Invio email promemoria appuntamento con allegato .ics (SMTPS su 465)
 
-import { SmtpClient } from "https://deno.land/x/smtp/mod.ts"; // <-- FIX: SmtpClient (non SMTPClient)
+import { SmtpClient } from "https://deno.land/x/smtp/mod.ts";
 
-// --- Env / SMTP ---
+// --- ENV / SMTP ---
 const SMTP_HOST = Deno.env.get("SMTP_HOST") || "";
-const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465");
+const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465"); // 465
 const SMTP_USER = Deno.env.get("SMTP_USER") || "";
 const SMTP_PASS = Deno.env.get("SMTP_PASS") || "";
 const SMTP_FROM =
   Deno.env.get("SMTP_FROM") || "Commerciale | Advisory+ <commerciale@advisoryplus.it>";
-const SMTP_SECURE = (Deno.env.get("SMTP_SECURE") || "true").toLowerCase() === "true";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -56,7 +55,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   try {
-    // Verifica config SMTP
+    // Verifica config SMTP minima
     if (!isNonEmptyString(SMTP_HOST) || !isNonEmptyString(SMTP_USER) || !isNonEmptyString(SMTP_PASS)) {
       return new Response(
         JSON.stringify({ error: "SMTP non configurato: verifica SMTP_HOST, SMTP_USER, SMTP_PASS." }),
@@ -65,7 +64,6 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}));
-    // Parametri attesi
     const {
       to_client_email,
       cc_advisor_email,
@@ -80,7 +78,7 @@ Deno.serve(async (req) => {
       title: titleIn,
     } = body;
 
-    // Guard
+    // Guard essenziali (evita 500 e strani errori della lib)
     if (!isNonEmptyString(to_client_email) || !isNonEmptyString(ts_iso) || !isNonEmptyString(modalita)) {
       return new Response(
         JSON.stringify({
@@ -90,7 +88,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Normalizzazioni
+    // Normalizzazioni sicure
     const TO = String(to_client_email).trim();
     const CC = isNonEmptyString(cc_advisor_email) ? String(cc_advisor_email).trim() : null;
     const CLIENTE = isNonEmptyString(cliente_nome) ? cliente_nome.trim() : "Cliente";
@@ -109,7 +107,7 @@ Deno.serve(async (req) => {
     }
     const end = new Date(start.getTime() + Number(durata_minuti) * 60_000);
 
-    // Contenuti
+    // Contenuti email + ICS
     const titoloICS = isNonEmptyString(titleIn) ? titleIn : `Appuntamento Advisory+ con ${CLIENTE}`;
     const descrizioneICS = `Modalità: ${MODE}\nNote: ${NOTE || "-"}`;
     const ics = buildICS({ title: titoloICS, description: descrizioneICS, start, end, location: LOC });
@@ -117,8 +115,6 @@ Deno.serve(async (req) => {
     const subject = isNonEmptyString(subjectIn) ? subjectIn : `Promemoria appuntamento – ${CLIENTE}`;
     const dataStr = start.toLocaleDateString("it-IT");
     const oraStr = start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
-
-    // HTML (come in smtp_invite: niente flag html:true)
     const html =
       `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:#0f172a">
         <p>Gentile ${CLIENTE},</p>
@@ -127,21 +123,20 @@ Deno.serve(async (req) => {
         <p>Cordiali saluti,<br>${ADVISOR}<br>Advisory+</p>
       </div>`;
 
-    // SMTP client (usa SmtpClient)
-    const client = new SmtpClient({
-      connection: {
-        hostname: SMTP_HOST,
-        port: SMTP_PORT,
-        tls: SMTP_SECURE,
-        auth: { username: SMTP_USER, password: SMTP_PASS },
-      },
+    // ---------- INVIO SMTP su 465 (TLS implicito) ----------
+    const client = new SmtpClient();
+    await client.connectTLS({
+      hostname: SMTP_HOST,     // es. mail.advisoryplus.it
+      port: SMTP_PORT,         // 465
+      username: SMTP_USER,
+      password: SMTP_PASS,
     });
 
     const message: Record<string, unknown> = {
-      from: SMTP_FROM,     // string
-      to: TO,              // string
-      subject,             // string
-      content: html,       // string (HTML)
+      from: SMTP_FROM,
+      to: TO,
+      subject,
+      content: html, // HTML come stringa (questa lib lo invia come text/html)
       attachments: [
         {
           filename: "appuntamento.ics",
