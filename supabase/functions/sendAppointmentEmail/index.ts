@@ -1,10 +1,10 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-// Invio email promemoria appuntamento con allegato .ics (SMTPS 465, stile smtp_invite)
+// Invio email promemoria appuntamento con allegato .ics (SMTPS 465, compatibile Deno v2)
 
-import { SmtpClient } from "https://deno.land/x/smtp/mod.ts";
+import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
 
 const SMTP_HOST = Deno.env.get("SMTP_HOST") || "";
-const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465");
+const SMTP_PORT = Number(Deno.env.get("SMTP_PORT") || "465"); // 465
 const SMTP_USER = Deno.env.get("SMTP_USER") || "";
 const SMTP_PASS = Deno.env.get("SMTP_PASS") || "";
 const SMTP_FROM =
@@ -15,19 +15,19 @@ const cors = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// --- Funzioni di supporto ---
+// --- Helpers ---
 function tsForICS(d: Date) {
   return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
 }
 
-function buildICS({ title, description, start, end, location }: {
+function buildICS(params: {
   title: string;
   description: string;
   start: Date;
   end: Date;
   location?: string;
 }) {
-  return [
+  const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "CALSCALE:GREGORIAN",
@@ -35,18 +35,22 @@ function buildICS({ title, description, start, end, location }: {
     "BEGIN:VEVENT",
     `UID:${Date.now()}@advisoryplus.it`,
     `DTSTAMP:${tsForICS(new Date())}`,
-    `DTSTART:${tsForICS(start)}`,
-    `DTEND:${tsForICS(end)}`,
-    `SUMMARY:${title}`,
-    `DESCRIPTION:${description}`,
-    location ? `LOCATION:${location}` : "",
+    `DTSTART:${tsForICS(params.start)}`,
+    `DTEND:${tsForICS(params.end)}`,
+    `SUMMARY:${String(params.title).replace(/\n/g, " ")}`,
+    `DESCRIPTION:${String(params.description).replace(/\n/g, "\\n")}`,
+    params.location ? `LOCATION:${String(params.location).replace(/\n/g, " ")}` : "",
     "END:VEVENT",
     "END:VCALENDAR",
-  ].filter(Boolean).join("\r\n");
+  ];
+  return lines.filter(Boolean).join("\r\n");
 }
 
+function isStr(v: unknown): v is string {
+  return typeof v === "string";
+}
 function isNonEmptyString(v: unknown): v is string {
-  return typeof v === "string" && v.trim().length > 0;
+  return isStr(v) && v.trim().length > 0;
 }
 
 // --- ENTRYPOINT ---
@@ -74,9 +78,11 @@ Deno.serve(async (req) => {
       modalita,
       note = "",
       location = "",
+      subject: subjectIn,
+      title: titleIn,
     } = body;
 
-    // Controllo parametri obbligatori
+    // Guard parametri minimi
     if (!isNonEmptyString(to_client_email) || !isNonEmptyString(ts_iso) || !isNonEmptyString(modalita)) {
       return new Response(
         JSON.stringify({ error: "Parametri mancanti: to_client_email, ts_iso, modalita sono obbligatori." }),
@@ -84,7 +90,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Normalizzazione dati
+    // Normalizzazione
     const TO = to_client_email.trim();
     const CC = isNonEmptyString(cc_advisor_email) ? cc_advisor_email.trim() : null;
     const CLIENTE = isNonEmptyString(cliente_nome) ? cliente_nome.trim() : "Cliente";
@@ -93,17 +99,25 @@ Deno.serve(async (req) => {
     const NOTE = String(note ?? "").trim();
     const LOC = String(location ?? "").trim();
 
-    // Date e file ICS
+    // Date
     const start = new Date(ts_iso);
-    const end = new Date(start.getTime() + durata_minuti * 60_000);
-    const titoloICS = `Appuntamento Advisory+ con ${CLIENTE}`;
+    if (isNaN(start.getTime())) {
+      return new Response(
+        JSON.stringify({ error: "ts_iso non è una data valida (ISO 8601)." }),
+        { status: 400, headers: { "Content-Type": "application/json", ...cors } },
+      );
+    }
+    const end = new Date(start.getTime() + Number(durata_minuti) * 60_000);
+
+    // ICS + email
+    const titoloICS = isNonEmptyString(titleIn) ? titleIn : `Appuntamento Advisory+ con ${CLIENTE}`;
     const descrizioneICS = `Modalità: ${MODE}\nNote: ${NOTE || "-"}`;
     const ics = buildICS({ title: titoloICS, description: descrizioneICS, start, end, location: LOC });
 
-    // Corpo email
-    const subject = `Promemoria appuntamento – ${CLIENTE}`;
+    const subject = isNonEmptyString(subjectIn) ? subjectIn : `Promemoria appuntamento – ${CLIENTE}`;
     const dataStr = start.toLocaleDateString("it-IT");
     const oraStr = start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+
     const html =
       `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:#0f172a">
         <p>Gentile ${CLIENTE},</p>
@@ -112,24 +126,31 @@ Deno.serve(async (req) => {
         <p>Cordiali saluti,<br>${ADVISOR}<br>Advisory+</p>
       </div>`;
 
-    // --- INVIO MAIL (TLS implicito su 465) ---
-    const client = new SmtpClient();
-    await client.connectTLS({
-      hostname: SMTP_HOST,
-      port: SMTP_PORT,
-      username: SMTP_USER,
-      password: SMTP_PASS,
+    // ---------- INVIO via denomailer (TLS implicito 465) ----------
+    const client = new SMTPClient({
+      // denomailer richiede esplicitamente il TLS implicito con `tls: true`
+      connection: {
+        hostname: SMTP_HOST,
+        port: SMTP_PORT,     // 465
+        tls: true,           // TLS implicito
+        auth: {
+          username: SMTP_USER,
+          password: SMTP_PASS,
+        },
+      },
     });
 
+    // Prepara il messaggio
     const message: Record<string, unknown> = {
       from: SMTP_FROM,
       to: TO,
       subject,
+      // denomailer invia automaticamente come HTML se `content` contiene markup
       content: html,
       attachments: [
         {
           filename: "appuntamento.ics",
-          content: String(ics),
+          content: ics, // stringa
           contentType: "text/calendar; method=REQUEST; charset=utf-8",
         },
       ],
