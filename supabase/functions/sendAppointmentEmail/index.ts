@@ -1,7 +1,6 @@
 // /supabase/functions/sendAppointmentEmail/index.ts
-// Invio email appuntamento: Outlook Classic inline + allegato ICS
-// Fix v3.2: elimina definitivamente '=20' usando Content-Transfer-Encoding: base64 per tutte le parti testo
-// Orari corretti con TZ Europe/Rome + VTIMEZONE; MIME raw controllato
+// Invio email appuntamento con anteprima meeting in Outlook Classic (inline) + allegato ICS
+// Fix: elimina artefatti '=20' (forza 7bit via MIME raw), orari corretti (Europe/Rome + VTIMEZONE)
 // Deno v2 – denomailer
 
 import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
@@ -59,8 +58,7 @@ const VTIMEZONE_EUROPE_ROME = [
   "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
   "END:STANDARD",
   "END:VTIMEZONE",
-].join("
-");
+].join("\r\n");
 
 function buildICS(opts: {
   title: string;
@@ -93,15 +91,9 @@ function buildICS(opts: {
     `DTSTAMP:${tsLocalICS(new Date())}`,
     `DTSTART;TZID=${TZID}:${tsLocalICS(start)}`,
     `DTEND;TZID=${TZID}:${tsLocalICS(end)}`,
-    `SUMMARY:${title.replace(/
-?
-/g, " ")}`,
-    `DESCRIPTION:${description.replace(/
-?
-/g, "\n")}`,
-    location ? `LOCATION:${location.replace(/
-?
-/g, " ")}` : "",
+    `SUMMARY:${title.replace(/\r?\n/g, " ")}`,
+    `DESCRIPTION:${description.replace(/\r?\n/g, "\\n")}`,
+    location ? `LOCATION:${location.replace(/\r?\n/g, " ")}` : "",
     `ORGANIZER;CN=${organizerName}:MAILTO:${organizerEmail}`,
     ...attendees.map(a => {
       const cn = a.name ? `;CN=${a.name}` : "";
@@ -120,20 +112,9 @@ function buildICS(opts: {
     "END:VEVENT",
     "END:VCALENDAR",
   ];
-  return lines.join("
-") + "
-";
+  return lines.join("\r\n") + "\r\n";
 }
 
-// --- Base64 helper (UTF‑8) ---
-function toBase64(str: string): string {
-  const bytes = new TextEncoder().encode(str);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
-
-// --- MIME RAW con base64 per tutte le parti ---
 function buildRawMIME(opts: {
   from: string;
   to: string;
@@ -154,29 +135,27 @@ function buildRawMIME(opts: {
     "MIME-Version: 1.0",
     "Content-Class: urn:content-classes:calendarmessage",
     `Content-Type: multipart/mixed; boundary="${boundaryMixed}"`,
-  ].filter(Boolean).join("
-");
+  ].filter(Boolean).join("\r\n");
 
   const altParts = [
     `--${boundaryAlt}`,
     "Content-Type: text/plain; charset=utf-8",
-    "Content-Transfer-Encoding: base64",
+    "Content-Transfer-Encoding: 7bit",
     "",
-    toBase64(opts.text),
+    opts.text,
     `--${boundaryAlt}`,
     "Content-Type: text/html; charset=utf-8",
-    "Content-Transfer-Encoding: base64",
+    "Content-Transfer-Encoding: 7bit",
     "",
-    toBase64(opts.html),
+    opts.html,
     `--${boundaryAlt}`,
     'Content-Type: text/calendar; method=REQUEST; charset="utf-8"; name="invite.ics"',
     'Content-Disposition: inline; filename="invite.ics"',
-    "Content-Transfer-Encoding: base64",
+    "Content-Transfer-Encoding: 7bit",
     "",
-    toBase64(opts.icsContent),
+    opts.icsContent,
     `--${boundaryAlt}--`,
-  ].join("
-");
+  ].join("\r\n");
 
   const mixed = [
     `--${boundaryMixed}`,
@@ -186,17 +165,14 @@ function buildRawMIME(opts: {
     `--${boundaryMixed}`,
     'Content-Type: application/ics; name="appuntamento.ics"',
     'Content-Disposition: attachment; filename="appuntamento.ics"',
-    "Content-Transfer-Encoding: base64",
+    "Content-Transfer-Encoding: 7bit",
     "",
-    toBase64(opts.icsContent),
+    opts.icsContent,
     `--${boundaryMixed}--`,
     ""
-  ].join("
-");
+  ].join("\r\n");
 
-  return headersTop + "
-
-" + mixed;
+  return headersTop + "\r\n\r\n" + mixed;
 }
 
 Deno.serve(async (req) => {
@@ -237,7 +213,7 @@ Deno.serve(async (req) => {
     const NOTE = String(note ?? "").trim();
     const LOC = String(location ?? "").trim();
 
-    // Interpretazione timezone: se manca offset -> assume Europe/Rome
+    // Parsing robusto: se manca il timezone nell'input, assume Europe/Rome
     let start = new Date(ts_iso);
     if (isNaN(start.getTime())) {
       return new Response(JSON.stringify({ error: "ts_iso non è una data valida (ISO 8601)." }), { status: 400, headers: { "Content-Type": "application/json", ...cors } });
