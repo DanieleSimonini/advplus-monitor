@@ -1,8 +1,8 @@
-\
 // /supabase/functions/sendAppointmentEmail/index.ts
-// Invio email appuntamento con anteprima meeting in Outlook Classic (inline) + allegato ICS
-// Fix: niente artefatti '=20' (forziamo 7bit), orari corretti (Europe/Rome con VTIMEZONE)
-// Deno v2 compatibile – denomailer (invio MIME raw)
+// Invio email appuntamento: Outlook Classic inline + allegato ICS
+// Fix v3.2: elimina definitivamente '=20' usando Content-Transfer-Encoding: base64 per tutte le parti testo
+// Orari corretti con TZ Europe/Rome + VTIMEZONE; MIME raw controllato
+// Deno v2 – denomailer
 
 import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
 
@@ -25,14 +25,12 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
 
-// Format helper in Europe/Rome for body strings
 function formatDateRome(d: Date) {
   const date = new Intl.DateTimeFormat("it-IT", { timeZone: TZID, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
   const time = new Intl.DateTimeFormat("it-IT", { timeZone: TZID, hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
   return { date, time };
 }
 
-// ICS date-time local (no Z) yyyymmddTHHMMSS per TZID
 function tsLocalICS(d: Date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: TZID, year: "numeric", month: "2-digit", day: "2-digit",
@@ -41,7 +39,7 @@ function tsLocalICS(d: Date) {
   return `${parts["year"]}${parts["month"]}${parts["day"]}T${parts["hour"]}${parts["minute"]}${parts["second"]}`;
 }
 
-// VTIMEZONE per Europe/Rome (CET/CEST con RRULE)
+// VTIMEZONE Europe/Rome
 const VTIMEZONE_EUROPE_ROME = [
   "BEGIN:VTIMEZONE",
   `TZID:${TZID}`,
@@ -61,9 +59,9 @@ const VTIMEZONE_EUROPE_ROME = [
   "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
   "END:STANDARD",
   "END:VTIMEZONE",
-].join("\\r\\n");
+].join("
+");
 
-// ICS conforme (CRLF)
 function buildICS(opts: {
   title: string;
   description: string;
@@ -95,9 +93,15 @@ function buildICS(opts: {
     `DTSTAMP:${tsLocalICS(new Date())}`,
     `DTSTART;TZID=${TZID}:${tsLocalICS(start)}`,
     `DTEND;TZID=${TZID}:${tsLocalICS(end)}`,
-    `SUMMARY:${title.replace(/\\r?\\n/g, " ")}`,
-    `DESCRIPTION:${description.replace(/\\r?\\n/g, "\\\\n")}`,
-    location ? `LOCATION:${location.replace(/\\r?\\n/g, " ")}` : "",
+    `SUMMARY:${title.replace(/
+?
+/g, " ")}`,
+    `DESCRIPTION:${description.replace(/
+?
+/g, "\n")}`,
+    location ? `LOCATION:${location.replace(/
+?
+/g, " ")}` : "",
     `ORGANIZER;CN=${organizerName}:MAILTO:${organizerEmail}`,
     ...attendees.map(a => {
       const cn = a.name ? `;CN=${a.name}` : "";
@@ -116,10 +120,20 @@ function buildICS(opts: {
     "END:VEVENT",
     "END:VCALENDAR",
   ];
-  return lines.join("\\r\\n") + "\\r\\n";
+  return lines.join("
+") + "
+";
 }
 
-// Crea raw MIME
+// --- Base64 helper (UTF‑8) ---
+function toBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+// --- MIME RAW con base64 per tutte le parti ---
 function buildRawMIME(opts: {
   from: string;
   to: string;
@@ -140,27 +154,29 @@ function buildRawMIME(opts: {
     "MIME-Version: 1.0",
     "Content-Class: urn:content-classes:calendarmessage",
     `Content-Type: multipart/mixed; boundary="${boundaryMixed}"`,
-  ].filter(Boolean).join("\\r\\n");
+  ].filter(Boolean).join("
+");
 
   const altParts = [
     `--${boundaryAlt}`,
     "Content-Type: text/plain; charset=utf-8",
-    "Content-Transfer-Encoding: 7bit",
+    "Content-Transfer-Encoding: base64",
     "",
-    opts.text,
+    toBase64(opts.text),
     `--${boundaryAlt}`,
     "Content-Type: text/html; charset=utf-8",
-    "Content-Transfer-Encoding: 7bit",
+    "Content-Transfer-Encoding: base64",
     "",
-    opts.html,
+    toBase64(opts.html),
     `--${boundaryAlt}`,
     'Content-Type: text/calendar; method=REQUEST; charset="utf-8"; name="invite.ics"',
     'Content-Disposition: inline; filename="invite.ics"',
-    "Content-Transfer-Encoding: 7bit",
+    "Content-Transfer-Encoding: base64",
     "",
-    opts.icsContent,
+    toBase64(opts.icsContent),
     `--${boundaryAlt}--`,
-  ].join("\\r\\n");
+  ].join("
+");
 
   const mixed = [
     `--${boundaryMixed}`,
@@ -170,14 +186,17 @@ function buildRawMIME(opts: {
     `--${boundaryMixed}`,
     'Content-Type: application/ics; name="appuntamento.ics"',
     'Content-Disposition: attachment; filename="appuntamento.ics"',
-    "Content-Transfer-Encoding: 7bit",
+    "Content-Transfer-Encoding: base64",
     "",
-    opts.icsContent,
+    toBase64(opts.icsContent),
     `--${boundaryMixed}--`,
     ""
-  ].join("\\r\\n");
+  ].join("
+");
 
-  return headersTop + "\\r\\n\\r\\n" + mixed;
+  return headersTop + "
+
+" + mixed;
 }
 
 Deno.serve(async (req) => {
@@ -218,18 +237,17 @@ Deno.serve(async (req) => {
     const NOTE = String(note ?? "").trim();
     const LOC = String(location ?? "").trim();
 
-    // Parsing robusto: se manca il timezone nell'input, assume Europe/Rome
+    // Interpretazione timezone: se manca offset -> assume Europe/Rome
     let start = new Date(ts_iso);
     if (isNaN(start.getTime())) {
       return new Response(JSON.stringify({ error: "ts_iso non è una data valida (ISO 8601)." }), { status: 400, headers: { "Content-Type": "application/json", ...cors } });
     }
     const tzMissing = !/[zZ]|[+-]\d{2}:?\d{2}$/.test(ts_iso);
     if (tzMissing) {
-      const m = ts_iso.match(/(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?/);
+      const m = ts_iso.match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
       if (m) {
         const [, y, mo, da, h, mi, s] = m;
         const asUTC = new Date(Date.UTC(Number(y), Number(mo)-1, Number(da), Number(h), Number(mi), Number(s||"00")));
-        // Offset Rome-UTC a quel momento
         const romeHour = new Intl.DateTimeFormat("en-GB", { timeZone: TZID, hour: "2-digit", minute: "2-digit", hour12: false }).format(asUTC);
         const utcHour = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit", hour12: false }).format(asUTC);
         const [rh, rm] = romeHour.split(":").map(Number);
@@ -254,7 +272,7 @@ Deno.serve(async (req) => {
       "Cordiali saluti,",
       `${ADVISOR}`,
       "Advisory+"
-    ].filter(Boolean).map(s => s.replace(/[ \t]+$/g, "")).join("\\r\\n");
+    ].filter(Boolean).map(s => s.replace(/[ \t]+$/g, "")).join("\r\n");
 
     const html = (
       `<!doctype html><html><body style="margin:0;padding:0;">` +
