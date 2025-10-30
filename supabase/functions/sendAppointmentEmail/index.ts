@@ -129,8 +129,9 @@ Deno.serve(async (req) => {
 
     const subject = isNonEmptyString(subjectIn) ? subjectIn : `Promemoria appuntamento – ${CLIENTE}`;
     const title = isNonEmptyString(titleIn) ? titleIn : `Appuntamento Advisory+ con ${CLIENTE}`;
-    const dataStr = start.toLocaleDateString("it-IT");
-    const oraStr = start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+    const IT_TZ = "Europe/Rome";
+    const dataStr = start.toLocaleDateString("it-IT", { timeZone: IT_TZ });
+    const oraStr = start.toLocaleTimeString("it-IT", { timeZone: IT_TZ, hour: "2-digit", minute: "2-digit" });
 
     // Corpo plain + HTML (Century Gothic)
     const text =
