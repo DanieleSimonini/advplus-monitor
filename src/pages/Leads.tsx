@@ -1,21 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
-// === Time helpers (fix DST/UTC round-trip for datetime-local) ===
-function toIsoUtc(input?: string): string {
+// === Time helpers (safe) ===
+function toIsoUtc(input) {
   if (!input) return new Date().toISOString();
   const d = new Date(input);
   return d.toISOString();
-}
-function toLocalInput(ts?: string): string {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const pad = (n:number)=> String(n).padStart(2,'0');
-  const yyyy = d.getFullYear();
-  const mm   = pad(d.getMonth()+1);
-  const dd   = pad(d.getDate());
-  const hh   = pad(d.getHours());
-  const mi   = pad(d.getMinutes());
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
 // === end time helpers ===
 
@@ -896,7 +885,7 @@ const payload = {
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: toIsoUtc(actDraft.ts || new Date().toISOString()), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
+                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                       const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
                       if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                     }}>Salva</button>
@@ -905,7 +894,7 @@ const payload = {
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: toIsoUtc(actDraft.ts || new Date().toISOString()), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                     const { error } = await supabase.from('activities').insert(payload)
                     if (error) alert(error.message); else { setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                   }}>Aggiungi contatto</button>
@@ -921,7 +910,7 @@ const payload = {
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingActId(r.id); setActDraft({ ts: toLocalInput(r.ts)? r.ts.slice(0,16):'', channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingActId(r.id); setActDraft({ ts: r.ts? r.ts.slice(0,16):'', channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
                       <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contatto?'); if (!ok) return; const { error } = await supabase.from('activities').delete().eq('id', r.id); if (error) alert(error.message); else await loadActivities(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
@@ -954,7 +943,7 @@ const payload = {
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: toIsoUtc(appDraft.ts || new Date().toISOString()), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
+                      const payload = { ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                       const { error } = await supabase.from('appointments').update(payload).eq('id', editingAppId)
                       if (error) alert(error.message); else { setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
                     }}>Salva</button>
@@ -963,7 +952,7 @@ const payload = {
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: toIsoUtc(appDraft.ts || new Date().toISOString()), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                     const { error } = await supabase.from('appointments').insert(payload)
                     if (error) alert(error.message); else { setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
                   }}>Aggiungi appuntamento</button>
@@ -979,7 +968,7 @@ const payload = {
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingAppId(r.id); setAppDraft({ ts: toLocalInput(r.ts)? r.ts.slice(0,16):'', mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingAppId(r.id); setAppDraft({ ts: r.ts? r.ts.slice(0,16):'', mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
                       <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return; const { error } = await supabase.from('appointments').delete().eq('id', r.id); if (error) alert(error.message); else await loadAppointments(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
@@ -1015,7 +1004,7 @@ const payload = {
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: toIsoUtc(propDraft.ts || new Date().toISOString()), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
+                      const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
                       const { error } = await supabase.from('proposals').update(payload).eq('id', editingPropId)
                       if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                     }}>Salva</button>
@@ -1024,7 +1013,7 @@ const payload = {
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: toIsoUtc(propDraft.ts || new Date().toISOString()), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
                     const { error } = await supabase.from('proposals').insert(payload)
                     if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                   }}>Aggiungi proposta</button>
@@ -1040,7 +1029,7 @@ const payload = {
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingPropId(r.id); setPropDraft({ ts: toLocalInput(r.ts)? r.ts.slice(0,16):'', line: r.line||'', amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingPropId(r.id); setPropDraft({ ts: r.ts? r.ts.slice(0,16):'', line: r.line||'', amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
                       <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare la proposta?'); if (!ok) return; const { error } = await supabase.from('proposals').delete().eq('id', r.id); if (error) alert(error.message); else await loadProposals(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
@@ -1078,7 +1067,7 @@ const payload = {
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = { ts: toIsoUtc(ctrDraft.ts || new Date().toISOString()), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
+                      const payload = { ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
                       const { error } = await supabase.from('contracts').update(payload).eq('id', editingCtrId)
                       if (error) alert(error.message); else { setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                     }}>Salva</button>
@@ -1087,7 +1076,7 @@ const payload = {
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: toIsoUtc(ctrDraft.ts || new Date().toISOString()), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), line: ctrDraft.contract_type, notes: ctrDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), line: ctrDraft.contract_type, notes: ctrDraft.notes||null }
                     const { error } = await supabase.from('contracts').insert(payload)
                     if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                   }}>Aggiungi contratto</button>
@@ -1103,7 +1092,7 @@ const payload = {
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
                     <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id); setCtrDraft({ ts: toLocalInput(r.ts)? r.ts.slice(0,16):'', contract_type: r.contract_type, amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
+                      <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id); setCtrDraft({ ts: r.ts? r.ts.slice(0,16):'', contract_type: r.contract_type, amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
                       <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contratto?'); if (!ok) return; const { error } = await supabase.from('contracts').delete().eq('id', r.id); if (error) alert(error.message); else await loadContracts(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
                     </div>
                   </div>
