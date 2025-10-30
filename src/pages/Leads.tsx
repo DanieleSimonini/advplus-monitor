@@ -133,6 +133,26 @@ type Aggs = {
 
 /* === Helper aggiunto: ISO con timezone (per la funzione email) === */
 function toIsoWithTZ(d: Date) {
+
+// === TIMEZONE HELPERS ===
+function fromInputToDates(inputTs) {
+  const d = inputTs ? new Date(inputTs) : new Date();
+  const ts_db = d.toISOString();
+  const ts_iso = toIsoWithTZ(d);
+  return { date: d, ts_db, ts_iso };
+}
+
+function toLocalInputValue(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const y = d.getFullYear();
+  const m = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  return `${y}-${m}-${dd}T${hh}:${mm}`;
+}
+// === END TIMEZONE HELPERS ===
+
   const tzOffsetMin = d.getTimezoneOffset();
   const sign = tzOffsetMin > 0 ? "-" : "+";
   const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
