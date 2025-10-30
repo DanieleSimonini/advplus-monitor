@@ -131,6 +131,17 @@ type Aggs = {
   contractsSum: number
 }
 
+/* === Helper aggiunto: ISO con timezone (per la funzione email) === */
+function toIsoWithTZ(d: Date) {
+  const tzOffsetMin = d.getTimezoneOffset();
+  const sign = tzOffsetMin > 0 ? "-" : "+";
+  const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  const h = pad((tzOffsetMin / -60));
+  const m = pad((tzOffsetMin % 60));
+  const base = new Date(d.getTime() - tzOffsetMin * 60_000).toISOString().slice(0,19);
+  return `${base}${sign}${h}:${m}`;
+}
+
 export default function LeadsPage(){
   // auth/ruolo corrente
   const [meRole, setMeRole] = useState<Role>('Junior')
@@ -733,7 +744,7 @@ const payload = {
         )}
       </div>
 
-      {/* ===================== SCHEDA (DESTRA) — invariata ===================== */}
+      {/* ===================== SCHEDA (DESTRA) — invariata salvo patch appuntamenti ===================== */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
           <div style={{ fontSize:16, fontWeight:700 }}>
@@ -947,7 +958,61 @@ const payload = {
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
                     const payload = { lead_id: selectedId, ts: appDraft.ts || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                     const { error } = await supabase.from('appointments').insert(payload)
-                    if (error) alert(error.message); else { setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
+                    if (error) {
+                      alert(error.message);
+                    } else {
+                      // PATCH: invio email appuntamento con ICS (Edge Function)
+                      try {
+                        // Dati cliente
+                        const clienteNome = ([form.first_name, form.last_name].join(' ').trim()) || (form.company_name || 'Cliente');
+                        const to_client_email = (form.email || '').trim();
+                        // Advisor (owner corrente del lead)
+                        const ownerId = form.owner_id || leads.find(x=>x.id===selectedId)?.owner_id || null;
+                        const adv = advisors.find(a=>a.user_id === ownerId);
+                        const cc_advisor_email = adv?.email || '';
+                        const advisor_nome = adv?.full_name || 'Advisory+';
+                        // Data/ora per email (se mancante prendi now)
+                        const start = appDraft.ts ? new Date(appDraft.ts) : new Date();
+                        const ts_iso = toIsoWithTZ(start);
+                        // Modalità/Note/Location
+                        const modalita = appDraft.mode_label || 'In presenza';
+                        const note = appDraft.notes || '';
+                        const location = ''; // opzionale
+                        // Subject/Title (facoltativi)
+                        const subject = `Promemoria appuntamento – ${clienteNome}`;
+                        const title = `Appuntamento Advisory+ con ${clienteNome}`;
+
+                        if (!to_client_email) {
+                          console.warn('Nessuna email cliente: skip invio promemoria.');
+                        } else {
+                          const { error: fnError } = await supabase.functions.invoke('sendAppointmentEmail', {
+                            body: {
+                              to_client_email,
+                              cc_advisor_email,
+                              cliente_nome: clienteNome,
+                              advisor_nome,
+                              ts_iso,
+                              durata_minuti: 60,
+                              modalita,
+                              note,
+                              location,
+                              subject,
+                              title,
+                            }
+                          });
+                          if (fnError) {
+                            console.error('sendAppointmentEmail error:', fnError);
+                            alert(`Appuntamento salvato, ma invio email fallito: ${fnError.message || fnError}`);
+                          }
+                        }
+                      } catch (e:any) {
+                        console.error('Errore invio email:', e);
+                        alert(`Appuntamento salvato, ma invio email fallito: ${e?.message || e}`);
+                      }
+
+                      setAppDraft({ ts:'', mode_label:'In presenza', notes:'' });
+                      await loadAppointments(selectedId);
+                    }
                   }}>Aggiungi appuntamento</button>
                 )}
               </div>
