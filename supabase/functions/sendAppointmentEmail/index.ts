@@ -26,6 +26,11 @@ function tsUTC(d: Date) {
   return d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
 }
 
+// Normalizza CRLF e rimuove spazi finali riga anche per HTML
+function sanitizeHtmlCrlf(s: string) {
+  return s.split('\n').map(l => l.replace(/\s+$/, '')).join('\r\n');
+}
+
 // ICS conforme (CRLF obbligatori)
 function buildICS(opts: {
   title: string;
@@ -129,9 +134,8 @@ Deno.serve(async (req) => {
 
     const subject = isNonEmptyString(subjectIn) ? subjectIn : `Promemoria appuntamento – ${CLIENTE}`;
     const title = isNonEmptyString(titleIn) ? titleIn : `Appuntamento Advisory+ con ${CLIENTE}`;
-    const IT_TZ = "Europe/Rome";
-    const dataStr = start.toLocaleDateString("it-IT", { timeZone: IT_TZ });
-    const oraStr = start.toLocaleTimeString("it-IT", { timeZone: IT_TZ, hour: "2-digit", minute: "2-digit" });
+    const dataStr = start.toLocaleDateString("it-IT");
+    const oraStr = start.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
 
     // Corpo plain + HTML (Century Gothic)
     const text =
@@ -155,6 +159,8 @@ Advisory+`;
     </div>
   </body>
 </html>`;
+    const html_safe = sanitizeHtmlCrlf(html);
+
 
     // ICS per invito inline
     const organizerNameGuess = RAW_SMTP_FROM.replace(/<.+>/, "").trim() || "Advisory+";
@@ -190,8 +196,7 @@ Advisory+`;
       to: TO,
       ...(CC ? { cc: CC } : {}),
       subject,
-      text,                  // plain
-      html,                  // html → rendering corretto
+      html: html_safe,                  // html → rendering corretto
       headers: {
         // suggerisce a Outlook che è un calendar message
         "Content-Class": "urn:content-classes:calendarmessage",
