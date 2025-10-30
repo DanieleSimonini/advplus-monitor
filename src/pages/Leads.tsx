@@ -1,12 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
-// === Time helpers (safe) ===
-function toIsoUtc(input) {
-  if (!input) return new Date().toISOString();
-  const d = new Date(input);
-  return d.toISOString();
-}
-// === end time helpers ===
 
 /**
  * Leads.tsx — Elenco (sinistra) + Scheda (destra)
