@@ -909,7 +909,7 @@ const payload = {
                 {activities.map(r=> (
                   <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
+                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString("it-IT", { timeZone: "Europe/Rome" })}</div>
                       <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Canale: {CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || r.channel} · Esito: {OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || r.outcome}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
@@ -1021,7 +1021,7 @@ const payload = {
                 {appointments.map(r=> (
                   <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
+                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString("it-IT", { timeZone: "Europe/Rome" })}</div>
                       <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Modalita: {MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || r.mode}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
@@ -1082,7 +1082,7 @@ const payload = {
                 {proposals.map(r=> (
                   <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
+                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString("it-IT", { timeZone: "Europe/Rome" })}</div>
                       <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Linea: {r.line} · Importo: {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
@@ -1145,7 +1145,7 @@ const payload = {
                 {contracts.map(r=> (
                   <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                     <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
+                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString("it-IT", { timeZone: "Europe/Rome" })}</div>
                       <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Tipo: {r.contract_type} · Importo: {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
                       {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
                     </div>
@@ -1177,4 +1177,3 @@ const payload = {
     </div>
   )
 }
-
