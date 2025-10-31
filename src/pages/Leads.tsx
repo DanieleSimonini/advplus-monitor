@@ -956,7 +956,7 @@ const payload = {
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: new Date(appDraft.ts).toISOString() || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
+                    const payload = { lead_id: selectedId, ts: appDraft.ts ? new Date(appDraft.ts).toISOString() : new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
                     const { error } = await supabase.from('appointments').insert(payload)
                     if (error) {
                       alert(error.message);
