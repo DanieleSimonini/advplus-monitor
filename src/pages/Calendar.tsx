@@ -12,9 +12,7 @@ type Mode = 'inperson' | 'phone' | 'video'
 
 type Advisor = { user_id: string, email: string, full_name: string|null, role: Role, team_lead_user_id?: string|null }
 
-type Lead = { id: string, owner_id: string|null, first_name: string|null, last_name: string|null, company_name: string|null ,
-  email?: string|null
-}
+type Lead = { id: string, owner_id: string|null, first_name: string|null, last_name: string|null, company_name: string|null }
 
 type Appointment = {
   id: string
@@ -58,6 +56,9 @@ export default function CalendarPage(){
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
+  // filtro consulente (raggruppato per ruolo)
+  const [selectedAdvisor, setSelectedAdvisor] = useState<string>('')
+
   // modal editor
   const emptyDraft: { id:string; lead_id:string; ts:string; mode:Mode; notes:string } = { id:'', lead_id:'', ts:'', mode:'inperson', notes:'' }
   const [editingId, setEditingId] = useState<string|null>(null)
@@ -97,7 +98,7 @@ export default function CalendarPage(){
       const end = new Date(y, m, 1).toISOString() // esclusivo
 
       // leads nello scope
-      const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name,email').in('owner_id', ownerIds)
+      const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds)
       setLeads((lds||[]) as any)
 
       // appuntamenti del mese
@@ -169,7 +170,7 @@ export default function CalendarPage(){
     const [y,m] = month.split('-').map(Number)
     const start = new Date(y, m-1, 1).toISOString()
     const end = new Date(y, m, 1).toISOString()
-    const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name,email').in('owner_id', ownerIds)
+    const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds)
     const { data: rows } = await supabase
       .from('appointments').select('id,lead_id,ts,mode,notes')
       .in('lead_id', (lds||[]).map(x=>x.id))
@@ -185,42 +186,19 @@ export default function CalendarPage(){
     setAppts(a=> a.filter(x=>x.id!==id))
   }
 
-  // raggruppo appuntamenti per giorno
+  // raggruppo appuntamenti per giorno (applico qui il filtro consulente)
   const apptsByDay = useMemo(()=>{
-    const map = new Map<string, Appointment[]>()
-    for (const a of appts){
-      const d = new Date(a.ts); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
-      const arr = map.get(k) || [];
+    const filtered = selectedAdvisor
+      ? appts.filter(a => a.lead?.owner_id === selectedAdvisor)
+      : appts
 
-/** Fixed day cell height with internal scroll for long days */
-const DAY_H = 180; // px
-const dayCellBase: React.CSSProperties = {
-  border:'1px solid var(--border,#eee)',
-  borderRadius:12,
-  background:'#fff',
-  display:'flex',
-  flexDirection:'column',
-  height: DAY_H,
-  overflow:'hidden'
-};
-const dayHeader: React.CSSProperties = {
-  display:'flex',
-  justifyContent:'space-between',
-  alignItems:'center',
-  padding:'8px'
-};
-const eventsList: React.CSSProperties = {
-  display:'grid',
-  gap:6,
-  padding:'0 8px 8px',
-  overflow:'auto',
-  flex:1,
-  minHeight:0
-};
- arr.push(a); map.set(k, arr)
+    const map = new Map<string, Appointment[]>()
+    for (const a of filtered){
+      const d = new Date(a.ts); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+      const arr = map.get(k) || []; arr.push(a); map.set(k, arr)
     }
     return map
-  }, [appts])
+  }, [appts, selectedAdvisor])
 
   return (
     <div style={{ display:'grid', gap:16 }}>
@@ -234,6 +212,7 @@ const eventsList: React.CSSProperties = {
             {(me?.role==='Admin') && <option value="all">Tutti</option>}
           </select>
         </div>
+
         <div>
           <div style={label}>Mese</div>
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
@@ -242,29 +221,62 @@ const eventsList: React.CSSProperties = {
             <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
           </div>
         </div>
+
         <div>
           <div style={label}>Nuovo</div>
           <button className="brand-btn" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
+        </div>
+
+        {/* Filtro consulente con gruppi Team Lead / Junior */}
+        <div>
+          <div style={label}>Consulente</div>
+          <select
+            style={ipt}
+            value={selectedAdvisor}
+            onChange={e => setSelectedAdvisor(e.target.value)}
+          >
+            <option value="">— Scegli —</option>
+
+            <optgroup label="Team Lead">
+              {advisors
+                .filter(a => a.role === 'Team Lead')
+                .map(a => (
+                  <option key={a.user_id} value={a.user_id}>
+                    {a.full_name || a.email}
+                  </option>
+                ))}
+            </optgroup>
+
+            <optgroup label="Junior">
+              {advisors
+                .filter(a => a.role === 'Junior')
+                .map(a => (
+                  <option key={a.user_id} value={a.user_id}>
+                    {a.full_name || a.email}
+                  </option>
+                ))}
+            </optgroup>
+          </select>
         </div>
       </div>
 
       {/* Vista mensile */}
       <div className="brand-card" style={{ ...box }}>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gridTemplateRows:`repeat(6, ${DAY_H}px)`, gap:8, fontSize:12, color:'var(--muted,#666)', marginBottom:8 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8, fontSize:12, color:'var(--muted,#666)', marginBottom:8 }}>
           {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'].map(d=> <div key={d} style={{ textAlign:'center' }}>{d}</div>)}
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gridTemplateRows:`repeat(6, ${DAY_H}px)`, gap:8 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8 }}>
           {monthGrid.map((cell, idx)=>{
             const k = `${cell.date.getFullYear()}-${cell.date.getMonth()}-${cell.date.getDate()}`
             const items = apptsByDay.get(k) || []
             const isToday = sameDay(cell.date, new Date())
             return (
-              <div key={idx} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:8, background: cell.inMonth? '#fff' : '#fafafa' , display:'flex', flexDirection:'column', height:DAY_H, overflow:'hidden' }}>
-                <div style={dayHeader}>
+              <div key={idx} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:8, background: cell.inMonth? '#fff' : '#fafafa' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                   <div style={{ fontSize:12, fontWeight:600, color:isToday? '#0b57d0':'#111' }}>{cell.date.getDate()}</div>
                   <button title="Nuovo appuntamento" onClick={()=>openCreate(cell.date)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
                 </div>
-                <div style={eventsList}>
+                <div style={{ display:'grid', gap:6 }}>
                   {items.map(a=> (
                     <div key={a.id} style={{ border:'1px solid #e5e7eb', borderRadius:8, padding:'6px 8px', background:'#f8fafc' }}>
                       <div style={{ fontSize:12, fontWeight:600 }}>{new Date(a.ts).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})} · {MODE_OPTIONS.find(m=>m.db===a.mode)?.label}</div>
