@@ -574,7 +574,7 @@ export default function DashboardPage(){
               background: '#ffffff',
               borderRadius: 12,
               padding: 10,
-              border: '1px solid '#E0ECFF',
+              border: '1px solid #E0ECFF',
               display: 'flex',
               flexDirection: 'column',
               gap: 2,
