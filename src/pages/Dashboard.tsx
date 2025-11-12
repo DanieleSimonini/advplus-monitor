@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
@@ -132,6 +131,14 @@ async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
 
 function formatNumber(n:number){ return new Intl.NumberFormat('it-IT').format(n) }
 function formatCurrency(n:number){ return new Intl.NumberFormat('it-IT',{ style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }
+
+// ➕ formattazione percentuali
+function formatPercent(n:number){
+  return new Intl.NumberFormat('it-IT', {
+    maximumFractionDigits: 1,
+    minimumFractionDigits: 0,
+  }).format(n) + ' %'
+}
 
 /**
  * Funnel a trapezi SVG con % conversione
@@ -347,6 +354,19 @@ export default function DashboardPage(){
     finally{ setLoading(false) }
   })() }, [owners.join(','), start, end])
 
+  // ➕ Calcolo tassi percentuali per il pannello a destra
+  const activationRate = funnel.leads > 0
+    ? (funnel.contracts / funnel.leads) * 100
+    : 0
+
+  const closingRate = funnel.appointments > 0
+    ? (funnel.contracts / funnel.appointments) * 100
+    : 0
+
+  const conversionRate = funnel.contacts > 0
+    ? (funnel.contracts / funnel.contacts) * 100
+    : 0
+
   return (
     <div style={{ display:'grid', gap:16 }}>
       {/* Filtri */}
@@ -469,14 +489,109 @@ export default function DashboardPage(){
         </div>
       </div>
 
-      {/* Funnel vero (SVG) */}
-      <Funnel steps={[
-        { label:'Leads', value: funnel.leads },
-        { label:'Contatti', value: funnel.contacts },
-        { label:'Appuntamenti', value: funnel.appointments },
-        { label:'Proposte', value: funnel.proposals },
-        { label:'Contratti', value: funnel.contracts },
-      ]} />
+      {/* Funnel + pannello tassi a destra */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
+          gap: 12,
+          alignItems: 'stretch',
+        }}
+      >
+        <Funnel steps={[
+          { label:'Leads', value: funnel.leads },
+          { label:'Contatti', value: funnel.contacts },
+          { label:'Appuntamenti', value: funnel.appointments },
+          { label:'Proposte', value: funnel.proposals },
+          { label:'Contratti', value: funnel.contracts },
+        ]} />
+
+        {/* Pannello Indicatori di conversione */}
+        <div
+          style={{
+            background: '#F5FBFF',
+            border: '1px solid #BFE4FF',
+            borderRadius: 16,
+            padding: 16,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 12,
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#0b57d0' }}>
+            Indicatori di conversione
+          </div>
+
+          {/* Tasso di Attivazione */}
+          <div
+            style={{
+              background: '#ffffff',
+              borderRadius: 12,
+              padding: 10,
+              border: '1px solid #E0ECFF',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            <div style={{ fontSize: 12, color: '#0b57d0', fontWeight: 600 }}>
+              Tasso di Attivazione
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#0b57d0' }}>
+              {funnel.leads > 0 ? formatPercent(activationRate) : '—'}
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b' }}>
+              Contratti / Leads
+            </div>
+          </div>
+
+          {/* Tasso di Chiusura */}
+          <div
+            style={{
+              background: '#ffffff',
+              borderRadius: 12,
+              padding: 10,
+              border: '1px solid #E0ECFF',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            <div style={{ fontSize: 12, color: '#0b57d0', fontWeight: 600 }}>
+              Tasso di Chiusura
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#0b57d0' }}>
+              {funnel.appointments > 0 ? formatPercent(closingRate) : '—'}
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b' }}>
+              Contratti / Appuntamenti
+            </div>
+          </div>
+
+          {/* Tasso di Conversione */}
+          <div
+            style={{
+              background: '#ffffff',
+              borderRadius: 12,
+              padding: 10,
+              border: '1px solid '#E0ECFF',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            <div style={{ fontSize: 12, color: '#0b57d0', fontWeight: 600 }}>
+              Tasso di Conversione
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: '#0b57d0' }}>
+              {funnel.contacts > 0 ? formatPercent(conversionRate) : '—'}
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b' }}>
+              Contratti / Contatti
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
