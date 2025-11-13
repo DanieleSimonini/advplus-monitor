@@ -153,7 +153,8 @@ export default function ImportLeadsPage(){
             <button onClick={downloadCSV} style={{ ...ipt, cursor:'pointer' }}>Scarica template CSV</button>
           </div>
           <div style={{ fontSize:12, color:'#666' }}>
-            Intestazioni attese: <code>is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email</code>
+            Intestazioni attese:{' '}
+            <code>is_agency_client;email;phone;first_name;last_name;company_name;city;address;source;owner_email</code>
           </div>
           <div>
             <button onClick={validate} disabled={!rows || loading} style={{ ...ipt, cursor:'pointer' }}>Valida</button>
@@ -236,11 +237,13 @@ function toSource(v:any): 'Provided'|'Self'|null{
   if (s==='self') return 'Self'
   return null
 }
+
+// PATCH: template con separatore ';' come il file allegato
 function sampleCSV(){
   return [
-    'is_agency_client,email,phone,first_name,last_name,company_name,city,address,source,owner_email',
-    'true,mario.rossi@example.com,,Mario,Rossi,,Milano,Via A 1,Provided,teamlead@advisoryplus.it',
-    'false,,3331234567,Giulia,Bianchi,,,Self,junior1@advisoryplus.it',
-    'true,azienda@example.com,,,,Azienda Srl,Roma,Via B 2,Provided,junior2@advisoryplus.it'
+    'is_agency_client;email;phone;first_name;last_name;company_name;city;address;source;owner_email',
+    'true;mario.rossi@example.com;;Mario;Rossi;;Milano;Via A 1;Provided;teamlead@advisoryplus.it',
+    'false;;3331234567;Giulia;Bianchi;;;Self;junior1@advisoryplus.it',
+    'true;azienda@example.com;;;;Azienda Srl;Roma;Via B 2;Provided;junior2@advisoryplus.it'
   ].join('\n')
 }
