@@ -200,20 +200,38 @@ export default function ImportLeadsPage(){
 }
 
 /* Helpers */
-function parseCSV(text: string): RawRow[]{
-  const sep = text.indexOf(';')>-1 && text.indexOf(',')===-1 ? ';' : ','
-  const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0)
-  if (lines.length===0) return []
-  const headers = lines[0].split(sep).map(h=>h.trim())
+function detectSeparator(text: string): string {
+  // Prende la prima riga non vuota (header)
+  const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) || ""
+
+  const semicolons = (firstLine.match(/;/g) || []).length
+  const commas = (firstLine.match(/,/g) || []).length
+
+  // Se non trova né ; né , fallback su virgola
+  if (!semicolons && !commas) return ","
+
+  // Se l'header contiene almeno un ';', usiamo ';'
+  // altrimenti usiamo ','
+  return semicolons > 0 ? ";" : ","
+}
+
+function parseCSV(text: string): RawRow[] {
+  const sep = detectSeparator(text) // 🔁 nuovo rilevamento robusto del separatore
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0)
+  if (lines.length === 0) return []
+
+  const headers = lines[0].split(sep).map(h => h.trim())
   const rows: RawRow[] = []
-  for(let i=1;i<lines.length;i++){
+
+  for (let i = 1; i < lines.length; i++) {
     const cols = splitCsvLine(lines[i], sep)
     const obj: RawRow = {}
-    headers.forEach((h,idx)=>{ obj[h] = (cols[idx] ?? '').trim() })
+    headers.forEach((h, idx) => { obj[h] = (cols[idx] ?? "").trim() })
     rows.push(obj)
   }
   return rows
 }
+
 function splitCsvLine(line:string, sep:string){
   const out:string[] = []; let cur=''; let inQ=false
   for(let i=0;i<line.length;i++){
@@ -224,13 +242,16 @@ function splitCsvLine(line:string, sep:string){
   }
   out.push(cur); return out
 }
+
 function parseBool(v:any){
   const s = String(v).toLowerCase().trim()
   if (s==='true' || s==='1' || s==='si' || s==='sì' || s==='yes') return true
   if (s==='false' || s==='0' || s==='no') return false
   return (undefined as unknown) as any
 }
+
 function normStr(v:any){ const s=String(v??'').trim(); return s.length? s : null }
+
 function toSource(v:any): 'Provided'|'Self'|null{
   const s=String(v||'').toLowerCase()
   if (s==='provided') return 'Provided'
