@@ -188,12 +188,7 @@ export default function LeadsPage(){
   const [editingCtrId, setEditingCtrId] = useState<string|null>(null)
   const [ctrDraft, setCtrDraft] = useState<any>({ ts:'', contract_type:CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' })
 
-  // === NUOVO: promemoria ===
-  const [reminders, setReminders] = useState<any[]>([])
-  const [editingRemId, setEditingRemId] = useState<string|null>(null)
-  const [remDraft, setRemDraft] = useState<any>({ ts:'', notes:'' })
-
-  const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'proposte'|'contratti'|'promemoria'>('contatti')
+  const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'proposte'|'contratti'>('contatti')
 
   // ---- Nuovo: filtri elenco + ricerca + ordinamento + paginazione ----
   const [assigneeFilter, setAssigneeFilter] = useState<string>('') // vuoto = tutti
@@ -337,23 +332,12 @@ export default function LeadsPage(){
       .order('ts', { ascending:false })
     setContracts(data||[])
   }
-  // === NUOVO: loader promemoria ===
-  async function loadReminders(leadId:string){
-    const { data } = await supabase
-      .from('reminders')
-      .select('id,ts,notes')
-      .eq('lead_id', leadId)
-      .order('ts', { ascending:false })
-    setReminders(data || [])
-  }
-
   async function reloadAllChildren(leadId:string){
     await Promise.all([
       loadActivities(leadId),
       loadAppointments(leadId),
       loadProposals(leadId),
-      loadContracts(leadId),
-      loadReminders(leadId), // nuovo
+      loadContracts(leadId)
     ])
     // aggiorna aggregati solo per questo lead
     await loadAggregates([leadId])
@@ -395,7 +379,7 @@ export default function LeadsPage(){
     if (msg){ alert(msg); return }
     
     const payloadOwnerId = editingLeadId ? (form.owner_id ?? null) : (form.owner_id || meUid || null)
-    const payload = {
+const payload = {
       owner_id: payloadOwnerId,
       is_agency_client: form.is_agency_client,
       first_name: form.first_name||null,
@@ -581,129 +565,128 @@ export default function LeadsPage(){
         </div>
 
         {/* Filtri */}
-        <div style={{ display:'grid', gap:8, marginBottom:10 }}>
+<div style={{ display:'grid', gap:8, marginBottom:10 }}>
 
-          {/* RIGA 1: Assegnatario (select compatta) + In Lavorazione affiancato */}
-          <div
-            style={{
-              display:'grid',
-              gridTemplateColumns: (meRole==='Admin' || meRole==='Team Lead')
-                ? 'minmax(180px,1fr) 1fr'
-                : '1fr 1fr',               // se non Admin/TL lo lasciamo vuoto a sinistra per allineare il bottone
-              alignItems:'end',
-              gap:8
-            }}
-          >
-            {(meRole==='Admin' || meRole==='Team Lead') ? (
-              <div>
-                <div style={label}>Assegnatario</div>
-                <select
-                  style={ipt}
-                  value={assigneeFilter}
-                  onChange={e=>setAssigneeFilter(e.target.value)}
-                >
-                  <option value="">Tutti</option>
-                  <optgroup label="Team Lead">
-                    {advisors
-                      .filter(a => a.role === 'Team Lead' && a.user_id)
-                      .map(a => (
-                        <option key={a.user_id!} value={a.user_id!}>
-                          {a.full_name || a.email}
-                        </option>
-                      ))}
-                  </optgroup>
-                  <optgroup label="Junior">
-                    {advisors
-                      .filter(a => a.role === 'Junior' && a.user_id)
-                      .map(a => (
-                        <option key={a.user_id!} value={a.user_id!}>
-                          {a.full_name || a.email}
-                        </option>
-                      ))}
-                  </optgroup>
-                </select>
-              </div>
-            ) : (
-              <div /> /* placeholder per mantenere l'allineamento */
-            )}
+  {/* RIGA 1: Assegnatario (select compatta) + In Lavorazione affiancato */}
+  <div
+    style={{
+      display:'grid',
+      gridTemplateColumns: (meRole==='Admin' || meRole==='Team Lead')
+        ? 'minmax(180px,1fr) 1fr'
+        : '1fr 1fr',               // se non Admin/TL lo lasciamo vuoto a sinistra per allineare il bottone
+      alignItems:'end',
+      gap:8
+    }}
+  >
+    {(meRole==='Admin' || meRole==='Team Lead') ? (
+      <div>
+        <div style={label}>Assegnatario</div>
+        <select
+          style={ipt}
+          value={assigneeFilter}
+          onChange={e=>setAssigneeFilter(e.target.value)}
+        >
+<option value="">Tutti</option>
+<optgroup label="Team Lead">
+  {advisors
+    .filter(a => a.role === 'Team Lead' && a.user_id)
+    .map(a => (
+      <option key={a.user_id!} value={a.user_id!}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>
+<optgroup label="Junior">
+  {advisors
+    .filter(a => a.role === 'Junior' && a.user_id)
+    .map(a => (
+      <option key={a.user_id!} value={a.user_id!}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>        </select>
+      </div>
+    ) : (
+      <div /> /* placeholder per mantenere l'allineamento */
+    )}
 
-            <div>
-              <div style={{ visibility:'hidden', height:14 }}>.</div>
-              <button
-                className="brand-btn"
-                onClick={()=>setOnlyWorking(v=>!v)}
-                style={{ width:'100%', ...(onlyWorking ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }}
-              >
-                In Lavorazione
-              </button>
-            </div>
-          </div>
+    <div>
+      <div style={{ visibility:'hidden', height:14 }}>.</div>
+      <button
+        className="brand-btn"
+        onClick={()=>setOnlyWorking(v=>!v)}
+        style={{ width:'100%', ...(onlyWorking ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }}
+      >
+        In Lavorazione
+      </button>
+    </div>
+  </div>
 
-          {/* RIGA 2: Contattato + Fissato/Fatto Appuntamento */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyContacted(v=>!v)}
-              style={ onlyContacted ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Contattato
-            </button>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyAppointment(v=>!v)}
-              style={ onlyAppointment ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Fissato/Fatto Appuntamento
-            </button>
-          </div>
+  {/* RIGA 2: Contattato + Fissato/Fatto Appuntamento */}
+  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyContacted(v=>!v)}
+      style={ onlyContacted ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Contattato
+    </button>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyAppointment(v=>!v)}
+      style={ onlyAppointment ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Fissato/Fatto Appuntamento
+    </button>
+  </div>
 
-          {/* RIGA 3: Presentata Proposta + Firmato Contratto */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyProposal(v=>!v)}
-              style={ onlyProposal ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Presentata Proposta
-            </button>
-            <button
-              className="brand-btn"
-              onClick={()=>setOnlyContract(v=>!v)}
-              style={ onlyContract ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-            >
-              Firmato Contratto
-            </button>
-          </div>
+  {/* RIGA 3: Presentata Proposta + Firmato Contratto */}
+  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyProposal(v=>!v)}
+      style={ onlyProposal ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Presentata Proposta
+    </button>
+    <button
+      className="brand-btn"
+      onClick={()=>setOnlyContract(v=>!v)}
+      style={ onlyContract ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
+    >
+      Firmato Contratto
+    </button>
+  </div>
 
-          {/* Ricerca */}
-          <div>
-            <div style={label}>Cerca (Cognome + Nome)</div>
-            <input
-              style={ipt}
-              placeholder="es. Rossi Ma"
-              value={q}
-              onChange={e=>setQ(e.target.value)}
-            />
-          </div>
+  {/* Ricerca */}
+  <div>
+    <div style={label}>Cerca (Cognome + Nome)</div>
+    <input
+      style={ipt}
+      placeholder="es. Rossi Ma"
+      value={q}
+      onChange={e=>setQ(e.target.value)}
+    />
+  </div>
 
-          {/* Ordina per */}
-          <div>
-            <div style={label}>Ordina per</div>
-            <select
-              style={ipt}
-              value={sortBy}
-              onChange={e=>setSortBy(e.target.value as SortKey)}
-            >
-              <option value="last_name_az">Cognome A→Z</option>
-              <option value="first_name_az">Nome A→Z</option>
-              <option value="created_desc">Data Caricamento (recenti)</option>
-              <option value="last_activity_desc">Data Contatto (recenti)</option>
-              <option value="last_appointment_desc">Data Appuntamento (recenti)</option>
-              <option value="last_proposal_desc">Data Proposta (recenti)</option>
-              <option value="last_contract_desc">Data Contratto (recenti)</option>
-            </select>
-          </div>
-        </div>
+  {/* Ordina per */}
+  <div>
+    <div style={label}>Ordina per</div>
+    <select
+      style={ipt}
+      value={sortBy}
+      onChange={e=>setSortBy(e.target.value as SortKey)}
+    >
+      <option value="last_name_az">Cognome A→Z</option>
+      <option value="first_name_az">Nome A→Z</option>
+      <option value="created_desc">Data Caricamento (recenti)</option>
+      <option value="last_activity_desc">Data Contatto (recenti)</option>
+      <option value="last_appointment_desc">Data Appuntamento (recenti)</option>
+      <option value="last_proposal_desc">Data Proposta (recenti)</option>
+      <option value="last_contract_desc">Data Contratto (recenti)</option>
+    </select>
+  </div>
+</div>
 
         {/* Lista + paginazione */}
         {loading ? 'Caricamento...' : (
@@ -761,7 +744,7 @@ export default function LeadsPage(){
         )}
       </div>
 
-      {/* ===================== SCHEDA (DESTRA) — invariata salvo patch appuntamenti + promemoria ===================== */}
+      {/* ===================== SCHEDA (DESTRA) — invariata salvo patch appuntamenti ===================== */}
       <div className="brand-card" style={{ ...box }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
           <div style={{ fontSize:16, fontWeight:700 }}>
@@ -789,24 +772,24 @@ export default function LeadsPage(){
               <div style={label}>Assegna a</div>
               <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
                 <option value="">— Scegli —</option>
-                <optgroup label="Team Lead">
-                  {advisors
-                    .filter(a => a.role === 'Team Lead' && a.user_id)
-                    .map(a => (
-                      <option key={a.user_id || a.email} value={a.user_id || ''}>
-                        {a.full_name || a.email}
-                      </option>
-                    ))}
-                </optgroup>
-                <optgroup label="Junior">
-                  {advisors
-                    .filter(a => a.role === 'Junior' && a.user_id)
-                    .map(a => (
-                      <option key={a.user_id || a.email} value={a.user_id || ''}>
-                        {a.full_name || a.email}
-                      </option>
-                    ))}
-                </optgroup>
+<optgroup label="Team Lead">
+  {advisors
+    .filter(a => a.role === 'Team Lead' && a.user_id)
+    .map(a => (
+      <option key={a.user_id || a.email} value={a.user_id || ''}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>
+<optgroup label="Junior">
+  {advisors
+    .filter(a => a.role === 'Junior' && a.user_id)
+    .map(a => (
+      <option key={a.user_id || a.email} value={a.user_id || ''}>
+        {a.full_name || a.email}
+      </option>
+    ))}
+</optgroup>
               </select>
             </div>
           )}
@@ -874,8 +857,6 @@ export default function LeadsPage(){
             <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
             <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
             <button className="brand-btn" style={{ ...(activeTab==='contratti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contratti')}>Contratti</button>
-            {/* NUOVO: Promemoria */}
-            <button className="brand-btn" style={{ ...(activeTab==='promemoria'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('promemoria')}>Promemoria</button>
           </div>
 
           {/* CONTATTI */}
@@ -908,12 +889,7 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = {
-                        ts: actDraft.ts ? new Date(actDraft.ts).toISOString() : new Date().toISOString(),
-                        channel: channelDbFromLabel(actDraft.channel_label),
-                        outcome: outcomeDbFromLabel(actDraft.outcome_label),
-                        notes: actDraft.notes || null,
-                      }
+                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                       const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
                       if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                     }}>Salva</button>
@@ -922,13 +898,7 @@ export default function LeadsPage(){
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = {
-                      lead_id: selectedId,
-                      ts: actDraft.ts ? new Date(actDraft.ts).toISOString() : new Date().toISOString(),
-                      channel: channelDbFromLabel(actDraft.channel_label),
-                      outcome: outcomeDbFromLabel(actDraft.outcome_label),
-                      notes: actDraft.notes || null,
-                    }
+                    const payload = { lead_id: selectedId, ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
                     const { error } = await supabase.from('activities').insert(payload)
                     if (error) alert(error.message); else { setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
                   }}>Aggiungi contatto</button>
@@ -991,7 +961,7 @@ export default function LeadsPage(){
                     if (error) {
                       alert(error.message);
                     } else {
-                      // invio email appuntamento con ICS (Edge Function)
+                      // PATCH: invio email appuntamento con ICS (Edge Function)
                       try {
                         // Dati cliente
                         const clienteNome = ([form.first_name, form.last_name].join(' ').trim()) || (form.company_name || 'Cliente');
@@ -1092,12 +1062,7 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = {
-                        ts: propDraft.ts ? new Date(propDraft.ts).toISOString() : new Date().toISOString(),
-                        line: propDraft.line,
-                        premium: propDraft.amount || 0,
-                        notes: propDraft.notes || null,
-                      }
+                      const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
                       const { error } = await supabase.from('proposals').update(payload).eq('id', editingPropId)
                       if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                     }}>Salva</button>
@@ -1106,13 +1071,7 @@ export default function LeadsPage(){
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = {
-                      lead_id: selectedId,
-                      ts: propDraft.ts ? new Date(propDraft.ts).toISOString() : new Date().toISOString(),
-                      line: propDraft.line,
-                      premium: propDraft.amount || 0,
-                      notes: propDraft.notes || null,
-                    }
+                    const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
                     const { error } = await supabase.from('proposals').insert(payload)
                     if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
                   }}>Aggiungi proposta</button>
@@ -1166,12 +1125,7 @@ export default function LeadsPage(){
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button className="brand-btn" onClick={async()=>{
                       if (!selectedId) return
-                      const payload = {
-                        ts: ctrDraft.ts ? new Date(ctrDraft.ts).toISOString() : new Date().toISOString(),
-                        contract_type: ctrDraft.contract_type,
-                        amount: Number(ctrDraft.amount || 0),
-                        notes: ctrDraft.notes || null,
-                      }
+                      const payload = { ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
                       const { error } = await supabase.from('contracts').update(payload).eq('id', editingCtrId)
                       if (error) alert(error.message); else { setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                     }}>Salva</button>
@@ -1180,14 +1134,7 @@ export default function LeadsPage(){
                 ) : (
                   <button className="brand-btn" onClick={async()=>{
                     if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = {
-                      lead_id: selectedId,
-                      ts: ctrDraft.ts ? new Date(ctrDraft.ts).toISOString() : new Date().toISOString(),
-                      contract_type: ctrDraft.contract_type,
-                      amount: Number(ctrDraft.amount || 0),
-                      line: ctrDraft.contract_type,
-                      notes: ctrDraft.notes || null,
-                    }
+                    const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), line: ctrDraft.contract_type, notes: ctrDraft.notes||null }
                     const { error } = await supabase.from('contracts').insert(payload)
                     if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
                   }}>Aggiungi contratto</button>
@@ -1208,220 +1155,6 @@ export default function LeadsPage(){
                     </div>
                   </div>
                 ))}
-              </div>
-            </div>
-          )}
-
-          {/* PROMEMORIA */}
-          {activeTab==='promemoria' && (
-            <div style={{ display:'grid', gap:12 }}>
-              {/* Form inserimento / modifica promemoria */}
-              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr)', gap:12 }}>
-                <div>
-                  <div style={label}>Data/Ora promemoria</div>
-                  <input
-                    type="datetime-local"
-                    style={ipt}
-                    value={remDraft.ts}
-                    onChange={e=>setRemDraft((d:any)=>({ ...d, ts: e.target.value }))}
-                  />
-                </div>
-                <div style={{ gridColumn:'1 / span 2' }}>
-                  <div style={label}>Note promemoria</div>
-                  <textarea
-                    rows={2}
-                    maxLength={240}
-                    style={{ ...ipt, width:'100%' }}
-                    value={remDraft.notes||''}
-                    onChange={e=>setRemDraft((d:any)=>({ ...d, notes: e.target.value }))}
-                  />
-                </div>
-              </div>
-
-              <div>
-                {editingRemId ? (
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <button
-                      className="brand-btn"
-                      onClick={async()=>{
-                        if (!selectedId) return
-                        const payload = {
-                          ts: remDraft.ts ? new Date(remDraft.ts).toISOString() : new Date().toISOString(),
-                          notes: remDraft.notes || null,
-                        }
-                        const { error } = await supabase.from('reminders').update(payload).eq('id', editingRemId)
-                        if (error) {
-                          alert(error.message)
-                        } else {
-                          setEditingRemId(null)
-                          setRemDraft({ ts:'', notes:'' })
-                          await loadReminders(selectedId)
-                        }
-                      }}
-                    >
-                      Salva
-                    </button>
-                    <button
-                      className="brand-btn"
-                      onClick={()=>{
-                        setEditingRemId(null)
-                        setRemDraft({ ts:'', notes:'' })
-                      }}
-                    >
-                      Annulla
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    className="brand-btn"
-                    onClick={async()=>{
-                      if (!selectedId){
-                        alert('Seleziona prima un Lead')
-                        return
-                      }
-
-                      const payload = {
-                        lead_id: selectedId,
-                        ts: remDraft.ts ? new Date(remDraft.ts).toISOString() : new Date().toISOString(),
-                        notes: remDraft.notes || null,
-                      }
-
-                      const { error } = await supabase
-                        .from('reminders')
-                        .insert(payload)
-
-                      if (error) {
-                        alert(error.message)
-                      } else {
-                        // INVIO EMAIL SOLO ALL'ADVISOR DI RIFERIMENTO
-                        try {
-                          const ownerId =
-                            form.owner_id ||
-                            leads.find(x=>x.id===selectedId)?.owner_id ||
-                            null
-
-                          const adv = advisors.find(a=>a.user_id === ownerId)
-                          const to_advisor_email = adv?.email || ''
-                          const advisor_nome = adv?.full_name || 'Advisor'
-
-                          if (!to_advisor_email) {
-                            console.warn('Nessuna email advisor: skip invio promemoria.')
-                          } else {
-                            const start = remDraft.ts ? new Date(remDraft.ts) : new Date()
-                            const ts_iso = toIsoWithTZ(start)
-
-                            const clienteNome =
-                              ([form.first_name, form.last_name].join(' ').trim()) ||
-                              (form.company_name || 'Cliente')
-
-                            const subject = `Nuovo promemoria lead – ${clienteNome}`
-                            const title = `Promemoria su lead ${clienteNome}`
-
-                            const { error: fnError } = await supabase.functions.invoke(
-                              'sendReminderEmail',
-                              {
-                                body: {
-                                  to_advisor_email,
-                                  advisor_nome,
-                                  cliente_nome: clienteNome,
-                                  ts_iso,
-                                  note: remDraft.notes || '',
-                                  subject,
-                                  title,
-                                  lead_id: selectedId,
-                                },
-                              }
-                            )
-
-                            if (fnError) {
-                              console.error('sendReminderEmail error:', fnError)
-                              alert(
-                                `Promemoria salvato, ma invio email fallito: ${fnError.message || fnError}`
-                              )
-                            }
-                          }
-                        } catch (e:any) {
-                          console.error('Errore invio email promemoria:', e)
-                          alert(
-                            `Promemoria salvato, ma invio email fallito: ${e?.message || e}`
-                          )
-                        }
-
-                        setRemDraft({ ts:'', notes:'' })
-                        await loadReminders(selectedId)
-                      }
-                    }}
-                  >
-                    Aggiungi promemoria
-                  </button>
-                )}
-              </div>
-
-              {/* Elenco promemoria */}
-              <div>
-                {reminders.map(r=>(
-                  <div
-                    key={r.id}
-                    style={{
-                      border:'1px solid var(--border, #eee)',
-                      borderRadius:10,
-                      padding:10,
-                      marginBottom:8,
-                      display:'flex',
-                      justifyContent:'space-between',
-                      alignItems:'center',
-                      gap:8
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight:600 }}>
-                        {new Date(r.ts).toLocaleString()}
-                      </div>
-                      {r.notes && (
-                        <div style={{ fontSize:12 }}>
-                          {r.notes}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ display:'inline-flex', gap:6 }}>
-                      <button
-                        title="Modifica"
-                        onClick={()=>{
-                          setEditingRemId(r.id)
-                          setRemDraft({
-                            ts: r.ts ? r.ts.slice(0,16) : '',
-                            notes: r.notes || '',
-                          })
-                        }}
-                        style={{ border:'none', background:'transparent', cursor:'pointer' }}
-                      >
-                        ✏️
-                      </button>
-                      <button
-                        title="Elimina"
-                        onClick={async()=>{
-                          if (!selectedId) return
-                          const ok = confirm('Eliminare il promemoria?')
-                          if (!ok) return
-                          const { error } = await supabase
-                            .from('reminders')
-                            .delete()
-                            .eq('id', r.id)
-                          if (error) alert(error.message)
-                          else await loadReminders(selectedId)
-                        }}
-                        style={{ border:'none', background:'transparent', cursor:'pointer' }}
-                      >
-                        🗑️
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {!reminders.length && (
-                  <div style={{ fontSize:12, color:'#777' }}>
-                    Nessun promemoria per questo lead.
-                  </div>
-                )}
               </div>
             </div>
           )}
