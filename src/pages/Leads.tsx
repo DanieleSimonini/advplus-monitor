@@ -180,6 +180,10 @@ export default function LeadsPage(){
   const [editingAppId, setEditingAppId] = useState<string|null>(null)
   const [appDraft, setAppDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
 
+  const [reminders, setReminders] = useState<any[]>([])
+  const [editingRemId, setEditingRemId] = useState<string|null>(null)
+  const [remDraft, setRemDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
+
   const [proposals, setProposals] = useState<any[]>([])
   const [editingPropId, setEditingPropId] = useState<string|null>(null)
   const [propDraft, setPropDraft] = useState<any>({ ts:'', line:'', amount:0, notes:'' })
@@ -188,7 +192,7 @@ export default function LeadsPage(){
   const [editingCtrId, setEditingCtrId] = useState<string|null>(null)
   const [ctrDraft, setCtrDraft] = useState<any>({ ts:'', contract_type:CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' })
 
-  const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'proposte'|'contratti'>('contatti')
+  const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'promemoria'|'proposte'|'contratti'>('contatti')
 
   // ---- Nuovo: filtri elenco + ricerca + ordinamento + paginazione ----
   const [assigneeFilter, setAssigneeFilter] = useState<string>('') // vuoto = tutti
@@ -316,6 +320,14 @@ export default function LeadsPage(){
       .order('ts', { ascending:false })
     setAppointments(data||[])
   }
+  async function loadReminders(leadId:string){
+  const { data } = await supabase
+    .from('reminders')
+    .select('id,ts,mode,notes')
+    .eq('lead_id', leadId)
+    .order('ts', { ascending:false })
+  setReminders(data||[])
+  }
   async function loadProposals(leadId:string){
     const { data } = await supabase
       .from('proposals')
@@ -336,6 +348,7 @@ export default function LeadsPage(){
     await Promise.all([
       loadActivities(leadId),
       loadAppointments(leadId),
+      loadReminders(leadId),
       loadProposals(leadId),
       loadContracts(leadId)
     ])
@@ -855,6 +868,7 @@ const payload = {
           <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
             <button className="brand-btn" style={{ ...(activeTab==='contatti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contatti')}>Contatti</button>
             <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
+            <button className="brand-btn" style={{ ...(activeTab==='promemoria'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('promemoria')}>Promemoria</button> 
             <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
             <button className="brand-btn" style={{ ...(activeTab==='contratti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contratti')}>Contratti</button>
           </div>
@@ -1034,6 +1048,206 @@ const payload = {
               </div>
             </div>
           )}
+
+{/* PROMEMORIA */}
+{activeTab==='promemoria' && (
+  <div style={{ display:'grid', gap:12 }}>
+    <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,2fr)', gap:12 }}>
+      <div>
+        <div style={label}>Data/Ora promemoria</div>
+        <input
+          type="datetime-local"
+          style={ipt}
+          value={remDraft.ts}
+          onChange={e=>setRemDraft((d:any)=>({ ...d, ts: e.target.value }))}
+        />
+      </div>
+      <div>
+        <div style={label}>Modalità</div>
+        <select
+          style={ipt}
+          value={remDraft.mode_label}
+          onChange={e=>setRemDraft((d:any)=>({ ...d, mode_label:e.target.value }))}
+        >
+          {MODE_OPTIONS_UI.map(o=> (
+            <option key={o.db} value={o.label}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+      <div style={{ gridColumn:'1 / span 3' }}>
+        <div style={label}>Note promemoria</div>
+        <textarea
+          rows={2}
+          maxLength={240}
+          style={{ ...ipt, width:'100%' }}
+          value={remDraft.notes||''}
+          onChange={e=>setRemDraft((d:any)=>({ ...d, notes:e.target.value }))}
+        />
+      </div>
+    </div>
+
+    <div>
+      {editingRemId ? (
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button
+            className="brand-btn"
+            onClick={async()=>{
+              if (!selectedId) return
+              const ts = remDraft.ts ? new Date(remDraft.ts).toISOString() : new Date().toISOString()
+              const payload = {
+                ts,
+                mode: modeDbFromLabel(remDraft.mode_label),
+                notes: remDraft.notes || null,
+              }
+              const { error } = await supabase.from('reminders').update(payload).eq('id', editingRemId)
+              if (error) {
+                alert(error.message)
+              } else {
+                setEditingRemId(null)
+                setRemDraft({ ts:'', mode_label:'In presenza', notes:'' })
+                await loadReminders(selectedId)
+              }
+            }}
+          >
+            Salva
+          </button>
+          <button
+            className="brand-btn"
+            onClick={()=>{
+              setEditingRemId(null)
+              setRemDraft({ ts:'', mode_label:'In presenza', notes:'' })
+            }}
+          >
+            Annulla
+          </button>
+        </div>
+      ) : (
+        <button
+          className="brand-btn"
+          onClick={async()=>{
+            if (!selectedId){ alert('Seleziona prima un Lead'); return }
+            const ts = remDraft.ts ? new Date(remDraft.ts).toISOString() : new Date().toISOString()
+            const payload = {
+              lead_id: selectedId,
+              ts,
+              mode: modeDbFromLabel(remDraft.mode_label),
+              notes: remDraft.notes || null,
+            }
+            const { error } = await supabase.from('reminders').insert(payload)
+            if (error) {
+              alert(error.message)
+            } else {
+              // 🔔 Invio mail SOLO all’advisor owner
+              try {
+                const clienteNome =
+                  ([form.first_name, form.last_name].join(' ').trim()) ||
+                  (form.company_name || 'Cliente')
+
+                const ownerId =
+                  form.owner_id ||
+                  leads.find(x => x.id === selectedId)?.owner_id ||
+                  null
+
+                const adv = advisors.find(a => a.user_id === ownerId)
+                const to_advisor_email = (adv?.email || '').trim()
+                const advisor_nome = adv?.full_name || 'Advisory+'
+
+                if (!to_advisor_email) {
+                  console.warn('Nessuna email advisor per questo lead: skip invio promemoria.')
+                } else {
+                  const start = remDraft.ts ? new Date(remDraft.ts) : new Date()
+                  const ts_iso = toIsoWithTZ(start)
+                  const note = remDraft.notes || ''
+
+                  const { error: fnError } = await supabase.functions.invoke('sendReminderEmail', {
+                    body: {
+                      to_advisor_email,
+                      advisor_nome,
+                      cliente_nome: clienteNome,
+                      ts_iso,
+                      durata_minuti: 30,
+                      note,
+                      location: '',
+                      lead_id: selectedId,
+                    },
+                  })
+
+                  if (fnError) {
+                    console.error('sendReminderEmail error:', fnError)
+                    alert(`Promemoria salvato, ma invio email fallito: ${fnError.message || fnError}`)
+                  }
+                }
+              } catch (e:any) {
+                console.error('Errore invio email promemoria:', e)
+                alert(`Promemoria salvato, ma invio email fallito: ${e?.message || e}`)
+              }
+
+              setRemDraft({ ts:'', mode_label:'In presenza', notes:'' })
+              await loadReminders(selectedId)
+            }
+          }}
+        >
+          Aggiungi promemoria
+        </button>
+      )}
+    </div>
+
+    <div>
+      {reminders.map(r=> (
+        <div
+          key={r.id}
+          style={{
+            border:'1px solid var(--border, #eee)',
+            borderRadius:10,
+            padding:10,
+            marginBottom:8,
+            display:'flex',
+            justifyContent:'space-between',
+            alignItems:'center',
+            gap:8
+          }}
+        >
+          <div>
+            <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
+            <div style={{ fontSize:12, color:'var(--muted, #666)' }}>
+              Modalità: {MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || r.mode}
+            </div>
+            {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
+          </div>
+          <div style={{ display:'inline-flex', gap:6 }}>
+            <button
+              title="Modifica"
+              onClick={()=>{
+                setEditingRemId(r.id)
+                setRemDraft({
+                  ts: r.ts ? r.ts.slice(0,16) : '',
+                  mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza',
+                  notes: r.notes || '',
+                })
+              }}
+              style={{ border:'none', background:'transparent', cursor:'pointer' }}
+            >
+              ✏️
+            </button>
+            <button
+              title="Elimina"
+              onClick={async()=>{
+                if (!selectedId) return
+                const ok = confirm('Eliminare il promemoria?')
+                if (!ok) return
+                const { error } = await supabase.from('reminders').delete().eq('id', r.id)
+                if (error) alert(error.message); else await loadReminders(selectedId)
+              }}
+              style={{ border:'none', background:'transparent', cursor:'pointer' }}
+            >
+              🗑️
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+)}
 
           {/* PROPOSTE */}
           {activeTab==='proposte' && (
