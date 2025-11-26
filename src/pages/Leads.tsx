@@ -452,13 +452,25 @@ const payload = {
     })
 
     // iii. ricerca in Cognome+Nome (case-insensitive, contiene)
-    if (q.trim()){
-      const s = q.trim().toLowerCase()
-      arr = arr.filter(l=>{
-        const name = `${l.last_name||''} ${l.first_name||''}`.trim().toLowerCase()
-        return name.includes(s)
-      })
-    }
+   if (q.trim()) {
+  const s = q.trim().toLowerCase()
+  const tokens = s.split(/\s+/).filter(Boolean)   // es. "Rossi Ma" -> ["rossi", "ma"]
+
+  arr = arr.filter(l => {
+    const haystack = [
+      l.last_name || '',
+      l.first_name || '',
+      l.company_name || '',
+      l.email || '',
+      l.phone || '',
+    ]
+      .join(' ')
+      .toLowerCase()
+
+    // ogni parola digitata deve essere contenuta da qualche parte
+    return tokens.every(t => haystack.includes(t))
+  })
+}
 
     // iv. ordinamenti
     arr.sort((a,b)=>{
