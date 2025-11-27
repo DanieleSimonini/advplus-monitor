@@ -1,7 +1,3 @@
-
-// ReportPage.tsx — Patch: etichette visibili + mirror a torta con percentuale >100% e testo verde al superamento
-// Mantiene le funzionalità esistenti, legge gli obiettivi dalla pagina Obiettivi (tabella goals_monthly).
-
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/supabaseClient'
 
@@ -43,7 +39,7 @@ const headerTitle: React.CSSProperties = { fontSize: 16, fontWeight: 700 }
 const meta: React.CSSProperties = { fontSize: 12, color: '#667085' }
 const input: React.CSSProperties = { padding: '8px 10px', border: '1px solid #D0D5DD', borderRadius: 10, background:'#fff' }
 
-export default function ReportPage(){
+export default function ReportPage() {
   const [me, setMe] = useState<Me | null>(null)
   const [advisors, setAdvisors] = useState<{ user_id: string, email: string, full_name: string | null }[]>([])
   const today = new Date()
@@ -51,113 +47,201 @@ export default function ReportPage(){
   const [toKey, setToKey] = useState(toMonthKey(today))
   const [advisorUid, setAdvisorUid] = useState<string>('')
   const [myTeam, setMyTeam] = useState<boolean>(false)
+  const [annualMode, setAnnualMode] = useState<boolean>(false)
 
   const [goals, setGoals] = useState<GoalsRow[]>([])
   const [prog, setProg] = useState<ProgressRow[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  useEffect(()=>{ (async()=>{
-    setLoading(true); setErr('')
-    try{
-      const { data: auth } = await supabase.auth.getUser()
-      const uid = auth.user?.id
-      if (!uid){ setErr('Utente non autenticato'); setLoading(false); return }
+  useEffect(() => {
+    (async () => {
+      setLoading(true); setErr('')
+      try {
+        const { data: auth } = await supabase.auth.getUser()
+        const uid = auth.user?.id
+        if (!uid) { setErr('Utente non autenticato'); setLoading(false); return }
 
-      const { data: meRow, error: meErr } = await supabase
-        .from('advisors')
-        .select('id,user_id,email,full_name,role')
-        .eq('user_id', uid)
-        .maybeSingle()
-      if (meErr) throw meErr
-      if (!meRow){ setErr('Profilo non trovato'); setLoading(false); return }
-
-      setMe({ id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role })
-      setAdvisorUid(uid)
-
-      if (meRow.role === 'Admin' || meRow.role === 'Team Lead'){
-        const { data: list, error: lerr } = await supabase
+        const { data: meRow, error: meErr } = await supabase
           .from('advisors')
-          .select('user_id,email,full_name')
-          .order('full_name', { ascending: true })
-        if (lerr) throw lerr
-        setAdvisors((list||[]).filter(x=>!!x.user_id) as any)
-      }
-    } catch(ex:any){ setErr(ex.message || 'Errore bootstrap') }
-    finally{ setLoading(false) }
-  })() },[])
+          .select('id,user_id,email,full_name,role')
+          .eq('user_id', uid)
+          .maybeSingle()
+        if (meErr) throw meErr
+        if (!meRow) { setErr('Profilo non trovato'); setLoading(false); return }
 
-  useEffect(()=>{ (async()=>{
-    if (!advisorUid || !me) return
-    setLoading(true); setErr('')
-    try{
-      const rng = monthRange(fromKey, toKey)
-      const years = Array.from(new Set(rng.map(r=>r.y)))
+        setMe({
+          id: meRow.id,
+          user_id: meRow.user_id,
+          email: meRow.email,
+          full_name: meRow.full_name,
+          role: meRow.role as Role
+        })
+        setAdvisorUid(uid)
 
-      let scopeUserIds: string[] = [advisorUid]
-      if (myTeam && (me.role==='Team Lead' || me.role==='Admin')) {
-        const teamLead = me.role==='Admin' ? advisorUid : me.user_id
-        const { data: team, error: teamErr } = await supabase
-          .from('advisors')
-          .select('user_id,team_lead_user_id')
-          .or(`user_id.eq.${teamLead},team_lead_user_id.eq.${teamLead}`)
-        if (teamErr) throw teamErr
-        scopeUserIds = (team||[]).map(r=>r.user_id).filter(Boolean)
-      }
-
-      const progRows: ProgressRow[] = []
-      for (const y of years){
-        const months = rng.filter(r=>r.y===y).map(r=>r.m)
-        const { data, error } = await supabase
-          .from('v_progress_monthly')
-          .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-          .eq('year', y)
-          .in('month', months)
-          .in('advisor_user_id', scopeUserIds)
-        if (error) throw error
-        if (myTeam){
-          const acc = groupSumByYM(data||[])
-          progRows.push(...acc)
-        } else {
-          progRows.push(...(data||[]))
+        if (meRow.role === 'Admin' || meRow.role === 'Team Lead') {
+          const { data: list, error: lerr } = await supabase
+            .from('advisors')
+            .select('user_id,email,full_name')
+            .order('full_name', { ascending: true })
+          if (lerr) throw lerr
+          setAdvisors((list || []).filter(x => !!x.user_id) as any)
         }
-      }
-      setProg(progRows)
+      } catch (ex: any) { setErr(ex.message || 'Errore bootstrap') }
+      finally { setLoading(false) }
+    })()
+  }, [])
 
-      const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, isTeam: myTeam })
-        .catch(async ()=> await loadGoalsMonthlyFromViews({ rng, years, scopeUserIds, isTeam: myTeam }))
+  useEffect(() => {
+    (async () => {
+      if (!advisorUid || !me) return
+      setLoading(true); setErr('')
+      try {
+        const rng = monthRange(fromKey, toKey)
+        const years = Array.from(new Set(rng.map(r => r.y)))
 
-      setGoals(goalsRows)
-    } catch(ex:any){ setErr(ex.message || 'Errore caricamento dati') }
-    finally{ setLoading(false) }
-  })() }, [advisorUid, fromKey, toKey, myTeam, me])
+        let scopeUserIds: string[] = [advisorUid]
+        if (myTeam && (me.role === 'Team Lead' || me.role === 'Admin')) {
+          const teamLead = me.role === 'Admin' ? advisorUid : me.user_id
+          const { data: team, error: teamErr } = await supabase
+            .from('advisors')
+            .select('user_id,team_lead_user_id')
+            .or(`user_id.eq.${teamLead},team_lead_user_id.eq.${teamLead}`)
+          if (teamErr) throw teamErr
+          scopeUserIds = (team || []).map(r => r.user_id).filter(Boolean)
+        }
 
-  const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey), [goals, prog, fromKey, toKey])
-  const totals = useMemo(()=> aggregateTotals(rows), [rows])
+        const progRows: ProgressRow[] = []
+        for (const y of years) {
+          const months = rng.filter(r => r.y === y).map(r => r.m)
+          const { data, error } = await supabase
+            .from('v_progress_monthly')
+            .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
+            .eq('year', y)
+            .in('month', months)
+            .in('advisor_user_id', scopeUserIds)
+          if (error) throw error
+          if (myTeam) {
+            const acc = groupSumByYM(data || [])
+            progRows.push(...acc)
+          } else {
+            progRows.push(...(data || []))
+          }
+        }
+        setProg(progRows)
+
+        const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, isTeam: myTeam })
+          .catch(async () => await loadGoalsMonthlyFromViews({ rng, years, scopeUserIds, isTeam: myTeam }))
+
+        setGoals(goalsRows)
+      } catch (ex: any) { setErr(ex.message || 'Errore caricamento dati') }
+      finally { setLoading(false) }
+    })()
+  }, [advisorUid, fromKey, toKey, myTeam, me])
+
+  const rows = useMemo(
+    () => mergeByMonth(goals, prog, fromKey, toKey),
+    [goals, prog, fromKey, toKey]
+  )
+  const totals = useMemo(
+    () => aggregateTotals(rows),
+    [rows]
+  )
+
+  const handleFromMonthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    if (annualMode) {
+      const year = v.split('-')[0]
+      setFromKey(`${year}-01`)
+      setToKey(`${year}-12`)
+    } else {
+      setFromKey(v)
+    }
+  }
+
+  const handleToMonthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    if (annualMode) {
+      const year = v.split('-')[0]
+      setFromKey(`${year}-01`)
+      setToKey(`${year}-12`)
+    } else {
+      setToKey(v)
+    }
+  }
+
+  const handleAnnualToggle = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const checked = e.target.checked
+    setAnnualMode(checked)
+    if (checked) {
+      const year = toKey.split('-')[0]
+      setFromKey(`${year}-01`)
+      setToKey(`${year}-12`)
+    }
+  }
 
   return (
-    <div style={{ display:'grid', gap:16 }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
-        <div style={{ fontSize:20, fontWeight:800 }}>Report — Andamento vs Obiettivi</div>
-        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontSize: 20, fontWeight: 800 }}>Report — Andamento vs Obiettivi</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <label style={meta}>Dal</label>
-          <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={input} />
+          <input
+            type="month"
+            value={fromKey}
+            onChange={handleFromMonthChange}
+            style={input}
+            disabled={annualMode}
+          />
+
           <label style={meta}>al</label>
-          <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={input} />
-          {me && (me.role==='Team Lead' || me.role==='Admin') && (
-            <label style={{ display:'inline-flex', alignItems:'center', gap:8, ...meta }}>
-              <input type="checkbox" checked={myTeam} onChange={e=>setMyTeam(e.target.checked)} />
+          <input
+            type="month"
+            value={toKey}
+            onChange={handleToMonthChange}
+            style={input}
+          />
+
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, ...meta }}>
+            <input
+              type="checkbox"
+              checked={annualMode}
+              onChange={handleAnnualToggle}
+            />
+            Modalità annuale
+          </label>
+
+          {me && (me.role === 'Team Lead' || me.role === 'Admin') && (
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, ...meta }}>
+              <input
+                type="checkbox"
+                checked={myTeam}
+                onChange={e => setMyTeam(e.target.checked)}
+              />
               Tutto il Team
             </label>
           )}
-          {me && (me.role==='Admin' || me.role==='Team Lead') ? (
+
+          {me && (me.role === 'Admin' || me.role === 'Team Lead') ? (
             <>
               <label style={meta}>Advisor</label>
-              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={input}>
-                {me && <option value={me.user_id}>— {me.full_name || me.email} (me)</option>}
-                {advisors.filter(a=>a.user_id!==me?.user_id).map(a=> (
-                  <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
-                ))}
+              <select
+                value={advisorUid}
+                onChange={e => setAdvisorUid(e.target.value)}
+                style={input}
+              >
+                {me && (
+                  <option value={me.user_id}>
+                    — {me.full_name || me.email} (me)
+                  </option>
+                )}
+                {advisors
+                  .filter(a => a.user_id !== me?.user_id)
+                  .map(a => (
+                    <option key={a.user_id} value={a.user_id}>
+                      {a.full_name || a.email}
+                    </option>
+                  ))}
               </select>
             </>
           ) : (
@@ -166,16 +250,16 @@ export default function ReportPage(){
         </div>
       </div>
 
-      {err && <div style={{ ...card, color:'#c00' }}>{err}</div>}
+      {err && <div style={{ ...card, color: '#c00' }}>{err}</div>}
 
       <div style={{
-        display:'grid',
-        gap:16,
+        display: 'grid',
+        gap: 16,
         gridTemplateColumns: typeof window !== 'undefined' && window.innerWidth < 1024
           ? '1fr'
           : 'minmax(0,1.25fr) minmax(300px,0.75fr)'
       }}>
-        <div style={{ display:'grid', gap:16 }}>
+        <div style={{ display: 'grid', gap: 16 }}>
           <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
           <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
           <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
@@ -183,7 +267,7 @@ export default function ReportPage(){
           <MetricCard title="Vita Premi Ricorrenti" field="prod_vpr" rows={rows} format="currency" />
           <MetricCard title="Vita Premi Unici" field="prod_vpu" rows={rows} format="currency" />
         </div>
-        <div style={{ display:'grid', gap:16, alignContent:'start' }}>
+        <div style={{ display: 'grid', gap: 16, alignContent: 'start' }}>
           <MirrorCard title="Appuntamenti" goal={totals.goal.consulenze} actual={totals.actual.consulenze} format="int" />
           <MirrorCard title="Contratti" goal={totals.goal.contratti} actual={totals.actual.contratti} format="int" />
           <MirrorCard title="Danni Non Auto" goal={totals.goal.prod_danni} actual={totals.actual.prod_danni} format="currency" />
@@ -193,9 +277,18 @@ export default function ReportPage(){
         </div>
       </div>
 
-      {loading && <div style={{ color:'#666' }}>Caricamento…</div>}
+      {loading && <div style={{ color: '#666' }}>Caricamento…</div>}
     </div>
   )
+}
+
+type YM = { y:number, m:number }
+type MergedRow = {
+  y: number
+  m: number
+  label: string
+  goal: Record<keyof GoalsRow, number>
+  actual: Record<keyof GoalsRow, number>
 }
 
 function MetricCard({
@@ -223,11 +316,10 @@ function MetricCard({
   )
 }
 
-// ⇩⇩⇩ PATCH: padding superiore aumentato e label spostate più in alto
 function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency' }){
   const W = Math.max(640, rows.length*64)
-  const H = 180 // era 160
-  const pad = { l:40, r:20, t:30, b:30 } // t era 10 → ora 30 per lasciare spazio alle etichette
+  const H = 160
+  const pad = { l:40, r:20, t:10, b:30 }
   const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
   const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
   const barW = Math.max(16, step*0.36)
@@ -248,9 +340,8 @@ function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, 
               <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#EEF2F6" rx="6" />
               <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#98A2B3" rx="6" />
               <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle" fill="#667085">{r.label}</text>
-              {/* etichette alzate per evitare tagli */}
-              <text x={x + barW/2} y={baseY - gH - 8} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
-              <text x={x + barW + 6 + barW/2} y={baseY - aH - 8} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
+              <text x={x + barW/2} y={baseY - gH - 4} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
+              <text x={x + barW + 6 + barW/2} y={baseY - aH - 4} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
             </g>
           )
         })}
@@ -259,67 +350,30 @@ function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, 
   )
 }
 
-// ⇩⇩⇩ PATCH: mirror trasformato in grafico a torta (progressivo) con percentuale >100% e testo verde al superamento
 function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number, actual:number, format:'int'|'currency' }){
-  const pctRaw = goal>0 ? (actual/goal)*100 : 0
-  const pctDisplay = Math.round(pctRaw*10)/10 // può superare 100
-  const HColor = pctRaw>=100? '#067647' : pctRaw>=70? '#B54708' : '#B42318'
-
-  // configurazione pie
-  const size = 140
-  const cx = size/2
-  const cy = size/2
-  const r = 46
-  const strokeW = 12
-
-  // arco visivo: massimo 360°, ma il numero centrale può superare 100%
-  const angle = Math.min(360, (pctRaw / 100) * 360)
-  const largeArc = angle > 180 ? 1 : 0
-  const rad = (deg:number)=> (deg * Math.PI) / 180
-  const x = cx + r * Math.sin(rad(angle))
-  const y = cy - r * Math.cos(rad(angle))
+  const pct = goal>0 ? Math.min(100, Math.round((actual/goal)*1000)/10) : 0
+  const H = 120, pad = { t:10, b:24 }
+  const maxVal = Math.max(1, goal)
+  const gH = (goal/maxVal) * (H - pad.t - pad.b)
 
   return (
     <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
         <div style={headerTitle}>{title}</div>
-        <div style={{ fontSize:13, fontWeight:700, color: HColor }}>{pctDisplay}%</div>
+        <div style={{ fontSize:13, fontWeight:700, color: pct>=100? '#067647' : pct>=70? '#B54708' : '#B42318' }}>{pct}%</div>
       </div>
       <div style={meta}>
         Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
       </div>
-      <div style={{ display:'grid', placeItems:'center', paddingTop:4, paddingBottom:8 }}>
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-          {/* background */}
-          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEF2F6" strokeWidth={strokeW} />
-          {/* progress: se >=100, anello completo; colore dell'arco verde quando superato */}
-          {pctRaw >= 100 ? (
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#067647" strokeWidth={strokeW} />
-          ) : (
-            <path
-              d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`}
-              stroke={HColor === '#067647' ? '#067647' : '#98A2B3'}
-              strokeWidth={strokeW}
-              fill="none"
-            />
-          )}
-          {/* label percentuale al centro, verde quando >=100% */}
-          <text x={cx} y={cy+4} textAnchor="middle" fontSize="16" fontWeight="bold" fill={HColor}>
-            {pctDisplay}%
-          </text>
+      <div style={{ height:H }}>
+        <svg width="100%" height={H} viewBox={`0 0 200 ${H}`} preserveAspectRatio="none">
+          <rect x="90" y={H - pad.b - gH} width="20" height={gH} fill="#EEF2F6" rx="6" />
+          <text x="100" y={H - pad.b - gH - 4} fontSize="10" textAnchor="middle" fill="#667085">{fmt(goal, format)}</text>
+          <text x="100" y={H - 6} fontSize="10" textAnchor="middle" fill="#667085">Obiettivo periodo</text>
         </svg>
       </div>
     </div>
   )
-}
-
-type YM = { y:number, m:number }
-type MergedRow = {
-  y: number
-  m: number
-  label: string
-  goal: Record<keyof GoalsRow, number>
-  actual: Record<keyof GoalsRow, number>
 }
 
 function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, toKey:string): MergedRow[]{
@@ -388,7 +442,6 @@ async function loadGoalsMonthlyFromGoalsTable({
 
     if (isTeam){
       const map = new Map<string, GoalsRow>()
-
       for(const g of (data||[])){
         const k = `${g.year}-${g.month}`
         const acc = map.get(k) || {
