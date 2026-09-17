@@ -1,511 +1,417 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { supabase } from '../supabaseClient'
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  EmptyState,
+  Skeleton,
+  toneForRatio,
+} from '../ui'
+import { PageHeader } from '../app/AppShell'
+import { MonthRange, ScopeSelect } from '../app/ScopeSelect'
+import { useAdvisors, type Scope } from '../lib/useAdvisors'
+import { chunk } from '../lib/db'
+import { METRICS, emptyMetrics, type MetricDef, type MetricValues } from '../lib/domain'
+import { addMonths, listMonths, monthKeyOf } from '../lib/datetime'
+import { downloadCsv, errorMessage, formatCurrency, formatNumber, formatPercent, monthLabel } from '../lib/format'
 
-// ReportPage.tsx — Patch: etichette visibili + mirror a torta con percentuale >100% e testo verde al superamento
-// Mantiene le funzionalità esistenti, legge gli obiettivi dalla pagina Obiettivi (tabella goals_monthly).
-
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/supabaseClient'
-
-type Role = 'Admin' | 'Team Lead' | 'Junior'
-type Me = { id: string; user_id: string; email: string; full_name: string | null; role: Role }
-
-type ProgressRow = {
-  advisor_user_id: string
+type MonthRow = {
+  key: string
   year: number
   month: number
-  consulenze: number
-  contratti: number
-  prod_danni: number
-  prod_vprot: number
-  prod_vpr: number
-  prod_vpu: number
+  label: string
+  target: MetricValues
+  actual: MetricValues
 }
 
-type GoalsRow = {
-  advisor_user_id: string | 'TEAM'
-  year: number
-  month: number
-  consulenze: number
-  contratti: number
-  prod_danni: number
-  prod_vprot: number
-  prod_vpr: number
-  prod_vpu: number
-}
-
-const card: React.CSSProperties = {
-  background: 'var(--card, #fff)',
-  border: '1px solid var(--border,#e7e7e7)',
-  borderRadius: 16,
-  padding: 16,
-  boxShadow: '0 0 0 rgba(0,0,0,0)'
-}
-const headerTitle: React.CSSProperties = { fontSize: 16, fontWeight: 700 }
-const meta: React.CSSProperties = { fontSize: 12, color: '#667085' }
-const input: React.CSSProperties = { padding: '8px 10px', border: '1px solid #D0D5DD', borderRadius: 10, background:'#fff' }
-
-export default function ReportPage(){
-  const [me, setMe] = useState<Me | null>(null)
-  const [advisors, setAdvisors] = useState<{ user_id: string, email: string, full_name: string | null }[]>([])
-  const today = new Date()
-  const [fromKey, setFromKey] = useState(toMonthKey(addMonths(today, -5)))
-  const [toKey, setToKey] = useState(toMonthKey(today))
-  const [advisorUid, setAdvisorUid] = useState<string>('')
-  const [myTeam, setMyTeam] = useState<boolean>(false)
-
-  const [goals, setGoals] = useState<GoalsRow[]>([])
-  const [prog, setProg] = useState<ProgressRow[]>([])
+export default function ReportPage() {
+  const { resolveScope, scopeOptions, defaultScope } = useAdvisors()
+  const [scope, setScope] = useState<Scope | null>(null)
+  const [period, setPeriod] = useState(() => {
+    const now = monthKeyOf(new Date())
+    return { from: addMonths(now, -5), to: now }
+  })
+  const [rows, setRows] = useState<MonthRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
+  const [error, setError] = useState('')
 
-  useEffect(()=>{ (async()=>{
-    setLoading(true); setErr('')
-    try{
-      const { data: auth } = await supabase.auth.getUser()
-      const uid = auth.user?.id
-      if (!uid){ setErr('Utente non autenticato'); setLoading(false); return }
+  useEffect(() => {
+    if (!scope) setScope(defaultScope)
+  }, [defaultScope, scope])
 
-      const { data: meRow, error: meErr } = await supabase
-        .from('advisors')
-        .select('id,user_id,email,full_name,role')
-        .eq('user_id', uid)
-        .maybeSingle()
-      if (meErr) throw meErr
-      if (!meRow){ setErr('Profilo non trovato'); setLoading(false); return }
+  const advisorIds = useMemo(() => (scope ? resolveScope(scope) : []), [scope, resolveScope])
+  const advisorKey = advisorIds.join(',')
 
-      setMe({ id: meRow.id, user_id: meRow.user_id, email: meRow.email, full_name: meRow.full_name, role: meRow.role as Role })
-      setAdvisorUid(uid)
+  const load = useCallback(async () => {
+    if (!advisorIds.length) {
+      setRows([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const months = listMonths(period.from, period.to)
+      const years = Array.from(new Set(months.map(m => m.year)))
 
-      if (meRow.role === 'Admin' || meRow.role === 'Team Lead'){
-        const { data: list, error: lerr } = await supabase
-          .from('advisors')
-          .select('user_id,email,full_name')
-          .order('full_name', { ascending: true })
-        if (lerr) throw lerr
-        setAdvisors((list||[]).filter(x=>!!x.user_id) as any)
+      const [progress, goals] = await Promise.all([
+        loadRows('v_progress_monthly', advisorIds, years, METRICS.map(m => m.key)),
+        loadRows('goals_monthly', advisorIds, years, METRICS.map(m => m.targetColumn)),
+      ])
+
+      const targetByMonth = aggregate(goals, METRICS.map(m => [m.key, m.targetColumn] as const))
+      const actualByMonth = aggregate(progress, METRICS.map(m => [m.key, m.key] as const))
+
+      setRows(
+        months.map(m => ({
+          key: m.key,
+          year: m.year,
+          month: m.month,
+          label: monthLabel(m.year, m.month),
+          target: targetByMonth.get(m.key) || emptyMetrics(),
+          actual: actualByMonth.get(m.key) || emptyMetrics(),
+        })),
+      )
+    } catch (e) {
+      setError(errorMessage(e, 'Impossibile caricare il report'))
+    } finally {
+      setLoading(false)
+    }
+  }, [advisorKey, period.from, period.to])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const totals = useMemo(() => {
+    const target = emptyMetrics()
+    const actual = emptyMetrics()
+    for (const r of rows) {
+      for (const m of METRICS) {
+        target[m.key] += r.target[m.key] || 0
+        actual[m.key] += r.actual[m.key] || 0
       }
-    } catch(ex:any){ setErr(ex.message || 'Errore bootstrap') }
-    finally{ setLoading(false) }
-  })() },[])
+    }
+    return { target, actual }
+  }, [rows])
 
-  useEffect(()=>{ (async()=>{
-    if (!advisorUid || !me) return
-    setLoading(true); setErr('')
-    try{
-      const rng = monthRange(fromKey, toKey)
-      const years = Array.from(new Set(rng.map(r=>r.y)))
+  const hasTargets = METRICS.some(m => totals.target[m.key] > 0)
+  const hasData = rows.length > 0 && (hasTargets || METRICS.some(m => totals.actual[m.key] > 0))
 
-      let scopeUserIds: string[] = [advisorUid]
-      if (myTeam && (me.role==='Team Lead' || me.role==='Admin')) {
-        const teamLead = me.role==='Admin' ? advisorUid : me.user_id
-        const { data: team, error: teamErr } = await supabase
-          .from('advisors')
-          .select('user_id,team_lead_user_id')
-          .or(`user_id.eq.${teamLead},team_lead_user_id.eq.${teamLead}`)
-        if (teamErr) throw teamErr
-        scopeUserIds = (team||[]).map(r=>r.user_id).filter(Boolean)
-      }
-
-      const progRows: ProgressRow[] = []
-      for (const y of years){
-        const months = rng.filter(r=>r.y===y).map(r=>r.m)
-        const { data, error } = await supabase
-          .from('v_progress_monthly')
-          .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-          .eq('year', y)
-          .in('month', months)
-          .in('advisor_user_id', scopeUserIds)
-        if (error) throw error
-        if (myTeam){
-          const acc = groupSumByYM(data||[])
-          progRows.push(...acc)
-        } else {
-          progRows.push(...(data||[]))
+  function exportReport() {
+    downloadCsv(
+      `guideup_report_${period.from}_${period.to}.csv`,
+      rows.map(r => {
+        const out: Record<string, unknown> = { Mese: r.label }
+        for (const m of METRICS) {
+          out[`${m.label} — obiettivo`] = r.target[m.key]
+          out[`${m.label} — risultato`] = r.actual[m.key]
+          out[`${m.label} — %`] = r.target[m.key] ? Math.round((r.actual[m.key] / r.target[m.key]) * 100) : ''
         }
-      }
-      setProg(progRows)
-
-      const goalsRows = await loadGoalsMonthlyFromGoalsTable({ rng, years, scopeUserIds, isTeam: myTeam })
-        .catch(async ()=> await loadGoalsMonthlyFromViews({ rng, years, scopeUserIds, isTeam: myTeam }))
-
-      setGoals(goalsRows)
-    } catch(ex:any){ setErr(ex.message || 'Errore caricamento dati') }
-    finally{ setLoading(false) }
-  })() }, [advisorUid, fromKey, toKey, myTeam, me])
-
-  const rows = useMemo(()=> mergeByMonth(goals, prog, fromKey, toKey), [goals, prog, fromKey, toKey])
-  const totals = useMemo(()=> aggregateTotals(rows), [rows])
+        return out
+      }),
+    )
+  }
 
   return (
-    <div style={{ display:'grid', gap:16 }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
-        <div style={{ fontSize:20, fontWeight:800 }}>Report — Andamento vs Obiettivi</div>
-        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
-          <label style={meta}>Dal</label>
-          <input type="month" value={fromKey} onChange={e=>setFromKey(e.target.value)} style={input} />
-          <label style={meta}>al</label>
-          <input type="month" value={toKey} onChange={e=>setToKey(e.target.value)} style={input} />
-          {me && (me.role==='Team Lead' || me.role==='Admin') && (
-            <label style={{ display:'inline-flex', alignItems:'center', gap:8, ...meta }}>
-              <input type="checkbox" checked={myTeam} onChange={e=>setMyTeam(e.target.checked)} />
-              Tutto il Team
-            </label>
+    <>
+      <PageHeader
+        title="Report"
+        description="Risultati a confronto con gli obiettivi, mese per mese."
+        actions={
+          <Button icon="download" onClick={exportReport} disabled={!rows.length}>
+            Esporta
+          </Button>
+        }
+      />
+
+      <div className="gu-filters">
+        {scope && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
+        <MonthRange from={period.from} to={period.to} onChange={setPeriod} />
+        <div className="gu-spacer" />
+        {advisorIds.length > 1 && <Badge tone="primary">Dati aggregati su {advisorIds.length} advisor</Badge>}
+      </div>
+
+      {error && <Alert tone="danger" title="Errore">{error}</Alert>}
+
+      {!loading && !hasTargets && rows.length > 0 && (
+        <Alert tone="warning" title="Nessun obiettivo impostato per questo periodo">
+          I risultati sono visibili, ma senza target non è possibile calcolare gli scostamenti. Imposta gli obiettivi
+          dalla sezione Obiettivi.
+        </Alert>
+      )}
+
+      {/* Riepilogo di periodo: un bullet per metrica */}
+      <Card>
+        <CardHeader
+          title="Riepilogo del periodo"
+          subtitle={`${rows.length} ${rows.length === 1 ? 'mese' : 'mesi'} · risultato contro obiettivo`}
+          icon="target"
+        />
+        <CardBody className="gu-stack">
+          {loading ? (
+            <Skeleton height={220} radius={12} />
+          ) : !hasData ? (
+            <EmptyState
+              icon="report"
+              title="Nessun dato nel periodo"
+              text="Non risultano né obiettivi né risultati nell'intervallo selezionato."
+            />
+          ) : (
+            METRICS.map(m => (
+              <BulletRow key={m.key} metric={m} target={totals.target[m.key]} actual={totals.actual[m.key]} />
+            ))
           )}
-          {me && (me.role==='Admin' || me.role==='Team Lead') ? (
+        </CardBody>
+      </Card>
+
+      {/* Dettaglio mensile */}
+      {!loading && hasData && (
+        <div className="gu-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))' }}>
+          {METRICS.map(m => (
+            <Card key={m.key}>
+              <CardHeader
+                title={m.label}
+                icon={m.icon}
+                subtitle={
+                  totals.target[m.key] > 0
+                    ? `${formatValue(totals.actual[m.key], m)} su ${formatValue(totals.target[m.key], m)}`
+                    : formatValue(totals.actual[m.key], m)
+                }
+                actions={
+                  totals.target[m.key] > 0 ? (
+                    <Badge tone={badgeTone(totals.actual[m.key] / totals.target[m.key])}>
+                      {formatPercent((totals.actual[m.key] / totals.target[m.key]) * 100, 0)}
+                    </Badge>
+                  ) : null
+                }
+              />
+              <CardBody>
+                <MonthlyBars rows={rows} metric={m} />
+              </CardBody>
+            </Card>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ========================================================================== */
+/* Bullet chart: risultato, obiettivo e scostamento in una riga               */
+/* ========================================================================== */
+
+function BulletRow({ metric, target, actual }: { metric: MetricDef; target: number; actual: number }) {
+  const ratio = target > 0 ? actual / target : 0
+  const scale = Math.max(target, actual, 1)
+  const tone = toneForRatio(ratio)
+  const color =
+    tone === 'success' ? 'var(--gu-accent-500)' : tone === 'warning' ? 'var(--gu-amber-500)' : 'var(--gu-red-500)'
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1fr) minmax(0, 3fr) auto', gap: 'var(--gu-space-3)', alignItems: 'center' }}>
+      <div>
+        <div style={{ fontSize: 'var(--gu-text-sm)', fontWeight: 600 }}>{metric.label}</div>
+        <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>
+          {target > 0 ? `obiettivo ${formatValue(target, metric)}` : 'nessun obiettivo'}
+        </div>
+      </div>
+
+      <div className="gu-bullet">
+        <div
+          className="gu-bullet__fill"
+          style={{ width: `${Math.min(100, (actual / scale) * 100)}%`, background: color }}
+        />
+        {target > 0 && (
+          <span
+            className="gu-bullet__target"
+            style={{ left: `min(calc(100% - 2px), ${(target / scale) * 100}%)` }}
+            title={`Obiettivo: ${formatValue(target, metric)}`}
+          />
+        )}
+      </div>
+
+      <div style={{ textAlign: 'right', minWidth: 130 }}>
+        <div style={{ fontWeight: 700, fontFamily: 'var(--gu-font-display)' }}>{formatValue(actual, metric)}</div>
+        <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>
+          {target > 0 ? (
             <>
-              <label style={meta}>Advisor</label>
-              <select value={advisorUid} onChange={e=>setAdvisorUid(e.target.value)} style={input}>
-                {me && <option value={me.user_id}>— {me.full_name || me.email} (me)</option>}
-                {advisors.filter(a=>a.user_id!==me?.user_id).map(a=> (
-                  <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
-                ))}
-              </select>
+              {formatPercent(ratio * 100, 0)}
+              {' · '}
+              {actual >= target
+                ? `+${formatValue(actual - target, metric)}`
+                : `mancano ${formatValue(target - actual, metric)}`}
             </>
           ) : (
-            <div style={meta}>Advisor: solo me</div>
+            '—'
           )}
         </div>
       </div>
-
-      {err && <div style={{ ...card, color:'#c00' }}>{err}</div>}
-
-      <div style={{
-        display:'grid',
-        gap:16,
-        gridTemplateColumns: typeof window !== 'undefined' && window.innerWidth < 1024
-          ? '1fr'
-          : 'minmax(0,1.25fr) minmax(300px,0.75fr)'
-      }}>
-        <div style={{ display:'grid', gap:16 }}>
-          <MetricCard title="Appuntamenti" field="consulenze" rows={rows} format="int" />
-          <MetricCard title="Contratti" field="contratti" rows={rows} format="int" />
-          <MetricCard title="Produzione Danni Non Auto" field="prod_danni" rows={rows} format="currency" />
-          <MetricCard title="Vita Protection" field="prod_vprot" rows={rows} format="currency" />
-          <MetricCard title="Vita Premi Ricorrenti" field="prod_vpr" rows={rows} format="currency" />
-          <MetricCard title="Vita Premi Unici" field="prod_vpu" rows={rows} format="currency" />
-        </div>
-        <div style={{ display:'grid', gap:16, alignContent:'start' }}>
-          <MirrorCard title="Appuntamenti" goal={totals.goal.consulenze} actual={totals.actual.consulenze} format="int" />
-          <MirrorCard title="Contratti" goal={totals.goal.contratti} actual={totals.actual.contratti} format="int" />
-          <MirrorCard title="Danni Non Auto" goal={totals.goal.prod_danni} actual={totals.actual.prod_danni} format="currency" />
-          <MirrorCard title="Vita Protection" goal={totals.goal.prod_vprot} actual={totals.actual.prod_vprot} format="currency" />
-          <MirrorCard title="Vita Premi Ricorrenti" goal={totals.goal.prod_vpr} actual={totals.actual.prod_vpr} format="currency" />
-          <MirrorCard title="Vita Premi Unici" goal={totals.goal.prod_vpu} actual={totals.actual.prod_vpu} format="currency" />
-        </div>
-      </div>
-
-      {loading && <div style={{ color:'#666' }}>Caricamento…</div>}
     </div>
   )
 }
 
-function MetricCard({
-  title, field, rows, format
-}:{ title:string, field: keyof GoalsRow, rows: MergedRow[], format:'int'|'currency' }){
-  const totGoal = rows.reduce((s,r)=> s + (r.goal[field]||0), 0)
-  const totAct  = rows.reduce((s,r)=> s + (r.actual[field]||0), 0)
-  const pct = totGoal>0 ? (totAct / totGoal) : 0
+/* ========================================================================== */
+/* Barre affiancate per mese                                                   */
+/* ========================================================================== */
+
+function MonthlyBars({ rows, metric }: { rows: MonthRow[]; metric: MetricDef }) {
+  const max = Math.max(1, ...rows.flatMap(r => [r.target[metric.key] || 0, r.actual[metric.key] || 0]))
+
+  if (!rows.length) return null
 
   return (
-    <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-        <div style={headerTitle}>{title}</div>
-        <div style={{ fontSize:14 }}>
-          <b>{fmt(totAct, format)}</b> / {fmt(totGoal, format)}
-          <span style={{
-            marginLeft:8,
-            color: pct>=1 ? '#067647' : pct>=0.7 ? '#B54708' : '#B42318',
-            fontWeight: 700
-          }}>{(pct*100).toFixed(0)}%</span>
-        </div>
-      </div>
-      <Bars rows={rows} field={field} format={format} />
-    </div>
-  )
-}
-
-// ⇩⇩⇩ PATCH: padding superiore aumentato e label spostate più in alto
-function Bars({ rows, field, format }:{ rows:MergedRow[], field:keyof GoalsRow, format:'int'|'currency' }){
-  const W = Math.max(640, rows.length*64)
-  const H = 180 // era 160
-  const pad = { l:40, r:20, t:30, b:30 } // t era 10 → ora 30 per lasciare spazio alle etichette
-  const maxVal = Math.max(1, ...rows.map(r => Math.max(r.goal[field]||0, r.actual[field]||0)))
-  const step = (W - pad.l - pad.r) / Math.max(1, rows.length)
-  const barW = Math.max(16, step*0.36)
-
-  return (
-    <div style={{ overflowX:'auto' }}>
-      <svg width={W} height={H}>
-        <line x1={pad.l} y1={H-pad.b} x2={W-pad.r} y2={H-pad.b} stroke="#EAECF0" />
-        {rows.map((r, i) => {
-          const x = pad.l + i*step + 8
-          const gVal = r.goal[field]||0
-          const aVal = r.actual[field]||0
-          const gH = (gVal/maxVal) * (H - pad.b - pad.t)
-          const aH = (aVal/maxVal) * (H - pad.b - pad.t)
-          const baseY = H - pad.b
+    <div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${rows.length}, minmax(0, 1fr))`,
+          gap: 'var(--gu-space-2)',
+          alignItems: 'end',
+          height: 160,
+        }}
+      >
+        {rows.map(r => {
+          const target = r.target[metric.key] || 0
+          const actual = r.actual[metric.key] || 0
+          const ratio = target > 0 ? actual / target : 0
+          const tone = toneForRatio(ratio)
           return (
-            <g key={i}>
-              <rect x={x} y={baseY - gH} width={barW} height={gH} fill="#EEF2F6" rx="6" />
-              <rect x={x + barW + 6} y={baseY - aH} width={barW} height={aH} fill="#98A2B3" rx="6" />
-              <text x={x + barW} y={H-10} fontSize={11} textAnchor="middle" fill="#667085">{r.label}</text>
-              {/* etichette alzate per evitare tagli */}
-              <text x={x + barW/2} y={baseY - gH - 8} fontSize={10} textAnchor="middle" fill="#667085">{fmt(gVal, format)}</text>
-              <text x={x + barW + 6 + barW/2} y={baseY - aH - 8} fontSize={10} textAnchor="middle" fill="#111827">{fmt(aVal, format)}</text>
-            </g>
+            <div key={r.key} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 3, height: '100%' }}>
+              <div
+                title={`Obiettivo ${r.label}: ${formatValue(target, metric)}`}
+                style={{
+                  width: '42%',
+                  maxWidth: 22,
+                  height: `${Math.max(2, (target / max) * 100)}%`,
+                  background: 'var(--gu-n-200)',
+                  borderRadius: '4px 4px 0 0',
+                }}
+              />
+              <div
+                title={`Risultato ${r.label}: ${formatValue(actual, metric)}`}
+                style={{
+                  width: '42%',
+                  maxWidth: 22,
+                  height: `${Math.max(2, (actual / max) * 100)}%`,
+                  background:
+                    target === 0
+                      ? 'var(--gu-chart-1)'
+                      : tone === 'success'
+                        ? 'var(--gu-accent-500)'
+                        : tone === 'warning'
+                          ? 'var(--gu-amber-500)'
+                          : 'var(--gu-red-500)',
+                  borderRadius: '4px 4px 0 0',
+                }}
+              />
+            </div>
           )
         })}
-      </svg>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${rows.length}, minmax(0, 1fr))`,
+          gap: 'var(--gu-space-2)',
+          marginTop: 6,
+          paddingTop: 6,
+          borderTop: '1px solid var(--gu-border)',
+          fontSize: 'var(--gu-text-2xs)',
+          color: 'var(--gu-text-subtle)',
+          textAlign: 'center',
+        }}
+      >
+        {rows.map(r => (
+          <span key={r.key} className="gu-truncate">
+            {r.label}
+          </span>
+        ))}
+      </div>
+
+      {/* Fallback testuale: i valori non devono essere leggibili solo al passaggio del mouse */}
+      <details style={{ marginTop: 'var(--gu-space-3)' }}>
+        <summary style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', cursor: 'pointer' }}>
+          Vedi i valori in tabella
+        </summary>
+        <div className="gu-table-wrap" style={{ marginTop: 'var(--gu-space-2)' }}>
+          <table className="gu-table">
+            <thead>
+              <tr>
+                <th scope="col">Mese</th>
+                <th scope="col" style={{ textAlign: 'right' }}>Obiettivo</th>
+                <th scope="col" style={{ textAlign: 'right' }}>Risultato</th>
+                <th scope="col" style={{ textAlign: 'right' }}>%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const t = r.target[metric.key] || 0
+                const a = r.actual[metric.key] || 0
+                return (
+                  <tr key={r.key}>
+                    <td>{r.label}</td>
+                    <td className="gu-table__num">{formatValue(t, metric)}</td>
+                    <td className="gu-table__num">{formatValue(a, metric)}</td>
+                    <td className="gu-table__num">{t > 0 ? formatPercent((a / t) * 100, 0) : '—'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   )
 }
 
-// ⇩⇩⇩ PATCH: mirror trasformato in grafico a torta (progressivo) con percentuale >100% e testo verde al superamento
-function MirrorCard({ title, goal, actual, format }:{ title:string, goal:number, actual:number, format:'int'|'currency' }){
-  const pctRaw = goal>0 ? (actual/goal)*100 : 0
-  const pctDisplay = Math.round(pctRaw*10)/10 // può superare 100
-  const HColor = pctRaw>=100? '#067647' : pctRaw>=70? '#B54708' : '#B42318'
+/* ========================================================================== */
 
-  // configurazione pie
-  const size = 140
-  const cx = size/2
-  const cy = size/2
-  const r = 46
-  const strokeW = 12
+function formatValue(v: number, metric: MetricDef) {
+  return metric.format === 'currency' ? formatCurrency(v) : formatNumber(v)
+}
 
-  // arco visivo: massimo 360°, ma il numero centrale può superare 100%
-  const angle = Math.min(360, (pctRaw / 100) * 360)
-  const largeArc = angle > 180 ? 1 : 0
-  const rad = (deg:number)=> (deg * Math.PI) / 180
-  const x = cx + r * Math.sin(rad(angle))
-  const y = cy - r * Math.cos(rad(angle))
+function badgeTone(ratio: number): 'success' | 'warning' | 'danger' {
+  return toneForRatio(ratio)
+}
 
-  return (
-    <div style={{ ...card, minHeight: 220, display:'grid', gap:10 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-        <div style={headerTitle}>{title}</div>
-        <div style={{ fontSize:13, fontWeight:700, color: HColor }}>{pctDisplay}%</div>
-      </div>
-      <div style={meta}>
-        Attuale: <b>{fmt(actual, format)}</b> · Obiettivo: {fmt(goal, format)}
-      </div>
-      <div style={{ display:'grid', placeItems:'center', paddingTop:4, paddingBottom:8 }}>
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-          {/* background */}
-          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#EEF2F6" strokeWidth={strokeW} />
-          {/* progress: se >=100, anello completo; colore dell'arco verde quando superato */}
-          {pctRaw >= 100 ? (
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#067647" strokeWidth={strokeW} />
-          ) : (
-            <path
-              d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y}`}
-              stroke={HColor === '#067647' ? '#067647' : '#98A2B3'}
-              strokeWidth={strokeW}
-              fill="none"
-            />
-          )}
-          {/* label percentuale al centro, verde quando >=100% */}
-          <text x={cx} y={cy+4} textAnchor="middle" fontSize="16" fontWeight="bold" fill={HColor}>
-            {pctDisplay}%
-          </text>
-        </svg>
-      </div>
-    </div>
+async function loadRows(
+  table: 'v_progress_monthly' | 'goals_monthly',
+  advisorIds: string[],
+  years: number[],
+  columns: string[],
+) {
+  const select = `advisor_user_id,year,month,${columns.join(',')}`
+  const blocks = chunk(advisorIds)
+  const results = await Promise.all(
+    blocks.map(async slice => {
+      const { data, error } = await supabase.from(table).select(select).in('advisor_user_id', slice).in('year', years)
+      if (error) throw error
+      return (data || []) as unknown as Record<string, number>[]
+    }),
   )
+  return results.flat()
 }
 
-type YM = { y:number, m:number }
-type MergedRow = {
-  y: number
-  m: number
-  label: string
-  goal: Record<keyof GoalsRow, number>
-  actual: Record<keyof GoalsRow, number>
-}
-
-function mergeByMonth(goals: GoalsRow[], prog: ProgressRow[], fromKey:string, toKey:string): MergedRow[]{
-  const rng = monthRange(fromKey, toKey)
-  const k = (y:number,m:number)=> `${y}-${m}`
-  const gmap = new Map<string, GoalsRow>()
-  const amap = new Map<string, ProgressRow>()
-  goals.forEach(g=>gmap.set(k(g.year,g.month), g))
-  prog.forEach(a=>amap.set(k(a.year,a.month), a))
-  const fields: (keyof GoalsRow)[] = ['advisor_user_id','year','month','consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
-  const metrics: (keyof GoalsRow)[] = ['consulenze','contratti','prod_danni','prod_vprot','prod_vpr','prod_vpu']
-  const out: MergedRow[] = []
-  for(const {y,m} of rng){
-    const g = gmap.get(k(y,m))
-    const a = amap.get(k(y,m))
-    const row: MergedRow = {
-      y, m,
-      label: `${String(m).padStart(2,'0')}/${String(y).slice(2)}`,
-      goal: Object.fromEntries(fields.map(f=>[f, 0])) as any,
-      actual: Object.fromEntries(fields.map(f=>[f, 0])) as any,
+/**
+ * Somma le righe di più advisor sullo stesso mese.
+ * `mapping` associa la chiave della metrica alla colonna da leggere: le viste
+ * usano i nomi senza prefisso, la tabella obiettivi quelli con `target_`.
+ */
+function aggregate(rows: Record<string, number>[], mapping: readonly (readonly [string, string])[]) {
+  const out = new Map<string, MetricValues>()
+  for (const r of rows) {
+    const key = `${r.year}-${String(r.month).padStart(2, '0')}`
+    const acc = out.get(key) || emptyMetrics()
+    for (const [metricKey, column] of mapping) {
+      acc[metricKey as keyof MetricValues] += Number(r[column] || 0)
     }
-    for(const f of metrics){
-      row.goal[f] = (g as any)?.[f] || 0
-      row.actual[f] = (a as any)?.[f] || 0
-    }
-    out.push(row)
+    out.set(key, acc)
   }
   return out
-}
-
-function aggregateTotals(rows: MergedRow[]){
-  const sum = (f: keyof GoalsRow, kind:'goal'|'actual') => rows.reduce((s,r)=> s + (r[kind][f] || 0), 0)
-  return {
-    goal: {
-      consulenze: sum('consulenze','goal'),
-      contratti: sum('contratti','goal'),
-      prod_danni: sum('prod_danni','goal'),
-      prod_vprot: sum('prod_vprot','goal'),
-      prod_vpr: sum('prod_vpr','goal'),
-      prod_vpu: sum('prod_vpu','goal'),
-    },
-    actual: {
-      consulenze: sum('consulenze','actual'),
-      contratti: sum('contratti','actual'),
-      prod_danni: sum('prod_danni','actual'),
-      prod_vprot: sum('prod_vprot','actual'),
-      prod_vpr: sum('prod_vpr','actual'),
-      prod_vpu: sum('prod_vpu','actual'),
-    }
-  }
-}
-
-async function loadGoalsMonthlyFromGoalsTable({
-  rng, years, scopeUserIds, isTeam
-}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
-  const rows: GoalsRow[] = []
-  for (const y of years){
-    const months = rng.filter(r=>r.y===y).map(r=>r.m)
-    const { data, error } = await supabase
-      .from('goals_monthly')
-      .select('advisor_user_id,year,month,target_consulenze,target_contratti,target_prod_danni,target_prod_vprot,target_prod_vpr,target_prod_vpu')
-      .eq('year', y)
-      .in('month', months)
-      .in('advisor_user_id', scopeUserIds)
-    if (error) throw error
-
-    if (isTeam){
-      const map = new Map<string, GoalsRow>()
-
-      for(const g of (data||[])){
-        const k = `${g.year}-${g.month}`
-        const acc = map.get(k) || {
-          advisor_user_id: 'TEAM',
-          year: g.year, month: g.month,
-          consulenze: 0, contratti: 0,
-          prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
-        }
-        acc.consulenze += g.target_consulenze || 0
-        acc.contratti  += g.target_contratti  || 0
-        acc.prod_danni += g.target_prod_danni || 0
-        acc.prod_vprot += g.target_prod_vprot || 0
-        acc.prod_vpr   += g.target_prod_vpr   || 0
-        acc.prod_vpu   += g.target_prod_vpu   || 0
-        map.set(k, acc)
-      }
-      rows.push(...map.values())
-    } else {
-      rows.push(...(data||[]).map((g:any)=>({
-        advisor_user_id: g.advisor_user_id,
-        year: g.year,
-        month: g.month,
-        consulenze: g.target_consulenze || 0,
-        contratti: g.target_contratti || 0,
-        prod_danni: g.target_prod_danni || 0,
-        prod_vprot: g.target_prod_vprot || 0,
-        prod_vpr: g.target_prod_vpr || 0,
-        prod_vpu: g.target_prod_vpu || 0,
-      })))
-    }
-  }
-  return rows
-}
-
-async function loadGoalsMonthlyFromViews({
-  rng, years, scopeUserIds, isTeam
-}:{ rng: YM[], years:number[], scopeUserIds:string[], isTeam:boolean }): Promise<GoalsRow[]>{
-  const rows: GoalsRow[] = []
-  for(const y of years){
-    const months = rng.filter(r=>r.y===y).map(r=>r.m)
-    if (isTeam){
-      const { data, error } = await supabase
-        .from('v_team_goals_monthly_sum')
-        .select('year,month,consulenze,contratti,danni_non_auto,vita_protection,vita_ricorrenti,vita_unici')
-        .eq('year', y)
-        .in('month', months)
-      if (error) throw error
-      for(const r of (data||[])){
-        rows.push({
-          advisor_user_id: 'TEAM',
-          year: r.year, month: r.month,
-          consulenze: r.consulenze || 0,
-          contratti: r.contratti || 0,
-          prod_danni: r.danni_non_auto || 0,
-          prod_vprot: r.vita_protection || 0,
-          prod_vpr: r.vita_ricorrenti || 0,
-          prod_vpu: r.vita_unici || 0,
-        })
-      }
-    } else {
-      const { data, error } = await supabase
-        .from('v_goals_monthly')
-        .select('advisor_user_id,year,month,consulenze,contratti,prod_danni,prod_vprot,prod_vpr,prod_vpu')
-        .in('advisor_user_id', scopeUserIds.slice(0,1))
-        .eq('year', y)
-        .in('month', months)
-      if (error) throw error
-      rows.push(...(data||[]))
-    }
-  }
-  return rows
-}
-
-function fmt(v:number, mode:'int'|'currency'){
-  if (mode==='int') return String(Math.round(v||0))
-  try{ return new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(v||0) }catch{ return String(v||0) }
-}
-
-function toMonthKey(d: Date){
-  const y = d.getFullYear()
-  const m = d.getMonth()+1
-  return `${y}-${String(m).padStart(2,'0')}`
-}
-function addMonths(d: Date, delta: number){
-  const dd = new Date(d.getTime())
-  dd.setMonth(dd.getMonth()+delta)
-  return dd
-}
-function monthRange(fromKey:string, toKey:string): {y:number,m:number}[]{
-  const [fy,fm] = fromKey.split('-').map(n=>parseInt(n,10))
-  const [ty,tm] = toKey.split('-').map(n=>parseInt(n,10))
-  const out: {y:number,m:number}[] = []
-  let y=fy, m=fm
-  while (y<ty || (y===ty && m<=tm)){
-    out.push({ y, m })
-    m++; if (m>12){ m=1; y++ }
-  }
-  return out
-}
-
-function groupSumByYM(data: any[]): ProgressRow[] {
-  const byKey = new Map<string, ProgressRow>()
-  const k = (y:number,m:number)=>`${y}-${m}`
-  for(const r of data){
-    const key = k(r.year, r.month)
-    const acc = byKey.get(key) || {
-      advisor_user_id: 'TEAM',
-      year: r.year, month: r.month,
-      consulenze: 0, contratti: 0, prod_danni: 0, prod_vprot: 0, prod_vpr: 0, prod_vpu: 0
-    }
-    acc.consulenze += r.consulenze || 0
-    acc.contratti  += r.contratti  || 0
-    acc.prod_danni += r.prod_danni || 0
-    acc.prod_vprot += r.prod_vprot || 0
-    acc.prod_vpr   += r.prod_vpr   || 0
-    acc.prod_vpu   += r.prod_vpu   || 0
-    byKey.set(key, acc)
-  }
-  return Array.from(byKey.values())
 }

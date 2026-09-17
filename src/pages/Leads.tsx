@@ -1,1405 +1,697 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/supabaseClient'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { supabase } from '../supabaseClient'
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  EmptyState,
+  Icon,
+  Pagination,
+  SearchInput,
+  SelectField,
+  SkeletonRows,
+  useConfirm,
+  useToast,
+} from '../ui'
+import { PageHeader } from '../app/AppShell'
+import { useAuth } from '../auth/AuthProvider'
+import { useAdvisors } from '../lib/useAdvisors'
+import { fetchAllPages, inChunks, uniq } from '../lib/db'
+import { LEAD_FIELDS, leadName, type Lead } from '../lib/domain'
+import { displayName, downloadCsv, errorMessage, formatCurrency, relativeTime } from '../lib/format'
+import {
+  LeadDetail,
+  emptyLeadForm,
+  leadToForm,
+  validateLead,
+  type LeadFormErrors,
+  type LeadFormState,
+} from './leads/LeadDetail'
 
-/**
- * Leads.tsx — Elenco (sinistra) + Scheda (destra)
- * Sinistra: paginazione, filtri (assegnatario, stato, contattato/appuntamento/proposta/contratto),
- * ricerca per Cognome+Nome, ordinamenti richiesti, esportazione CSV con aggregati.
- * Destra: invariata rispetto alla tua versione.
- */
+const PAGE_SIZE = 25
 
-// === Opzioni UI ===
-const CHANNEL_OPTIONS_UI = [
-  { label: 'Telefono', db: 'phone' },
-  { label: 'Email', db: 'email' },
-  { label: 'WhatsApp', db: 'phone' }, // mapped → phone
-  { label: 'SMS', db: 'phone' },       // mapped → phone
-  { label: 'Altro', db: 'phone' },     // mapped → phone
-] as const
+type Stage = 'all' | 'none' | 'contacted' | 'appointment' | 'proposal' | 'contract'
 
-const MODE_OPTIONS_UI = [
-  { label: 'In presenza', db: 'inperson' },
-  { label: 'Video', db: 'video' },
-  { label: 'Telefono', db: 'phone' },
-] as const
+const STAGE_OPTIONS: { value: Stage; label: string }[] = [
+  { value: 'all', label: 'Tutti gli stadi' },
+  { value: 'none', label: 'Mai contattati' },
+  { value: 'contacted', label: 'Contattati' },
+  { value: 'appointment', label: 'Con appuntamento' },
+  { value: 'proposal', label: 'Con proposta' },
+  { value: 'contract', label: 'Con contratto' },
+]
 
-const OUTCOME_OPTIONS_UI = [
-  { label: 'Parlato', db: 'spoke' },
-  { label: 'Nessuna risposta', db: 'noanswer' },
-  { label: 'Rifiutato', db: 'refused' },
-] as const
-
-const CONTRACT_TYPE_OPTIONS = [
-  { label: 'Danni Non Auto', value: 'Danni Non Auto' },
-  { label: 'Vita Protection', value: 'Vita Protection' },
-  { label: 'Vita Premi Ricorrenti', value: 'Vita Premi Ricorrenti' },
-  { label: 'Vita Premi Unici', value: 'Vita Premi Unici' },
-] as const
-
-// === Mapping UI label -> DB literal ===
-function channelDbFromLabel(label: string){
-  const o = CHANNEL_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'phone') as 'phone'|'email'|'inperson'|'video'
-}
-function modeDbFromLabel(label: string){
-  const o = MODE_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'inperson') as 'inperson'|'phone'|'video'
-}
-function outcomeDbFromLabel(label: string){
-  const o = OUTCOME_OPTIONS_UI.find(x=>x.label===label); return (o? o.db : 'spoke') as 'spoke'|'noanswer'|'refused'
-}
-
-// === Tipi base ===
-type Role = 'Admin' | 'Team Lead' | 'Junior'
-
-type Lead = {
-  id?: string
-  owner_id?: string | null
-  is_agency_client: boolean | null
-  first_name?: string | null
-  last_name?: string | null
-  company_name?: string | null
-  email?: string | null
-  phone?: string | null
-  city?: string | null
-  address?: string | null
-  source?: 'Provided' | 'Self' | null
-  created_at?: string
-  is_working?: boolean | null
+const STAGE_TABLE: Record<Exclude<Stage, 'all' | 'none'>, 'activities' | 'appointments' | 'proposals' | 'contracts'> = {
+  contacted: 'activities',
+  appointment: 'appointments',
+  proposal: 'proposals',
+  contract: 'contracts',
 }
 
-type AdvisorRow = { user_id: string | null, email: string, full_name: string | null, role: Role }
+type SortKey = 'last_name' | 'first_name' | 'created_desc' | 'last_activity'
 
-type FormState = {
-  id?: string
-  owner_id?: string | null
-  is_agency_client: boolean | null
-  first_name: string
-  last_name: string
-  company_name: string
-  email: string
-  phone: string
-  city: string
-  address: string
-  source: 'Provided' | 'Self' | ''
-  is_working?: boolean
+const SORT_OPTIONS: { value: SortKey; label: string; aggregate?: boolean }[] = [
+  { value: 'last_name', label: 'Cognome (A → Z)' },
+  { value: 'first_name', label: 'Nome (A → Z)' },
+  { value: 'created_desc', label: 'Caricati di recente' },
+  { value: 'last_activity', label: 'Contattati di recente', aggregate: true },
+]
+
+type Aggregate = {
+  contacts: number
+  appointments: number
+  proposals: number
+  contracts: number
+  production: number
+  lastContact?: string
 }
 
-// === UI helpers ===
-const box: React.CSSProperties = {
-  background:'var(--card, #fff)',
-  border:'1px solid var(--border, #eee)',
-  borderRadius:16,
-  padding:16,
-  maxWidth:'100%',
-  overflow:'hidden'
-}
-const ipt: React.CSSProperties = {
-  width:'100%',
-  padding:'6px 10px',
-  border:'1px solid var(--border, #ddd)',
-  borderRadius:8,
-  background:'#fff',
-  boxSizing:'border-box',
-  minWidth:0
-}
-const label: React.CSSProperties = { fontSize:12, color:'var(--muted, #666)' }
-const row: React.CSSProperties = { display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)', gap:12 }
+export default function LeadsPage({
+  selectedId,
+  onSelect,
+}: {
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+}) {
+  const { me, isAdmin, isTeamLead } = useAuth()
+  const { visible: advisors, byUserId } = useAdvisors()
+  const toast = useToast()
+  const confirm = useConfirm()
 
-/* ---- Nuovo: ordinamenti elenco ---- */
-type SortKey =
-  | 'last_name_az'
-  | 'first_name_az'
-  | 'created_desc'
-  | 'last_activity_desc'
-  | 'last_appointment_desc'
-  | 'last_proposal_desc'
-  | 'last_contract_desc'
+  const canAssign = isAdmin || isTeamLead
 
-/* ---- Aggregati per i filtri/ordinamento/esporta ---- */
-type Aggs = {
-  contactsCount: number
-  lastContactTs?: string
-  lastContactNote?: string
-  appointmentsCount: number
-  lastAppointmentTs?: string
-  lastAppointmentNote?: string
-  proposalsCount: number
-  lastProposalTs?: string
-  lastProposalNote?: string
-  contractsCount: number
-  lastContractTs?: string
-  lastContractNote?: string
-  contractsSum: number
-}
+  // --- filtri ---
+  const [ownerFilter, setOwnerFilter] = useState('')
+  const [stage, setStage] = useState<Stage>('all')
+  const [onlyWorking, setOnlyWorking] = useState(true)
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [sort, setSort] = useState<SortKey>('last_name')
+  const [page, setPage] = useState(1)
 
-/* === Helper aggiunto: ISO con timezone (per la funzione email) === */
-function toIsoWithTZ(d: Date) {
-  const tzOffsetMin = d.getTimezoneOffset();
-  const sign = tzOffsetMin > 0 ? "-" : "+";
-  const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
-  const h = pad((tzOffsetMin / -60));
-  const m = pad((tzOffsetMin % 60));
-  const base = new Date(d.getTime() - tzOffsetMin * 60_000).toISOString().slice(0,19);
-  return `${base}${sign}${h}:${m}`;
-}
-
-export default function LeadsPage(){
-  // auth/ruolo corrente
-  const [meRole, setMeRole] = useState<Role>('Junior')
-  const [meUid, setMeUid] = useState<string>('')
-
-  // elenco lead
-  const [leads, setLeads] = useState<Lead[]>([])
+  // --- dati ---
+  const [rows, setRows] = useState<Lead[]>([])
+  const [total, setTotal] = useState(0)
+  const [aggregates, setAggregates] = useState<Record<string, Aggregate>>({})
   const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
+  const [error, setError] = useState('')
+  const [exporting, setExporting] = useState(false)
 
-  // advisors per assegnazione owner
-  const [advisors, setAdvisors] = useState<AdvisorRow[]>([])
+  // --- scheda ---
+  const [selected, setSelected] = useState<Lead | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [form, setForm] = useState<LeadFormState>(() => emptyLeadForm(me?.user_id || null))
+  const [formErrors, setFormErrors] = useState<LeadFormErrors>({})
+  const [saving, setSaving] = useState(false)
 
-  // selezione + edit
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [editingLeadId, setEditingLeadId] = useState<string | null>(null)
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const requestId = useRef(0)
 
-  // form lead (destra)
-  const emptyForm: FormState = {
-    is_agency_client: null,
-    owner_id: null,
-    first_name: '', last_name: '', company_name: '',
-    email: '', phone: '', city: '', address: '',
-    source: '',
-    is_working: true
-  }
-  const [form, setForm] = useState<FormState>(emptyForm)
+  // La ricerca aspetta che l'utente smetta di scrivere: prima ogni tasto
+  // scatenava un ricalcolo completo della lista.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
 
-  // tabelle collegate (destra)
-  const [activities, setActivities] = useState<any[]>([])
-  const [editingActId, setEditingActId] = useState<string|null>(null)
-  const [actDraft, setActDraft] = useState<any>({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' })
+  useEffect(() => {
+    setPage(1)
+  }, [ownerFilter, stage, onlyWorking, debouncedSearch, sort])
 
-  const [appointments, setAppointments] = useState<any[]>([])
-  const [editingAppId, setEditingAppId] = useState<string|null>(null)
-  const [appDraft, setAppDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
+  const needsFullScan = stage !== 'all' || SORT_OPTIONS.find(s => s.value === sort)?.aggregate === true
 
-  const [reminders, setReminders] = useState<any[]>([])
-  const [editingRemId, setEditingRemId] = useState<string|null>(null)
-  const [remDraft, setRemDraft] = useState<any>({ ts:'', mode_label:'In presenza', notes:'' })
+  const load = useCallback(async () => {
+    const rid = ++requestId.current
+    setLoading(true)
+    setError('')
+    try {
+      let pageRows: Lead[] = []
+      let count = 0
 
-  const [proposals, setProposals] = useState<any[]>([])
-  const [editingPropId, setEditingPropId] = useState<string|null>(null)
-  const [propDraft, setPropDraft] = useState<any>({ ts:'', line:'', amount:0, notes:'' })
+      if (!needsFullScan) {
+        const base = () => {
+          let q = supabase.from('leads').select(LEAD_FIELDS, { count: 'exact' })
+          if (ownerFilter) q = q.eq('owner_id', ownerFilter)
+          if (onlyWorking) q = q.eq('is_working', true)
+          if (debouncedSearch) q = q.or(searchFilter(debouncedSearch))
+          return applySort(q, sort)
+        }
+        const from = (page - 1) * PAGE_SIZE
+        const { data, count: c, error } = await base().range(from, from + PAGE_SIZE - 1)
+        if (error) throw error
+        pageRows = (data || []) as Lead[]
+        count = c || 0
+      } else {
+        // Filtro per stadio o ordinamento per ultima attività: serve l'insieme
+        // completo degli id prima di poter impaginare. Si scaricano solo gli id,
+        // non le righe intere.
+        const candidates = await fetchAllPages<{ id: string }>(() => {
+          let q = supabase.from('leads').select('id')
+          if (ownerFilter) q = q.eq('owner_id', ownerFilter)
+          if (onlyWorking) q = q.eq('is_working', true)
+          if (debouncedSearch) q = q.or(searchFilter(debouncedSearch))
+          return q as never
+        })
+        const candidateIds = candidates.map(c => c.id)
 
-  const [contracts, setContracts] = useState<any[]>([])
-  const [editingCtrId, setEditingCtrId] = useState<string|null>(null)
-  const [ctrDraft, setCtrDraft] = useState<any>({ ts:'', contract_type:CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' })
+        let keep = candidateIds
+        let lastActivity = new Map<string, string>()
 
-  const [activeTab, setActiveTab] = useState<'contatti'|'appuntamenti'|'promemoria'|'proposte'|'contratti'>('contatti')
+        if (stage === 'none' || stage === 'contacted' || sort === 'last_activity') {
+          const acts = await inChunks(candidateIds, slice =>
+            fetchAllPages<{ lead_id: string; ts: string }>(
+              () => supabase.from('activities').select('lead_id,ts').in('lead_id', slice) as never,
+            ),
+          )
+          lastActivity = latestByLead(acts)
+          if (stage === 'none') keep = candidateIds.filter(id => !lastActivity.has(id))
+          if (stage === 'contacted') keep = candidateIds.filter(id => lastActivity.has(id))
+        }
 
-  // ---- Nuovo: filtri elenco + ricerca + ordinamento + paginazione ----
-  const [assigneeFilter, setAssigneeFilter] = useState<string>('') // vuoto = tutti
-  const [onlyWorking, setOnlyWorking] = useState<boolean>(true)     // default: selezionato
-  const [onlyContacted, setOnlyContacted] = useState<boolean>(false)
-  const [onlyAppointment, setOnlyAppointment] = useState<boolean>(false)
-  const [onlyProposal, setOnlyProposal] = useState<boolean>(false)
-  const [onlyContract, setOnlyContract] = useState<boolean>(false)
+        if (stage === 'appointment' || stage === 'proposal' || stage === 'contract') {
+          const table = STAGE_TABLE[stage]
+          const child = await inChunks(candidateIds, slice =>
+            fetchAllPages<{ lead_id: string }>(
+              () => supabase.from(table).select('lead_id').in('lead_id', slice) as never,
+            ),
+          )
+          const withStage = new Set(uniq(child.map(c => c.lead_id)))
+          keep = candidateIds.filter(id => withStage.has(id))
+        }
 
-  const [q, setQ] = useState<string>('')
-  const [sortBy, setSortBy] = useState<SortKey>('last_name_az')
+        count = keep.length
 
-  const PAGE_SIZE = 10
-  const [page, setPage] = useState<number>(1)
+        if (sort === 'last_activity') {
+          keep = [...keep].sort((a, b) => (lastActivity.get(b) || '').localeCompare(lastActivity.get(a) || ''))
+        }
 
-  // aggregati per leadId
-  const [aggs, setAggs] = useState<Record<string, Aggs>>({})
-
-  // bootstrap
-  useEffect(()=>{ (async()=>{
-    setLoading(true); setErr('')
-    try{
-      const { data: s } = await supabase.auth.getUser()
-      const uid = s.user?.id || ''
-      setMeUid(uid)
-      if (uid){
-        const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
-        if (me?.role) setMeRole(me.role as Role)
+        const from = (page - 1) * PAGE_SIZE
+        const pageIds = keep.slice(from, from + PAGE_SIZE)
+        if (pageIds.length) {
+          const { data, error } = await supabase.from('leads').select(LEAD_FIELDS).in('id', pageIds)
+          if (error) throw error
+          const byId = new Map((data || []).map(r => [(r as Lead).id, r as Lead]))
+          const ordered = pageIds.map(id => byId.get(id)).filter((x): x is Lead => !!x)
+          pageRows = sort === 'last_activity' ? ordered : sortClient(ordered, sort)
+        }
       }
-      await Promise.all([loadLeads(), loadAdvisors()])
-    } catch(ex:any){ setErr(ex.message || 'Errore inizializzazione') }
-    finally{ setLoading(false) }
-  })() },[])
 
-  // carica leads
-  async function loadLeads(){
-    const { data, error } = await supabase
+      if (rid !== requestId.current) return // risposta sorpassata da una più recente
+      setRows(pageRows)
+      setTotal(count)
+      setAggregates(await loadAggregates(pageRows.map(r => r.id)))
+    } catch (e) {
+      if (rid !== requestId.current) return
+      setError(errorMessage(e, 'Impossibile caricare i lead'))
+      setRows([])
+      setTotal(0)
+    } finally {
+      if (rid === requestId.current) setLoading(false)
+    }
+  }, [ownerFilter, stage, onlyWorking, debouncedSearch, sort, page, needsFullScan])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  // Un lead richiamato dall'URL (#/leads/<id>) viene caricato anche se non è
+  // nella pagina corrente della lista.
+  useEffect(() => {
+    if (!selectedId) {
+      setSelected(null)
+      return
+    }
+    const inPage = rows.find(r => r.id === selectedId)
+    if (inPage) {
+      setSelected(inPage)
+      setForm(leadToForm(inPage))
+      setCreating(false)
+      return
+    }
+    let alive = true
+    void supabase
       .from('leads')
-      .select('id,owner_id,is_agency_client,first_name,last_name,company_name,email,phone,city,address,source,created_at,is_working')
-      .order('created_at', { ascending:false })
-    if (error){ setErr(error.message); return }
-    const arr = (data || []) as Lead[]
-    setLeads(arr)
-    // carica aggregati per tutti i lead correnti
-    await loadAggregates(arr.map(x=>x.id!).filter(Boolean))
-  }
-
-  async function loadAdvisors(){
-    const { data } = await supabase
-      .from('advisors')
-      .select('user_id,email,full_name,role')
-      .order('full_name', { ascending:true })
-    setAdvisors((data||[]) as AdvisorRow[])
-  }
-
-  // ---- Aggregazioni: contatti/appuntamenti/proposte/contratti per lead ----
-  async function loadAggregates(leadIds: string[]){
-    if (!leadIds.length){ setAggs({}); return }
-    const [acts, apps, props, ctrs] = await Promise.all([
-      supabase.from('activities').select('lead_id, ts, notes').in('lead_id', leadIds),
-      supabase.from('appointments').select('lead_id, ts, notes').in('lead_id', leadIds),
-      supabase.from('proposals').select('lead_id, ts, notes').in('lead_id', leadIds),
-      supabase.from('contracts').select('lead_id, ts, notes, amount').in('lead_id', leadIds),
-    ])
-
-    const map: Record<string, Aggs> = {}
-
-    function ensure(id:string){ if (!map[id]) map[id] = { contactsCount:0, appointmentsCount:0, proposalsCount:0, contractsCount:0, contractsSum:0 } }
-
-    // activities
-    ;(acts.data||[]).forEach((r:any)=>{
-      const id = r.lead_id; ensure(id)
-      map[id].contactsCount += 1
-      if (!map[id].lastContactTs || r.ts > map[id].lastContactTs!){
-        map[id].lastContactTs = r.ts
-        map[id].lastContactNote = r.notes || ''
-      }
-    })
-    // appointments
-    ;(apps.data||[]).forEach((r:any)=>{
-      const id = r.lead_id; ensure(id)
-      map[id].appointmentsCount += 1
-      if (!map[id].lastAppointmentTs || r.ts > map[id].lastAppointmentTs!){
-        map[id].lastAppointmentTs = r.ts
-        map[id].lastAppointmentNote = r.notes || ''
-      }
-    })
-    // proposals
-    ;(props.data||[]).forEach((r:any)=>{
-      const id = r.lead_id; ensure(id)
-      map[id].proposalsCount += 1
-      if (!map[id].lastProposalTs || r.ts > map[id].lastProposalTs!){
-        map[id].lastProposalTs = r.ts
-        map[id].lastProposalNote = r.notes || ''
-      }
-    })
-    // contracts
-    ;(ctrs.data||[]).forEach((r:any)=>{
-      const id = r.lead_id; ensure(id)
-      map[id].contractsCount += 1
-      map[id].contractsSum += Number(r.amount||0)
-      if (!map[id].lastContractTs || r.ts > map[id].lastContractTs!){
-        map[id].lastContractTs = r.ts
-        map[id].lastContractNote = r.notes || ''
-      }
-    })
-
-    setAggs(map)
-  }
-
-  // loader tabelle collegate (destra)
-  async function loadActivities(leadId:string){
-    const { data } = await supabase
-      .from('activities')
-      .select('id,ts,channel,outcome,notes')
-      .eq('lead_id', leadId)
-      .order('ts', { ascending:false })
-    setActivities(data||[])
-  }
-  async function loadAppointments(leadId:string){
-    const { data } = await supabase
-      .from('appointments')
-      .select('id,ts,mode,notes')
-      .eq('lead_id', leadId)
-      .order('ts', { ascending:false })
-    setAppointments(data||[])
-  }
-  async function loadReminders(leadId:string){
-  const { data } = await supabase
-    .from('reminders')
-    .select('id,ts,mode,notes')
-    .eq('lead_id', leadId)
-    .order('ts', { ascending:false })
-  setReminders(data||[])
-  }
-  async function loadProposals(leadId:string){
-    const { data } = await supabase
-      .from('proposals')
-      .select('id,ts,line,amount:premium,notes')
-      .eq('lead_id', leadId)
-      .order('ts', { ascending:false })
-    setProposals(data||[])
-  }
-  async function loadContracts(leadId:string){
-    const { data } = await supabase
-      .from('contracts')
-      .select('id,ts,contract_type,amount,notes')
-      .eq('lead_id', leadId)
-      .order('ts', { ascending:false })
-    setContracts(data||[])
-  }
-  async function reloadAllChildren(leadId:string){
-    await Promise.all([
-      loadActivities(leadId),
-      loadAppointments(leadId),
-      loadReminders(leadId),
-      loadProposals(leadId),
-      loadContracts(leadId)
-    ])
-    // aggiorna aggregati solo per questo lead
-    await loadAggregates([leadId])
-  }
-
-  // helpers (destra)
-  function leadLabel(l: Partial<Lead>){
-    const n = [l.last_name||'', l.first_name||''].join(' ').trim()
-    return n || (l.company_name||l.email||l.phone||'Lead')
-  }
-  function clearForm(){
-    setForm(emptyForm)
-    setEditingLeadId(null)
-    setActiveTab('contatti')
-  }
-  function loadLeadIntoForm(l: Lead){
-    setForm({
-      id: l.id,
-      owner_id: l.owner_id||null,
-      is_agency_client: l.is_agency_client,
-      first_name: l.first_name||'', last_name: l.last_name||'', company_name: l.company_name||'',
-      email: l.email||'', phone: l.phone||'', city: l.city||'', address: l.address||'',
-      source: (l.source||'') as any,
-      is_working: (l as any).is_working ?? true,
-    })
-    if (l.id) { void reloadAllChildren(l.id) }
-  }
-  function validateForm(f: FormState): string | null{
-    if (f.is_agency_client === null) return 'Indicare se gia cliente di agenzia'
-    if (!(f.email?.trim() || f.phone?.trim())) return 'Inserire email oppure telefono'
-    const hasPerson = (f.first_name.trim() && f.last_name.trim())
-    const hasCompany = !!f.company_name.trim()
-    if (!hasPerson && !hasCompany) return 'Inserire Nome+Cognome oppure Ragione Sociale'
-    return null
-  }
-
-  async function saveLead(){
-    const msg = validateForm(form)
-    if (msg){ alert(msg); return }
-    
-    const payloadOwnerId = editingLeadId ? (form.owner_id ?? null) : (form.owner_id || meUid || null)
-const payload = {
-      owner_id: payloadOwnerId,
-      is_agency_client: form.is_agency_client,
-      first_name: form.first_name||null,
-      last_name: form.last_name||null,
-      company_name: form.company_name||null,
-      email: form.email||null,
-      phone: form.phone||null,
-      city: form.city||null,
-      address: form.address||null,
-      source: (form.source||null) as any,
-      is_working: form.is_working ?? true,
+      .select(LEAD_FIELDS)
+      .eq('id', selectedId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!alive || !data) return
+        setSelected(data as Lead)
+        setForm(leadToForm(data as Lead))
+        setCreating(false)
+      })
+    return () => {
+      alive = false
     }
-    if (editingLeadId){
-      const { error } = await supabase.from('leads').update(payload).eq('id', editingLeadId)
-      if (error){ alert(error.message); return }
-    } else {
-      const { error } = await supabase.from('leads').insert(payload)
-      if (error){ alert(error.message); return }
-    }
-    await loadLeads()
-    clearForm()
+  }, [selectedId, rows])
+
+  function startCreate() {
+    setCreating(true)
+    setSelected(null)
+    setFormErrors({})
+    setForm(emptyLeadForm(canAssign ? null : me?.user_id || null))
+    onSelect(null)
   }
 
-  async function deleteLead(id: string){
-    const ok = confirm('Eliminare definitivamente il lead?')
+  async function saveLead() {
+    const errors = validateLead(form)
+    setFormErrors(errors)
+    if (Object.keys(errors).length) {
+      toast.error('Controlla i campi evidenziati')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = {
+        owner_id: form.owner_id || me?.user_id || null,
+        is_agency_client: form.is_agency_client,
+        first_name: form.first_name.trim() || null,
+        last_name: form.last_name.trim() || null,
+        company_name: form.company_name.trim() || null,
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        city: form.city.trim() || null,
+        address: form.address.trim() || null,
+        source: form.source || null,
+        is_working: form.is_working,
+      }
+
+      if (selected) {
+        const { error } = await supabase.from('leads').update(payload).eq('id', selected.id)
+        if (error) throw error
+        toast.success('Lead aggiornato')
+      } else {
+        const { data, error } = await supabase.from('leads').insert(payload).select(LEAD_FIELDS).single()
+        if (error) throw error
+        toast.success('Lead creato', 'Ora puoi registrare contatti e appuntamenti.')
+        setCreating(false)
+        onSelect((data as Lead).id)
+      }
+      await load()
+    } catch (e) {
+      toast.error('Salvataggio non riuscito', errorMessage(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteLead() {
+    if (!selected) return
+    const ok = await confirm({
+      title: `Eliminare ${leadName(selected)}?`,
+      description: 'Verranno eliminati anche contatti, appuntamenti, proposte e contratti collegati.',
+      confirmLabel: 'Elimina definitivamente',
+    })
     if (!ok) return
-    const { error } = await supabase.from('leads').delete().eq('id', id)
-    if (error){ alert(error.message); return }
-    if (selectedId===id) setSelectedId(null)
-    if (editingLeadId===id) setEditingLeadId(null)
-    await loadLeads()
+    try {
+      const { error } = await supabase.from('leads').delete().eq('id', selected.id)
+      if (error) throw error
+      toast.success('Lead eliminato')
+      onSelect(null)
+      setSelected(null)
+      await load()
+    } catch (e) {
+      toast.error('Eliminazione non riuscita', errorMessage(e))
+    }
   }
 
-  // filtro owners per select (solo Junior per assegnazione – usata a destra)
-  const juniorOptions = useMemo(()=>
-    advisors.filter(a=>a.role==='Junior' && !!a.user_id)
-  ,[advisors])
-
-  // ====== ELENCO SINISTRA: filtri + ricerca + sort + paginazione ======
-  const filteredSorted = useMemo(()=>{
-    let arr = [...leads]
-
-    // i. filtro assegnatario (solo se impostato)
-    if (assigneeFilter) arr = arr.filter(l => l.owner_id === assigneeFilter)
-
-    // ii. toggle In Lavorazione (default true)
-    if (onlyWorking) arr = arr.filter(l => (l.is_working ?? true) === true)
-
-    // ii. Contattato / Appuntamento / Proposta / Contratto
-    arr = arr.filter(l=>{
-      const A = aggs[l.id!]
-      if (onlyContacted && !(A && A.contactsCount>0)) return false
-      if (onlyAppointment && !(A && A.appointmentsCount>0)) return false
-      if (onlyProposal && !(A && A.proposalsCount>0)) return false
-      if (onlyContract && !(A && A.contractsCount>0)) return false
-      return true
-    })
-
-    // iii. ricerca in Cognome+Nome (case-insensitive, contiene)
-   if (q.trim()) {
-  const s = q.trim().toLowerCase()
-  const tokens = s.split(/\s+/).filter(Boolean)   // es. "Rossi Ma" -> ["rossi", "ma"]
-
-  arr = arr.filter(l => {
-    const haystack = [
-      l.last_name || '',
-      l.first_name || '',
-      l.company_name || '',
-      l.email || '',
-      l.phone || '',
-    ]
-      .join(' ')
-      .toLowerCase()
-
-    // ogni parola digitata deve essere contenuta da qualche parte
-    return tokens.every(t => haystack.includes(t))
-  })
-}
-
-    // iv. ordinamenti
-    arr.sort((a,b)=>{
-      switch (sortBy){
-        case 'first_name_az': {
-          const A = (a.first_name||'').localeCompare(b.first_name||'')
-          if (A!==0) return A
-          return (a.last_name||'').localeCompare(b.last_name||'')
-        }
-        case 'created_desc':
-          return (b.created_at||'').localeCompare(a.created_at||'')
-        case 'last_activity_desc': {
-          const ta = aggs[a.id!]?.lastContactTs||''
-          const tb = aggs[b.id!]?.lastContactTs||''
-          return tb.localeCompare(ta)
-        }
-        case 'last_appointment_desc': {
-          const ta = aggs[a.id!]?.lastAppointmentTs||''
-          const tb = aggs[b.id!]?.lastAppointmentTs||''
-          return tb.localeCompare(ta)
-        }
-        case 'last_proposal_desc': {
-          const ta = aggs[a.id!]?.lastProposalTs||''
-          const tb = aggs[b.id!]?.lastProposalTs||''
-          return tb.localeCompare(ta)
-        }
-        case 'last_contract_desc': {
-          const ta = aggs[a.id!]?.lastContractTs||''
-          const tb = aggs[b.id!]?.lastContractTs||''
-          return tb.localeCompare(ta)
-        }
-        case 'last_name_az':
-        default:
-          return (a.last_name||'').localeCompare(b.last_name||'')
-      }
-    })
-
-    return arr
-  }, [leads, assigneeFilter, onlyWorking, onlyContacted, onlyAppointment, onlyProposal, onlyContract, q, sortBy, aggs])
-
-  // paginazione: 10 per pagina
-  const totalPages = Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE))
-  const safePage = Math.min(page, totalPages)
-  const pageItems = filteredSorted.slice((safePage-1)*PAGE_SIZE, safePage*PAGE_SIZE)
-
-  // reset pagina quando cambiano i filtri/ricerca
-  useEffect(()=>{ setPage(1) }, [assigneeFilter, onlyWorking, onlyContacted, onlyAppointment, onlyProposal, onlyContract, q, sortBy])
-
-  // ====== EXPORT CSV ======
-  function exportCsv(){
-    const rows = filteredSorted.map(l=>{
-      const A = aggs[l.id!]
-      return {
-        ID: l.id||'',
-        Assegnatario: advisors.find(a=>a.user_id===l.owner_id)?.full_name || advisors.find(a=>a.user_id===l.owner_id)?.email || '',
-        'Gia cliente agenzia': l.is_agency_client ? 'Sì' : 'No',
-        Nome: l.first_name||'',
-        Cognome: l.last_name||'',
-        'Ragione sociale': l.company_name||'',
-        Email: l.email||'',
-        Telefono: l.phone||'',
-        Citta: l.city||'',
-        Indirizzo: l.address||'',
-        Fonte: l.source||'',
-        'In lavorazione': (l.is_working??true) ? 'Sì' : 'No',
-        'Creato il': l.created_at||'',
-
-        // Aggregati
-        'Numero Contatti': A?.contactsCount || 0,
-        'Data Ultimo Contatto': A?.lastContactTs || '',
-        'Note Ultimo Contatto': A?.lastContactNote || '',
-        'Numero Appuntamenti': A?.appointmentsCount || 0,
-        'Data Ultimo Appuntamento': A?.lastAppointmentTs || '',
-        'Note Ultimo Appuntamento': A?.lastAppointmentNote || '',
-        'Numero Proposte': A?.proposalsCount || 0,
-        'Data Ultima Proposta': A?.lastProposalTs || '',
-        'Note Ultima Proposta': A?.lastProposalNote || '',
-        'Numero Contratti': A?.contractsCount || 0,
-        'Data Ultimo Contratto': A?.lastContractTs || '',
-        'Note Ultimo Contratto': A?.lastContractNote || '',
-        'Somma Premi Contratti': A?.contractsSum || 0,
-      }
-    })
-
-    const headers = Object.keys(rows[0] || {a:''})
-    const csv = [
-      headers.join(';'),
-      ...rows.map(r => headers.map(h => {
-        let v:any = (r as any)[h]
-        if (typeof v === 'string'){
-          // escape doppi apici + separatore ;  → uso apici doppi + rimpiazzo
-          v = `"${v.replace(/"/g,'""')}"`
-        }
-        return v
-      }).join(';'))
-    ].join('\n')
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `leads_export_${new Date().toISOString().slice(0,10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+  async function exportCsv() {
+    setExporting(true)
+    try {
+      const all = await fetchAllPages<Lead>(() => {
+        let q = supabase.from('leads').select(LEAD_FIELDS)
+        if (ownerFilter) q = q.eq('owner_id', ownerFilter)
+        if (onlyWorking) q = q.eq('is_working', true)
+        if (debouncedSearch) q = q.or(searchFilter(debouncedSearch))
+        return q as never
+      })
+      const aggs = await loadAggregates(all.map(l => l.id))
+      downloadCsv(
+        `guideup_lead_${new Date().toISOString().slice(0, 10)}.csv`,
+        all.map(l => {
+          const a = aggs[l.id]
+          return {
+            Assegnatario: displayName(byUserId.get(l.owner_id || '')),
+            Nome: l.first_name || '',
+            Cognome: l.last_name || '',
+            'Ragione sociale': l.company_name || '',
+            Email: l.email || '',
+            Telefono: l.phone || '',
+            Città: l.city || '',
+            Indirizzo: l.address || '',
+            'Già cliente': l.is_agency_client ? 'Sì' : 'No',
+            Fonte: l.source || '',
+            'In lavorazione': (l.is_working ?? true) ? 'Sì' : 'No',
+            'Caricato il': l.created_at || '',
+            Contatti: a?.contacts || 0,
+            'Ultimo contatto': a?.lastContact || '',
+            Appuntamenti: a?.appointments || 0,
+            Proposte: a?.proposals || 0,
+            Contratti: a?.contracts || 0,
+            'Produzione €': a?.production || 0,
+          }
+        }),
+      )
+      toast.success('Esportazione completata', `${all.length} lead esportati`)
+    } catch (e) {
+      toast.error('Esportazione non riuscita', errorMessage(e))
+    } finally {
+      setExporting(false)
+    }
   }
+
+  const activeFilters = [ownerFilter && 'assegnatario', stage !== 'all' && 'stadio', !onlyWorking && 'sospesi', debouncedSearch && 'ricerca'].filter(Boolean)
+  const showDetail = !!selected || creating
 
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'420px minmax(0,0.9fr)', gap:20 }}>
-      {/* ===================== LISTA / FILTRI / PAGINAZIONE ===================== */}
-      <div className="brand-card" style={{ ...box }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-          <div style={{ fontSize:16, fontWeight:700 }}>Leads</div>
-          <div style={{ display:'flex', gap:6 }}>
-            <button className="brand-btn" onClick={()=>{ setSelectedId(null); clearForm() }}>+ Nuovo</button>
-            <button className="brand-btn" onClick={exportCsv}>Esporta</button>
-          </div>
+    <>
+      <PageHeader
+        title="Lead"
+        description="Anagrafiche, attività e stato di avanzamento del portafoglio."
+        actions={
+          <>
+            <Button icon="download" onClick={exportCsv} loading={exporting}>
+              Esporta
+            </Button>
+            <Button variant="primary" icon="plus" onClick={startCreate}>
+              Nuovo lead
+            </Button>
+          </>
+        }
+      />
+
+      <div className="gu-filters">
+        <div className="gu-filters__group gu-filters__group--grow" style={{ maxWidth: 320 }}>
+          <SearchInput
+            label="Cerca"
+            value={search}
+            onValueChange={setSearch}
+            placeholder="Cognome, nome, azienda, email…"
+          />
         </div>
 
-        {/* Filtri */}
-<div style={{ display:'grid', gap:8, marginBottom:10 }}>
-
-  {/* RIGA 1: Assegnatario (select compatta) + In Lavorazione affiancato */}
-  <div
-    style={{
-      display:'grid',
-      gridTemplateColumns: (meRole==='Admin' || meRole==='Team Lead')
-        ? 'minmax(180px,1fr) 1fr'
-        : '1fr 1fr',               // se non Admin/TL lo lasciamo vuoto a sinistra per allineare il bottone
-      alignItems:'end',
-      gap:8
-    }}
-  >
-    {(meRole==='Admin' || meRole==='Team Lead') ? (
-      <div>
-        <div style={label}>Assegnatario</div>
-        <select
-          style={ipt}
-          value={assigneeFilter}
-          onChange={e=>setAssigneeFilter(e.target.value)}
-        >
-<option value="">Tutti</option>
-<optgroup label="Team Lead">
-  {advisors
-    .filter(a => a.role === 'Team Lead' && a.user_id)
-    .map(a => (
-      <option key={a.user_id!} value={a.user_id!}>
-        {a.full_name || a.email}
-      </option>
-    ))}
-</optgroup>
-<optgroup label="Junior">
-  {advisors
-    .filter(a => a.role === 'Junior' && a.user_id)
-    .map(a => (
-      <option key={a.user_id!} value={a.user_id!}>
-        {a.full_name || a.email}
-      </option>
-    ))}
-</optgroup>        </select>
-      </div>
-    ) : (
-      <div /> /* placeholder per mantenere l'allineamento */
-    )}
-
-    <div>
-      <div style={{ visibility:'hidden', height:14 }}>.</div>
-      <button
-        className="brand-btn"
-        onClick={()=>setOnlyWorking(v=>!v)}
-        style={{ width:'100%', ...(onlyWorking ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }}
-      >
-        In Lavorazione
-      </button>
-    </div>
-  </div>
-
-  {/* RIGA 2: Contattato + Fissato/Fatto Appuntamento */}
-  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-    <button
-      className="brand-btn"
-      onClick={()=>setOnlyContacted(v=>!v)}
-      style={ onlyContacted ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-    >
-      Contattato
-    </button>
-    <button
-      className="brand-btn"
-      onClick={()=>setOnlyAppointment(v=>!v)}
-      style={ onlyAppointment ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-    >
-      Fissato/Fatto Appuntamento
-    </button>
-  </div>
-
-  {/* RIGA 3: Presentata Proposta + Firmato Contratto */}
-  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-    <button
-      className="brand-btn"
-      onClick={()=>setOnlyProposal(v=>!v)}
-      style={ onlyProposal ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-    >
-      Presentata Proposta
-    </button>
-    <button
-      className="brand-btn"
-      onClick={()=>setOnlyContract(v=>!v)}
-      style={ onlyContract ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {} }
-    >
-      Firmato Contratto
-    </button>
-  </div>
-
-  {/* Ricerca */}
-  <div>
-    <div style={label}>Cerca (Cognome + Nome)</div>
-    <input
-      style={ipt}
-      placeholder="es. Rossi Ma"
-      value={q}
-      onChange={e=>setQ(e.target.value)}
-    />
-  </div>
-
-  {/* Ordina per */}
-  <div>
-    <div style={label}>Ordina per</div>
-    <select
-      style={ipt}
-      value={sortBy}
-      onChange={e=>setSortBy(e.target.value as SortKey)}
-    >
-      <option value="last_name_az">Cognome A→Z</option>
-      <option value="first_name_az">Nome A→Z</option>
-      <option value="created_desc">Data Caricamento (recenti)</option>
-      <option value="last_activity_desc">Data Contatto (recenti)</option>
-      <option value="last_appointment_desc">Data Appuntamento (recenti)</option>
-      <option value="last_proposal_desc">Data Proposta (recenti)</option>
-      <option value="last_contract_desc">Data Contratto (recenti)</option>
-    </select>
-  </div>
-</div>
-
-        {/* Lista + paginazione */}
-        {loading ? 'Caricamento...' : (
-          <>
-            <div style={{ display:'grid', gap:8, minHeight:200 }}>
-              {pageItems.map(l => (
-                <div
-                  key={l.id}
-                  style={{
-                    border:'1px solid',
-                    borderColor: selectedId===l.id ? 'var(--brand-primary-600, #0029ae)' : 'var(--border, #eee)',
-                    background: selectedId===l.id ? '#F0F6FF' : '#fff',
-                    borderRadius:12,
-                    padding:10
-                  }}>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
-                    <div
-                      onClick={()=>{ setSelectedId(l.id!); setEditingLeadId(l.id!); loadLeadIntoForm(l) }}
-                      style={{ cursor:'pointer' }}>
-                      <div style={{ fontWeight:600 }}>
-                        {leadLabel(l)}
-                      </div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>
-                        {l.email || l.phone || '—'} {l.is_agency_client? ' · Gia cliente' : ''}
-                      </div>
-                      {/* pillole mini con aggregati */}
-                      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:6, fontSize:11 }}>
-                        {Boolean(aggs[l.id!]?.contactsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>Contatti: {aggs[l.id!]?.contactsCount}</span>}
-                        {Boolean(aggs[l.id!]?.appointmentsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>App.: {aggs[l.id!]?.appointmentsCount}</span>}
-                        {Boolean(aggs[l.id!]?.proposalsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>Prop.: {aggs[l.id!]?.proposalsCount}</span>}
-                        {Boolean(aggs[l.id!]?.contractsCount) && <span style={{ padding:'2px 6px', border:'1px solid #e5e5e5', borderRadius:999 }}>Contr.: {aggs[l.id!]?.contractsCount}</span>}
-                      </div>
-                    </div>
-                    <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingLeadId(l.id!); setSelectedId(l.id!); loadLeadIntoForm(l) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={()=>{ void deleteLead(l.id!) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-                    </div>
-                  </div>
-                </div>
+        {canAssign && (
+          <SelectField
+            label="Assegnatario"
+            value={ownerFilter}
+            onChange={e => setOwnerFilter(e.target.value)}
+            style={{ minWidth: 170 }}
+          >
+            <option value="">Tutti</option>
+            {advisors
+              .filter(a => a.user_id)
+              .map(a => (
+                <option key={a.user_id!} value={a.user_id!}>
+                  {displayName(a)}
+                </option>
               ))}
-              {!pageItems.length && <div style={{ color:'#777' }}>Nessun lead trovato con i filtri correnti.</div>}
-            </div>
+          </SelectField>
+        )}
 
-            {/* Paginazione */}
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:10 }}>
-              <div style={{ fontSize:12, color:'#666' }}>
-                {filteredSorted.length} risultati · Pag. {safePage}/{totalPages}
-              </div>
-              <div style={{ display:'flex', gap:6 }}>
-                <button className="brand-btn" onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={safePage<=1}>‹</button>
-                <button className="brand-btn" onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={safePage>=totalPages}>›</button>
-              </div>
-            </div>
-          </>
+        <SelectField label="Stadio" value={stage} onChange={e => setStage(e.target.value as Stage)} style={{ minWidth: 165 }}>
+          {STAGE_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </SelectField>
+
+        <SelectField label="Stato" value={onlyWorking ? 'working' : 'all'} onChange={e => setOnlyWorking(e.target.value === 'working')} style={{ minWidth: 155 }}>
+          <option value="working">Solo in lavorazione</option>
+          <option value="all">Inclusi i sospesi</option>
+        </SelectField>
+
+        <SelectField label="Ordina per" value={sort} onChange={e => setSort(e.target.value as SortKey)} style={{ minWidth: 185 }}>
+          {SORT_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </SelectField>
+
+        {activeFilters.length > 0 && (
+          <Button
+            variant="ghost"
+            icon="x"
+            onClick={() => {
+              setOwnerFilter('')
+              setStage('all')
+              setOnlyWorking(true)
+              setSearch('')
+              setSort('last_name')
+            }}
+          >
+            Azzera filtri
+          </Button>
         )}
       </div>
 
-      {/* ===================== SCHEDA (DESTRA) — invariata salvo patch appuntamenti ===================== */}
-      <div className="brand-card" style={{ ...box }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, gap:8 }}>
-          <div style={{ fontSize:16, fontWeight:700 }}>
-            {editingLeadId ? `Modifica — ${leadLabel(form as any)}` : 'Nuovo Lead'}
-          </div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            <button className="brand-btn" onClick={saveLead}>{editingLeadId? 'Salva' : 'Crea'}</button>
-            <button className="brand-btn" onClick={()=>clearForm()}>Reset</button>
-            <button
-              className="brand-btn"
-              onClick={()=> setForm(f=>({ ...f, is_working: !f.is_working }))}
-              style={
-                form?.is_working
-                  ? { background:'var(--brand-primary-600, #0029ae)', color:'#fff', borderColor:'var(--brand-primary-600, #0029ae)' }
-                  : { background:'#c1121f', color:'#fff', borderColor:'#c1121f' }
-              }>
-              {form?.is_working ? 'In Lavorazione' : 'Stop Lavorazione'}
-            </button>
-          </div>
-        </div>
+      {error && <Alert tone="danger" title="Errore">{error}</Alert>}
 
-        <div style={{ display:'grid', gap:12 }}>
-          {(meRole==='Admin' || meRole==='Team Lead') && (
-            <div>
-              <div style={label}>Assegna a</div>
-              <select value={form.owner_id||''} onChange={e=>setForm(f=>({ ...f, owner_id: e.target.value || null }))} style={ipt}>
-                <option value="">— Scegli —</option>
-<optgroup label="Team Lead">
-  {advisors
-    .filter(a => a.role === 'Team Lead' && a.user_id)
-    .map(a => (
-      <option key={a.user_id || a.email} value={a.user_id || ''}>
-        {a.full_name || a.email}
-      </option>
-    ))}
-</optgroup>
-<optgroup label="Junior">
-  {advisors
-    .filter(a => a.role === 'Junior' && a.user_id)
-    .map(a => (
-      <option key={a.user_id || a.email} value={a.user_id || ''}>
-        {a.full_name || a.email}
-      </option>
-    ))}
-</optgroup>
-              </select>
-            </div>
-          )}
-
-          <div>
-            <div style={label}>Gia cliente di agenzia?</div>
-            <div style={{ display:'flex', gap:12 }}>
-              <label><input type="radio" checked={form.is_agency_client===true} onChange={()=>setForm(f=>({ ...f, is_agency_client:true }))}/> Si</label>
-              <label><input type="radio" checked={form.is_agency_client===false} onChange={()=>setForm(f=>({ ...f, is_agency_client:false }))}/> No</label>
-            </div>
-          </div>
-
-          <div style={row}>
-            <div>
-              <div style={label}>Nome</div>
-              <input style={ipt} value={form.first_name} onChange={e=>setForm(f=>({ ...f, first_name:e.target.value }))} />
-            </div>
-            <div>
-              <div style={label}>Cognome</div>
-              <input style={ipt} value={form.last_name} onChange={e=>setForm(f=>({ ...f, last_name:e.target.value }))} />
-            </div>
-          </div>
-
-          <div>
-            <div style={label}>Ragione Sociale</div>
-            <input style={ipt} value={form.company_name} onChange={e=>setForm(f=>({ ...f, company_name:e.target.value }))} />
-          </div>
-
-          <div style={row}>
-            <div>
-              <div style={label}>Email</div>
-              <input style={ipt} value={form.email} onChange={e=>setForm(f=>({ ...f, email:e.target.value }))} />
-            </div>
-            <div>
-              <div style={label}>Telefono</div>
-              <input style={ipt} value={form.phone} onChange={e=>setForm(f=>({ ...f, phone:e.target.value }))} />
-            </div>
-          </div>
-
-          <div style={row}>
-            <div>
-              <div style={label}>Citta</div>
-              <input style={ipt} value={form.city} onChange={e=>setForm(f=>({ ...f, city:e.target.value }))} />
-            </div>
-            <div>
-              <div style={label}>Indirizzo</div>
-              <input style={ipt} value={form.address} onChange={e=>setForm(f=>({ ...f, address:e.target.value }))} />
-            </div>
-          </div>
-
-          <div>
-            <div style={label}>Fonte</div>
-            <select style={ipt} value={form.source} onChange={e=>setForm(f=>({ ...f, source: e.target.value as any }))}>
-              <option value="">—</option>
-              <option value="Provided">Fornito</option>
-              <option value="Self">Autonomo</option>
-            </select>
-          </div>
-        </div>
-
-        {/* TAB */}
-        <div style={{ marginTop:16 }}>
-          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
-            <button className="brand-btn" style={{ ...(activeTab==='contatti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contatti')}>Contatti</button>
-            <button className="brand-btn" style={{ ...(activeTab==='appuntamenti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('appuntamenti')}>Appuntamenti</button>
-            <button className="brand-btn" style={{ ...(activeTab==='promemoria'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('promemoria')}>Promemoria</button> 
-            <button className="brand-btn" style={{ ...(activeTab==='proposte'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('proposte')}>Proposte</button>
-            <button className="brand-btn" style={{ ...(activeTab==='contratti'? { background:'var(--brand-primary-600, #0029ae)', color:'#fff' } : {}) }} onClick={()=>setActiveTab('contratti')}>Contratti</button>
-          </div>
-
-          {/* CONTATTI */}
-          {activeTab==='contatti' && (
-            <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)', gap:12 }}>
-                <div>
-                  <div style={label}>Data/Ora</div>
-                  <input type="datetime-local" style={ipt} value={actDraft.ts} onChange={e=>setActDraft((d:any)=>({ ...d, ts: e.target.value }))} />
-                </div>
-                <div>
-                  <div style={label}>Canale</div>
-                  <select style={ipt} value={actDraft.channel_label} onChange={e=>setActDraft((d:any)=>({ ...d, channel_label:e.target.value }))}>
-                    {CHANNEL_OPTIONS_UI.map(o=> <option key={o.label} value={o.label}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <div style={label}>Esito</div>
-                  <select style={ipt} value={actDraft.outcome_label} onChange={e=>setActDraft((d:any)=>({ ...d, outcome_label:e.target.value }))}>
-                    {OUTCOME_OPTIONS_UI.map(o=> <option key={o.db} value={o.label}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div style={{ gridColumn:'1 / span 4' }}>
-                  <div style={label}>Note</div>
-                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={actDraft.notes||''} onChange={e=>setActDraft((d:any)=>({ ...d, notes:e.target.value }))} />
-                </div>
-              </div>
-              <div>
-                {editingActId ? (
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <button className="brand-btn" onClick={async()=>{
-                      if (!selectedId) return
-                      const payload = { ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
-                      const { error } = await supabase.from('activities').update(payload).eq('id', editingActId)
-                      if (error) alert(error.message); else { setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
-                    }}>Salva</button>
-                    <button className="brand-btn" onClick={()=>{ setEditingActId(null); setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }) }}>Annulla</button>
-                  </div>
-                ) : (
-                  <button className="brand-btn" onClick={async()=>{
-                    if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: actDraft.ts || new Date().toISOString(), channel: channelDbFromLabel(actDraft.channel_label), outcome: outcomeDbFromLabel(actDraft.outcome_label), notes: actDraft.notes||null }
-                    const { error } = await supabase.from('activities').insert(payload)
-                    if (error) alert(error.message); else { setActDraft({ ts:'', channel_label:'Telefono', outcome_label:'Parlato', notes:'' }); await loadActivities(selectedId) }
-                  }}>Aggiungi contatto</button>
-                )}
-              </div>
-
-              <div>
-                {activities.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                    <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Canale: {CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || r.channel} · Esito: {OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || r.outcome}</div>
-                      {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
-                    </div>
-                    <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingActId(r.id); setActDraft({ ts: r.ts? r.ts.slice(0,16):'', channel_label: CHANNEL_OPTIONS_UI.find(o=>o.db===r.channel)?.label || 'Telefono', outcome_label: OUTCOME_OPTIONS_UI.find(o=>o.db===r.outcome)?.label || 'Parlato', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contatto?'); if (!ok) return; const { error } = await supabase.from('activities').delete().eq('id', r.id); if (error) alert(error.message); else await loadActivities(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* APPUNTAMENTI */}
-          {activeTab==='appuntamenti' && (
-            <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,2fr)', gap:12 }}>
-                <div>
-                  <div style={label}>Data/Ora</div>
-                  <input type="datetime-local" style={ipt} value={appDraft.ts} onChange={e=>setAppDraft((d:any)=>({ ...d, ts: e.target.value }))} />
-                </div>
-                <div>
-                  <div style={label}>Modalita</div>
-                  <select style={ipt} value={appDraft.mode_label} onChange={e=>setAppDraft((d:any)=>({ ...d, mode_label:e.target.value }))}>
-                    {MODE_OPTIONS_UI.map(o=> <option key={o.db} value={o.label}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div style={{ gridColumn:'1 / span 3' }}>
-                  <div style={label}>Note</div>
-                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={appDraft.notes||''} onChange={e=>setAppDraft((d:any)=>({ ...d, notes:e.target.value }))} />
-                </div>
-              </div>
-              <div>
-                {editingAppId ? (
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <button className="brand-btn" onClick={async()=>{
-                      if (!selectedId) return
-                      const payload = { ts: new Date(appDraft.ts).toISOString() || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
-                      const { error } = await supabase.from('appointments').update(payload).eq('id', editingAppId)
-                      if (error) alert(error.message); else { setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }); await loadAppointments(selectedId) }
-                    }}>Salva</button>
-                    <button className="brand-btn" onClick={()=>{ setEditingAppId(null); setAppDraft({ ts:'', mode_label:'In presenza', notes:'' }) }}>Annulla</button>
-                  </div>
-                ) : (
-                  <button className="brand-btn" onClick={async()=>{
-                    if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: new Date(appDraft.ts).toISOString() || new Date().toISOString(), mode: modeDbFromLabel(appDraft.mode_label), notes: appDraft.notes||null }
-                    const { error } = await supabase.from('appointments').insert(payload)
-                    if (error) {
-                      alert(error.message);
-                    } else {
-                      // PATCH: invio email appuntamento con ICS (Edge Function)
-                      try {
-                        // Dati cliente
-                        const clienteNome = ([form.first_name, form.last_name].join(' ').trim()) || (form.company_name || 'Cliente');
-                        const to_client_email = (form.email || '').trim();
-                        // Advisor (owner corrente del lead)
-                        const ownerId = form.owner_id || leads.find(x=>x.id===selectedId)?.owner_id || null;
-                        const adv = advisors.find(a=>a.user_id === ownerId);
-                        const cc_advisor_email = adv?.email || '';
-                        const advisor_nome = adv?.full_name || 'Advisory+';
-                        // Data/ora per email (se mancante prendi now)
-                        const start = appDraft.ts ? new Date(appDraft.ts) : new Date();
-                        const ts_iso = toIsoWithTZ(start);
-                        // Modalità/Note/Location
-                        const modalita = appDraft.mode_label || 'In presenza';
-                        const note = appDraft.notes || '';
-                        const location = ''; // opzionale
-                        // Subject/Title (facoltativi)
-                        const subject = `Promemoria appuntamento – ${clienteNome}`;
-                        const title = `Appuntamento Advisory+ con ${clienteNome}`;
-
-                        if (!to_client_email) {
-                          console.warn('Nessuna email cliente: skip invio promemoria.');
-                        } else {
-                          const { error: fnError } = await supabase.functions.invoke('sendAppointmentEmail', {
-                            body: {
-                              to_client_email,
-                              cc_advisor_email,
-                              cliente_nome: clienteNome,
-                              advisor_nome,
-                              ts_iso,
-                              durata_minuti: 60,
-                              modalita,
-                              note,
-                              location,
-                              subject,
-                              title,
-                            }
-                          });
-                          if (fnError) {
-                            console.error('sendAppointmentEmail error:', fnError);
-                            alert(`Appuntamento salvato, ma invio email fallito: ${fnError.message || fnError}`);
-                          }
-                        }
-                      } catch (e:any) {
-                        console.error('Errore invio email:', e);
-                        alert(`Appuntamento salvato, ma invio email fallito: ${e?.message || e}`);
-                      }
-
-                      setAppDraft({ ts:'', mode_label:'In presenza', notes:'' });
-                      await loadAppointments(selectedId);
-                    }
-                  }}>Aggiungi appuntamento</button>
-                )}
-              </div>
-
-              <div>
-                {appointments.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                    <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Modalita: {MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || r.mode}</div>
-                      {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
-                    </div>
-                    <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingAppId(r.id); setAppDraft({ ts: r.ts? r.ts.slice(0,16):'', mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza', notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare l\'appuntamento?'); if (!ok) return; const { error } = await supabase.from('appointments').delete().eq('id', r.id); if (error) alert(error.message); else await loadAppointments(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-{/* PROMEMORIA */}
-{activeTab==='promemoria' && (
-  <div style={{ display:'grid', gap:12 }}>
-    <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,2fr)', gap:12 }}>
-      <div>
-        <div style={label}>Data/Ora promemoria</div>
-        <input
-          type="datetime-local"
-          style={ipt}
-          value={remDraft.ts}
-          onChange={e=>setRemDraft((d:any)=>({ ...d, ts: e.target.value }))}
-        />
-      </div>
-      <div>
-        <div style={label}>Modalità</div>
-        <select
-          style={ipt}
-          value={remDraft.mode_label}
-          onChange={e=>setRemDraft((d:any)=>({ ...d, mode_label:e.target.value }))}
-        >
-          {MODE_OPTIONS_UI.map(o=> (
-            <option key={o.db} value={o.label}>{o.label}</option>
-          ))}
-        </select>
-      </div>
-      <div style={{ gridColumn:'1 / span 3' }}>
-        <div style={label}>Note promemoria</div>
-        <textarea
-          rows={2}
-          maxLength={240}
-          style={{ ...ipt, width:'100%' }}
-          value={remDraft.notes||''}
-          onChange={e=>setRemDraft((d:any)=>({ ...d, notes:e.target.value }))}
-        />
-      </div>
-    </div>
-
-    <div>
-      {editingRemId ? (
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-          <button
-            className="brand-btn"
-            onClick={async()=>{
-              if (!selectedId) return
-              const ts = remDraft.ts ? new Date(remDraft.ts).toISOString() : new Date().toISOString()
-              const payload = {
-                ts,
-                mode: modeDbFromLabel(remDraft.mode_label),
-                notes: remDraft.notes || null,
-              }
-              const { error } = await supabase.from('reminders').update(payload).eq('id', editingRemId)
-              if (error) {
-                alert(error.message)
-              } else {
-                setEditingRemId(null)
-                setRemDraft({ ts:'', mode_label:'In presenza', notes:'' })
-                await loadReminders(selectedId)
-              }
-            }}
-          >
-            Salva
-          </button>
-          <button
-            className="brand-btn"
-            onClick={()=>{
-              setEditingRemId(null)
-              setRemDraft({ ts:'', mode_label:'In presenza', notes:'' })
-            }}
-          >
-            Annulla
-          </button>
-        </div>
-      ) : (
-        <button
-          className="brand-btn"
-          onClick={async()=>{
-            if (!selectedId){ alert('Seleziona prima un Lead'); return }
-            const ts = remDraft.ts ? new Date(remDraft.ts).toISOString() : new Date().toISOString()
-            const payload = {
-              lead_id: selectedId,
-              ts,
-              mode: modeDbFromLabel(remDraft.mode_label),
-              notes: remDraft.notes || null,
-            }
-            const { error } = await supabase.from('reminders').insert(payload)
-            if (error) {
-              alert(error.message)
-            } else {
-              // 🔔 Invio mail SOLO all’advisor owner
-              try {
-                const clienteNome =
-                  ([form.first_name, form.last_name].join(' ').trim()) ||
-                  (form.company_name || 'Cliente')
-
-                const ownerId =
-                  form.owner_id ||
-                  leads.find(x => x.id === selectedId)?.owner_id ||
-                  null
-
-                const adv = advisors.find(a => a.user_id === ownerId)
-                const to_advisor_email = (adv?.email || '').trim()
-                const advisor_nome = adv?.full_name || 'Advisory+'
-
-                if (!to_advisor_email) {
-                  console.warn('Nessuna email advisor per questo lead: skip invio promemoria.')
-                } else {
-                  const start = remDraft.ts ? new Date(remDraft.ts) : new Date()
-                  const ts_iso = toIsoWithTZ(start)
-                  const note = remDraft.notes || ''
-
-                  const { error: fnError } = await supabase.functions.invoke('sendReminderEmail', {
-                    body: {
-                      to_advisor_email,
-                      advisor_nome,
-                      cliente_nome: clienteNome,
-                      ts_iso,
-                      durata_minuti: 30,
-                      note,
-                      location: '',
-                      lead_id: selectedId,
-                    },
-                  })
-
-                  if (fnError) {
-                    console.error('sendReminderEmail error:', fnError)
-                    alert(`Promemoria salvato, ma invio email fallito: ${fnError.message || fnError}`)
-                  }
+      <div className="gu-leads">
+        <div className={`gu-leads__list${showDetail ? ' gu-leads__list--hidden-mobile' : ''}`}>
+          <Card className="gu-leads__card">
+            {loading ? (
+              <SkeletonRows rows={6} height={64} />
+            ) : rows.length === 0 ? (
+              <EmptyState
+                icon="leads"
+                title={activeFilters.length ? 'Nessun lead con questi filtri' : 'Nessun lead in portafoglio'}
+                text={
+                  activeFilters.length
+                    ? 'Prova ad allargare la ricerca o ad azzerare i filtri.'
+                    : 'Crea il primo lead oppure importa un elenco da file CSV.'
                 }
-              } catch (e:any) {
-                console.error('Errore invio email promemoria:', e)
-                alert(`Promemoria salvato, ma invio email fallito: ${e?.message || e}`)
-              }
-
-              setRemDraft({ ts:'', mode_label:'In presenza', notes:'' })
-              await loadReminders(selectedId)
-            }
-          }}
-        >
-          Aggiungi promemoria
-        </button>
-      )}
-    </div>
-
-    <div>
-      {reminders.map(r=> (
-        <div
-          key={r.id}
-          style={{
-            border:'1px solid var(--border, #eee)',
-            borderRadius:10,
-            padding:10,
-            marginBottom:8,
-            display:'flex',
-            justifyContent:'space-between',
-            alignItems:'center',
-            gap:8
-          }}
-        >
-          <div>
-            <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-            <div style={{ fontSize:12, color:'var(--muted, #666)' }}>
-              Modalità: {MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || r.mode}
-            </div>
-            {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
-          </div>
-          <div style={{ display:'inline-flex', gap:6 }}>
-            <button
-              title="Modifica"
-              onClick={()=>{
-                setEditingRemId(r.id)
-                setRemDraft({
-                  ts: r.ts ? r.ts.slice(0,16) : '',
-                  mode_label: MODE_OPTIONS_UI.find(o=>o.db===r.mode)?.label || 'In presenza',
-                  notes: r.notes || '',
-                })
-              }}
-              style={{ border:'none', background:'transparent', cursor:'pointer' }}
-            >
-              ✏️
-            </button>
-            <button
-              title="Elimina"
-              onClick={async()=>{
-                if (!selectedId) return
-                const ok = confirm('Eliminare il promemoria?')
-                if (!ok) return
-                const { error } = await supabase.from('reminders').delete().eq('id', r.id)
-                if (error) alert(error.message); else await loadReminders(selectedId)
-              }}
-              style={{ border:'none', background:'transparent', cursor:'pointer' }}
-            >
-              🗑️
-            </button>
-          </div>
+                action={
+                  <Button variant="primary" icon="plus" onClick={startCreate}>
+                    Nuovo lead
+                  </Button>
+                }
+              />
+            ) : (
+              <ul style={{ listStyle: 'none', margin: 0, padding: 'var(--gu-space-2)', display: 'grid', gap: 4 }}>
+                {rows.map(lead => (
+                  <LeadRow
+                    key={lead.id}
+                    lead={lead}
+                    aggregate={aggregates[lead.id]}
+                    owner={displayName(byUserId.get(lead.owner_id || ''), '')}
+                    selected={selected?.id === lead.id}
+                    onClick={() => {
+                      setCreating(false)
+                      setFormErrors({})
+                      onSelect(lead.id)
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+            <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} loading={loading} />
+          </Card>
         </div>
-      ))}
-    </div>
-  </div>
-)}
 
-          {/* PROPOSTE */}
-          {activeTab==='proposte' && (
-            <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,2fr) minmax(0,1fr)', gap:12 }}>
-                <div>
-                  <div style={label}>Data/Ora</div>
-                  <input type="datetime-local" style={ipt} value={propDraft.ts} onChange={e=>setPropDraft((d:any)=>({ ...d, ts: e.target.value }))} />
-                </div>
-                <div>
-                  <div style={label}>Linea/Descrizione</div>
-                  <input style={ipt} value={propDraft.line} onChange={e=>setPropDraft((d:any)=>({ ...d, line:e.target.value }))} />
-                </div>
-                <div>
-                  <div style={label}>Importo (EUR)</div>
-                  <input type="number" style={ipt} value={propDraft.amount||0} onChange={e=>setPropDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
-                </div>
-                <div style={{ gridColumn:'1 / span 3' }}>
-                  <div style={label}>Note</div>
-                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={propDraft.notes||''} onChange={e=>setPropDraft((d:any)=>({ ...d, notes:e.target.value }))} />
-                </div>
+        <div className={`gu-leads__detail${showDetail ? '' : ' gu-leads__detail--hidden-mobile'}`}>
+          {showDetail ? (
+            <>
+              <div className="gu-leads__back">
+                <Button
+                  variant="ghost"
+                  icon="chevronLeft"
+                  onClick={() => {
+                    setCreating(false)
+                    onSelect(null)
+                  }}
+                >
+                  Torna all'elenco
+                </Button>
               </div>
-
-              <div>
-                {editingPropId ? (
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <button className="brand-btn" onClick={async()=>{
-                      if (!selectedId) return
-                      const payload = { ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
-                      const { error } = await supabase.from('proposals').update(payload).eq('id', editingPropId)
-                      if (error) alert(error.message); else { setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
-                    }}>Salva</button>
-                    <button className="brand-btn" onClick={()=>{ setEditingPropId(null); setPropDraft({ ts:'', line:'', amount:0, notes:'' }) }}>Annulla</button>
-                  </div>
-                ) : (
-                  <button className="brand-btn" onClick={async()=>{
-                    if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: propDraft.ts || new Date().toISOString(), line: propDraft.line, premium: propDraft.amount||0, notes: propDraft.notes||null }
-                    const { error } = await supabase.from('proposals').insert(payload)
-                    if (error) alert(error.message); else { setPropDraft({ ts:'', line:'', amount:0, notes:'' }); await loadProposals(selectedId) }
-                  }}>Aggiungi proposta</button>
-                )}
-              </div>
-
-              <div>
-                {proposals.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                    <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Linea: {r.line} · Importo: {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
-                      {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
-                    </div>
-                    <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingPropId(r.id); setPropDraft({ ts: r.ts? r.ts.slice(0,16):'', line: r.line||'', amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare la proposta?'); if (!ok) return; const { error } = await supabase.from('proposals').delete().eq('id', r.id); if (error) alert(error.message); else await loadProposals(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* CONTRATTI */}
-          {activeTab==='contratti' && (
-            <div style={{ display:'grid', gap:12 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)', gap:12 }}>
-                <div>
-                  <div style={label}>Data/Ora</div>
-                  <input type="datetime-local" style={ipt} value={ctrDraft.ts} onChange={e=>setCtrDraft((d:any)=>({ ...d, ts: e.target.value }))} />
-                </div>
-                <div>
-                  <div style={label}>Tipo contratto</div>
-                  <select style={ipt} value={ctrDraft.contract_type} onChange={e=>setCtrDraft((d:any)=>({ ...d, contract_type: e.target.value }))}>
-                    {CONTRACT_TYPE_OPTIONS.map(o=> <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <div style={label}>Importo (EUR)</div>
-                  <input type="number" style={ipt} value={ctrDraft.amount||0} onChange={e=>setCtrDraft((d:any)=>({ ...d, amount: Number(e.target.value||0) }))} />
-                </div>
-                <div style={{ gridColumn:'1 / span 3' }}>
-                  <div style={label}>Note</div>
-                  <textarea rows={2} maxLength={240} style={{ ...ipt, width:'100%' }} value={ctrDraft.notes||''} onChange={e=>setCtrDraft((d:any)=>({ ...d, notes:e.target.value }))} />
-                </div>
-              </div>
-
-              <div>
-                {editingCtrId ? (
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <button className="brand-btn" onClick={async()=>{
-                      if (!selectedId) return
-                      const payload = { ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), notes: ctrDraft.notes||null }
-                      const { error } = await supabase.from('contracts').update(payload).eq('id', editingCtrId)
-                      if (error) alert(error.message); else { setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
-                    }}>Salva</button>
-                    <button className="brand-btn" onClick={()=>{ setEditingCtrId(null); setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }) }}>Annulla</button>
-                  </div>
-                ) : (
-                  <button className="brand-btn" onClick={async()=>{
-                    if (!selectedId){ alert('Seleziona prima un Lead'); return }
-                    const payload = { lead_id: selectedId, ts: ctrDraft.ts || new Date().toISOString(), contract_type: ctrDraft.contract_type, amount: Number(ctrDraft.amount||0), line: ctrDraft.contract_type, notes: ctrDraft.notes||null }
-                    const { error } = await supabase.from('contracts').insert(payload)
-                    if (error) alert(error.message); else { setCtrDraft({ ts:'', contract_type: CONTRACT_TYPE_OPTIONS[0].value, amount:0, notes:'' }); await loadContracts(selectedId) }
-                  }}>Aggiungi contratto</button>
-                )}
-              </div>
-
-              <div>
-                {contracts.map(r=> (
-                  <div key={r.id} style={{ border:'1px solid var(--border, #eee)', borderRadius:10, padding:10, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-                    <div>
-                      <div style={{ fontWeight:600 }}>{new Date(r.ts).toLocaleString()}</div>
-                      <div style={{ fontSize:12, color:'var(--muted, #666)' }}>Tipo: {r.contract_type} · Importo: {Number(r.amount||0).toLocaleString('it-IT',{ style:'currency', currency:'EUR' })}</div>
-                      {r.notes && <div style={{ fontSize:12 }}>{r.notes}</div>}
-                    </div>
-                    <div style={{ display:'inline-flex', gap:6 }}>
-                      <button title="Modifica" onClick={()=>{ setEditingCtrId(r.id); setCtrDraft({ ts: r.ts? r.ts.slice(0,16):'', contract_type: r.contract_type, amount: Number(r.amount||0), notes: r.notes||'' }) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-                      <button title="Elimina" onClick={async()=>{ if (!selectedId) return; const ok = confirm('Eliminare il contratto?'); if (!ok) return; const { error } = await supabase.from('contracts').delete().eq('id', r.id); if (error) alert(error.message); else await loadContracts(selectedId) }} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+              <LeadDetail
+                lead={selected}
+                form={form}
+                onFormChange={patch => setForm(f => ({ ...f, ...patch }))}
+                errors={formErrors}
+                onSave={saveLead}
+                onCancel={() => {
+                  setCreating(false)
+                  onSelect(null)
+                }}
+                onDelete={deleteLead}
+                saving={saving}
+                assignableAdvisors={advisors}
+                canAssign={canAssign}
+                advisorsByUserId={byUserId}
+              />
+            </>
+          ) : (
+            <Card>
+              <CardBody>
+                <EmptyState
+                  icon="user"
+                  title="Seleziona un lead"
+                  text="Scegli un lead dall'elenco per vedere anagrafica, contatti, appuntamenti, proposte e contratti."
+                />
+              </CardBody>
+            </Card>
           )}
         </div>
       </div>
-
-      {/* Confirm Delete Modal semplice */}
-      {confirmDeleteId && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center' }}>
-          <div style={{ background:'#fff', padding:16, borderRadius:12, width:320 }}>
-            <div style={{ fontWeight:700, marginBottom:8 }}>Eliminare il Lead?</div>
-            <div style={{ fontSize:13, color:'#555', marginBottom:12 }}>L'operazione non e reversibile.</div>
-            <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-              <button onClick={()=>setConfirmDeleteId(null)} className="brand-btn">Annulla</button>
-              <button onClick={()=>{ void deleteLead(confirmDeleteId) }} className="brand-btn" style={{ background:'#c00', borderColor:'#c00', color:'#fff' }}>Elimina</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   )
+}
+
+/* ========================================================================== */
+/* Riga dell'elenco                                                            */
+/* ========================================================================== */
+
+function LeadRow({
+  lead,
+  aggregate,
+  owner,
+  selected,
+  onClick,
+}: {
+  lead: Lead
+  aggregate?: Aggregate
+  owner: string
+  selected: boolean
+  onClick: () => void
+}) {
+  const stale = !aggregate?.contacts
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-current={selected ? 'true' : undefined}
+        style={{
+          display: 'grid',
+          gap: 4,
+          width: '100%',
+          textAlign: 'left',
+          padding: 'var(--gu-space-3)',
+          border: '1px solid',
+          borderColor: selected ? 'var(--gu-primary)' : 'transparent',
+          background: selected ? 'var(--gu-primary-soft)' : 'transparent',
+          borderRadius: 'var(--gu-radius-md)',
+          transition: 'background-color var(--gu-duration) var(--gu-ease)',
+        }}
+        onMouseEnter={e => {
+          if (!selected) e.currentTarget.style.background = 'var(--gu-n-50)'
+        }}
+        onMouseLeave={e => {
+          if (!selected) e.currentTarget.style.background = 'transparent'
+        }}
+      >
+        <div className="gu-row" style={{ justifyContent: 'space-between', gap: 8 }}>
+          <span style={{ fontWeight: 600 }} className="gu-truncate">
+            {leadName(lead)}
+          </span>
+          {lead.is_working === false && <Badge tone="neutral">Sospeso</Badge>}
+          {lead.is_agency_client && <Badge tone="accent">Cliente</Badge>}
+        </div>
+
+        <div className="gu-row-tight" style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', gap: 6 }}>
+          <Icon name={lead.email ? 'mail' : 'phone'} size={12} />
+          <span className="gu-truncate">{lead.email || lead.phone || 'Nessun recapito'}</span>
+          {owner && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="gu-truncate">{owner}</span>
+            </>
+          )}
+        </div>
+
+        <div className="gu-row-tight" style={{ gap: 6, fontSize: 'var(--gu-text-xs)' }}>
+          {stale ? (
+            <Badge tone="warning" dot>
+              Mai contattato
+            </Badge>
+          ) : (
+            <span style={{ color: 'var(--gu-text-subtle)' }}>
+              Ultimo contatto {relativeTime(aggregate?.lastContact)}
+            </span>
+          )}
+          {!!aggregate?.appointments && <Badge tone="primary">{aggregate.appointments} app.</Badge>}
+          {!!aggregate?.proposals && <Badge tone="neutral">{aggregate.proposals} prop.</Badge>}
+          {!!aggregate?.contracts && <Badge tone="success">{formatCurrency(aggregate.production)}</Badge>}
+        </div>
+      </button>
+    </li>
+  )
+}
+
+/* ========================================================================== */
+/* Query di supporto                                                           */
+/* ========================================================================== */
+
+/** Ricerca su più colonne. Le virgole vanno rimosse: spezzerebbero il filtro or(). */
+function searchFilter(term: string) {
+  const safe = term.replace(/[,()]/g, ' ').trim()
+  const like = `%${safe}%`
+  return ['last_name', 'first_name', 'company_name', 'email', 'phone'].map(c => `${c}.ilike.${like}`).join(',')
+}
+
+function applySort<T>(q: T, sort: SortKey): T {
+  const query = q as unknown as {
+    order: (col: string, opts: { ascending: boolean; nullsFirst?: boolean }) => T
+  }
+  switch (sort) {
+    case 'first_name':
+      return query.order('first_name', { ascending: true, nullsFirst: false })
+    case 'created_desc':
+      return query.order('created_at', { ascending: false })
+    case 'last_name':
+    default:
+      return query.order('last_name', { ascending: true, nullsFirst: false })
+  }
+}
+
+function sortClient(rows: Lead[], sort: SortKey) {
+  const collator = new Intl.Collator('it')
+  return [...rows].sort((a, b) => {
+    if (sort === 'created_desc') return (b.created_at || '').localeCompare(a.created_at || '')
+    if (sort === 'first_name') return collator.compare(a.first_name || '', b.first_name || '')
+    return collator.compare(a.last_name || '', b.last_name || '')
+  })
+}
+
+function latestByLead(rows: { lead_id: string; ts: string }[]) {
+  const map = new Map<string, string>()
+  for (const r of rows) {
+    const cur = map.get(r.lead_id)
+    if (!cur || r.ts > cur) map.set(r.lead_id, r.ts)
+  }
+  return map
+}
+
+/** Aggregati dei soli lead mostrati: poche decine di id, una manciata di query. */
+async function loadAggregates(leadIds: string[]): Promise<Record<string, Aggregate>> {
+  if (!leadIds.length) return {}
+  const [acts, apps, props, ctrs] = await Promise.all([
+    inChunks(leadIds, s => fetchAllPages<any>(() => supabase.from('activities').select('lead_id,ts').in('lead_id', s) as never)),
+    inChunks(leadIds, s => fetchAllPages<any>(() => supabase.from('appointments').select('lead_id').in('lead_id', s) as never)),
+    inChunks(leadIds, s => fetchAllPages<any>(() => supabase.from('proposals').select('lead_id').in('lead_id', s) as never)),
+    inChunks(leadIds, s =>
+      fetchAllPages<any>(() => supabase.from('contracts').select('lead_id,amount,premium_annual').in('lead_id', s) as never),
+    ),
+  ])
+
+  const out: Record<string, Aggregate> = {}
+  const ensure = (id: string) =>
+    (out[id] ||= { contacts: 0, appointments: 0, proposals: 0, contracts: 0, production: 0 })
+
+  for (const r of acts) {
+    const a = ensure(r.lead_id)
+    a.contacts++
+    if (!a.lastContact || r.ts > a.lastContact) a.lastContact = r.ts
+  }
+  for (const r of apps) ensure(r.lead_id).appointments++
+  for (const r of props) ensure(r.lead_id).proposals++
+  for (const r of ctrs) {
+    const a = ensure(r.lead_id)
+    a.contracts++
+    a.production += Number(r.amount ?? r.premium_annual ?? 0)
+  }
+  return out
 }

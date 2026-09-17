@@ -1,187 +1,232 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
+import { Alert, Button, Card, CardBody, Icon, TextField } from '../ui'
+import { errorMessage } from '../lib/format'
 
-const card: React.CSSProperties = {
-  maxWidth: 480,
-  width: 'min(92vw, 480px)',
-  background: '#fff',
-  border: '1px solid #eee',
-  borderRadius: 16,
-  padding: 24,
-}
+const GUIDEUP_LOGO = '/guideup-logo.png'
+const MIN_LENGTH = 8
 
-function getUrlTokensDebug(u: string){
-  const out: string[] = []
-  const hasHash = u.includes('#')
-  const hasQ = u.includes('?')
-  if (hasHash) out.push('#present')
-  if (hasQ) out.push('?present')
-  const frag = u.split('#')[1] || ''
-  const query = u.split('?')[1]?.split('#')[0] || ''
-  const hasAT = frag.includes('access_token=') || query.includes('access_token=')
-  const hasRT = frag.includes('refresh_token=') || query.includes('refresh_token=')
-  const hasType = frag.includes('type=') || query.includes('type=')
-  out.push(`hasAT=${hasAT}`, `hasRT=${hasRT}`, `hasType=${hasType}`)
-  return out.join(' · ')
-}
-
-function withTimeout<T>(p: Promise<T>, ms = 15000, label = 'operazione'): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
-    p.then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
-  })
-}
+type Phase = 'checking' | 'ready' | 'invalid' | 'saved'
 
 export default function ResetPasswordPage() {
-  const [pwd, setPwd] = useState('')
-  const [pwd2, setPwd2] = useState('')
-  const [err, setErr] = useState('')
-  const [ok, setOk] = useState('')
-  const [canReset, setCanReset] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [phase, setPhase] = useState<Phase>('checking')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [touched, setTouched] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [debug, setDebug] = useState('')
+  const [error, setError] = useState('')
 
-useEffect(()=>{
-  console.log('[DEBUG] supabaseUrl =', import.meta.env.VITE_SUPABASE_URL)
-  console.log('[DEBUG] functionsUrl (SDK) =', (supabase as any)?.functions?.url)
-},[])
-  
-  // Inizializzazione robusta con timeout
+  /**
+   * Il link di reset arriva con i token nel frammento dell'URL (flusso implicito)
+   * oppure con un parametro `code` (flusso PKCE). Il client Supabase è
+   * configurato con detectSessionInUrl, quindi nel primo caso la sessione si
+   * crea da sola: basta aspettarla. Nel secondo va scambiato il codice.
+   *
+   * La versione precedente mostrava a video un riquadro di debug con lo stato
+   * dei token: informazione inutile per chi legge e che fa sembrare rotta una
+   * pagina che funziona.
+   */
   useEffect(() => {
-    let cancelled = false
+    let alive = true
 
     ;(async () => {
-      const href = typeof window !== 'undefined' ? window.location.href : ''
-      const urlDbg = href ? getUrlTokensDebug(href) : 'no href'
-
       try {
-        // Crea sessione da URL (hash o query) ma con timeout
-        if (href && (href.includes('access_token=') || href.includes('refresh_token=') || href.includes('type='))) {
-          await withTimeout(supabase.auth.exchangeCodeForSession(href), 12000, 'exchangeCodeForSession')
+        const url = new URL(window.location.href)
+        const code = url.searchParams.get('code')
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code)
+          if (error) throw error
         }
-      } catch (e:any) {
-        if (!cancelled) setDebug(`exchange error: ${e?.message || e} · url: ${urlDbg}`)
-      }
 
-      try {
-        const { data } = await withTimeout(supabase.auth.getSession(), 8000, 'getSession')
-        const email = data.session?.user?.email || ''
-        if (!cancelled) {
-          setDebug(prev => (prev ? prev + ' · ' : '') + `url: ${urlDbg} · hasSession=${!!data.session} · user=${email || '-'}`)
-          setCanReset(!!data.session)
+        // Il frammento viene elaborato dal client subito dopo il caricamento.
+        for (let i = 0; i < 12; i++) {
+          const { data } = await supabase.auth.getSession()
+          if (!alive) return
+          if (data.session) {
+            setPhase('ready')
+            // I token restano nell'URL: vanno tolti dalla barra degli indirizzi
+            // e dalla cronologia.
+            window.history.replaceState(null, '', '/reset')
+            return
+          }
+          await new Promise(r => setTimeout(r, 250))
         }
-      } catch (e:any) {
-        if (!cancelled) {
-          setDebug(prev => (prev ? prev + ' · ' : '') + `getSession error: ${e?.message || e} · url: ${urlDbg}`)
-          setCanReset(false)
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
+        if (alive) setPhase('invalid')
+      } catch {
+        if (alive) setPhase('invalid')
       }
     })()
 
-    // failsafe: sblocca il loading anche se qualcosa resta sospeso
-    const hardFallback = setTimeout(() => { if (!cancelled) setLoading(false) }, 4000)
-    return () => { cancelled = true; clearTimeout(hardFallback) }
+    return () => {
+      alive = false
+    }
   }, [])
 
-async function onSave(e: React.FormEvent) {
-  e.preventDefault()
-  setErr(''); setOk('')
+  const strength = useMemo(() => scorePassword(password), [password])
 
-  if (pwd.length < 8) { setErr('La password deve avere almeno 8 caratteri.'); return }
-  if (pwd !== pwd2)   { setErr('Le password non coincidono.'); return }
+  const passwordError =
+    touched && password.length > 0 && password.length < MIN_LENGTH
+      ? `La password deve avere almeno ${MIN_LENGTH} caratteri`
+      : null
+  const confirmError = touched && confirm.length > 0 && confirm !== password ? 'Le password non coincidono' : null
+  const canSubmit = password.length >= MIN_LENGTH && password === confirm
 
-  setSaving(true)
-  try {
-    const { data: s } = await supabase.auth.getSession()
-    const token = s?.session?.access_token
-    if (!token) throw new Error('Sessione non valida: riapri il link dalla mail')
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setTouched(true)
+    if (!canSubmit) return
+    setSaving(true)
+    setError('')
+    try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      if (!token) throw new Error('Sessione scaduta. Riapri il link che hai ricevuto via email.')
 
-    // Chiama la serverless del tuo dominio
-    const resp = await fetch('/api/set_password', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ password: pwd })
-    })
-    const json = await resp.json().catch(()=> ({}))
-    if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`)
+      const res = await fetch('/api/set_password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ password }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.error || `Errore ${res.status}`)
 
-    setOk('Password aggiornata. Reindirizzo al login…')
-    try { await supabase.auth.signOut() } catch {}
-    window.location.replace('/login?reset=ok')
-  } catch (ex:any) {
-    setErr(`Errore: ${ex?.message || String(ex)}`)
-  } finally {
-    setSaving(false)
-  }
-}
-
-
-  if (loading) return <div style={{ padding: 24 }}>Caricamento…</div>
-
-  if (!canReset) {
-    return (
-      <div style={{ margin: '40px auto', ...card }}>
-        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
-        Link non valido o scaduto (mancano i token nell’URL). Torna al <a href="/login">login</a> e richiedi un nuovo reset/invito.
-      </div>
-    )
+      await supabase.auth.signOut().catch(() => {})
+      setPhase('saved')
+    } catch (ex) {
+      setError(errorMessage(ex, 'Non è stato possibile aggiornare la password'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#f7f8fb', padding: 24 }}>
-      <div style={card}>
-        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Imposta nuova password</div>
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 'var(--gu-space-6)' }}>
+      <div style={{ width: 'min(100%, 420px)', display: 'grid', gap: 'var(--gu-space-5)', justifyItems: 'center' }}>
+        <img src={GUIDEUP_LOGO} alt="GuideUp" style={{ height: 34, width: 'auto' }} />
 
-        {/* Ribbon di debug – rimuoveremo quando tutto è ok */}
-        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>DEBUG: {debug}</div>
+        {phase === 'checking' && (
+          <Card>
+            <CardBody>
+              <div className="gu-row-tight" style={{ justifyContent: 'center', color: 'var(--gu-text-muted)' }}>
+                <span className="gu-spinner" />
+                Verifica del link in corso…
+              </div>
+            </CardBody>
+          </Card>
+        )}
 
-        <form onSubmit={onSave} style={{ display: 'grid', gap: 10 }}>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontSize: 12, color: '#555' }}>Nuova password</span>
-            <input
-              type="password"
-              required
-              value={pwd}
-              onChange={(e) => setPwd(e.target.value)}
-              style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8 }}
-            />
-          </label>
+        {phase === 'invalid' && (
+          <Card>
+            <CardBody className="gu-stack">
+              <Alert tone="danger" title="Link non valido o scaduto">
+                I link per impostare la password valgono per un tempo limitato e possono essere usati una sola volta.
+              </Alert>
+              <Button variant="primary" block onClick={() => window.location.replace('/')}>
+                Torna all'accesso e richiedi un nuovo link
+              </Button>
+            </CardBody>
+          </Card>
+        )}
 
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontSize: 12, color: '#555' }}>Conferma password</span>
-            <input
-              type="password"
-              required
-              value={pwd2}
-              onChange={(e) => setPwd2(e.target.value)}
-              style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8 }}
-            />
-          </label>
+        {phase === 'saved' && (
+          <Card>
+            <CardBody className="gu-stack">
+              <div style={{ display: 'grid', justifyItems: 'center', gap: 'var(--gu-space-2)', textAlign: 'center' }}>
+                <span
+                  style={{
+                    display: 'grid',
+                    placeItems: 'center',
+                    width: 48,
+                    height: 48,
+                    borderRadius: '50%',
+                    background: 'var(--gu-success-soft)',
+                    color: 'var(--gu-success-fg)',
+                  }}
+                >
+                  <Icon name="checkCircle" size={24} />
+                </span>
+                <h1 style={{ fontSize: 'var(--gu-text-xl)' }}>Password aggiornata</h1>
+                <p style={{ color: 'var(--gu-text-muted)' }}>Ora puoi accedere a GuideUp con la nuova password.</p>
+              </div>
+              <Button variant="primary" block onClick={() => window.location.replace('/')}>
+                Vai all'accesso
+              </Button>
+            </CardBody>
+          </Card>
+        )}
 
-          <button
-            type="submit"
-            disabled={saving}
-            style={{
-              padding: '10px 12px',
-              borderRadius: 8,
-              border: '1px solid #0b57d0',
-              background: '#0b57d0',
-              color: '#fff',
-            }}
-          >
-            {saving ? 'Salvataggio…' : 'Salva'}
-          </button>
-        </form>
+        {phase === 'ready' && (
+          <Card style={{ width: '100%' }}>
+            <CardBody>
+              <form onSubmit={submit} className="gu-stack">
+                <div>
+                  <h1 style={{ fontSize: 'var(--gu-text-xl)' }}>Imposta la password</h1>
+                  <p style={{ color: 'var(--gu-text-subtle)', marginTop: 4 }}>
+                    Scegli una password di almeno {MIN_LENGTH} caratteri.
+                  </p>
+                </div>
 
-        {err && <div style={{ color: '#c00', marginTop: 8 }}>{err}</div>}
-        {ok  && <div style={{ color: '#0a0', marginTop: 8 }}>{ok}</div>}
+                <TextField
+                  label="Nuova password"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={password}
+                  error={passwordError}
+                  onBlur={() => setTouched(true)}
+                  onChange={e => setPassword(e.target.value)}
+                />
+
+                {password.length > 0 && (
+                  <div>
+                    <div className="gu-progress" style={{ height: 5 }}>
+                      <div
+                        className={`gu-progress__fill gu-progress__fill--${
+                          strength.level === 3 ? 'success' : strength.level === 2 ? 'warning' : 'danger'
+                        }`}
+                        style={{ width: `${(strength.level / 3) * 100}%` }}
+                      />
+                    </div>
+                    <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', marginTop: 4 }}>
+                      Sicurezza: {strength.label}
+                    </div>
+                  </div>
+                )}
+
+                <TextField
+                  label="Conferma password"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={confirm}
+                  error={confirmError}
+                  onBlur={() => setTouched(true)}
+                  onChange={e => setConfirm(e.target.value)}
+                />
+
+                {error && <Alert tone="danger">{error}</Alert>}
+
+                <Button type="submit" variant="primary" size="lg" block loading={saving} disabled={!canSubmit}>
+                  Salva password
+                </Button>
+              </form>
+            </CardBody>
+          </Card>
+        )}
       </div>
     </div>
   )
+}
+
+function scorePassword(pwd: string): { level: 0 | 1 | 2 | 3; label: string } {
+  if (!pwd) return { level: 0, label: '—' }
+  let score = 0
+  if (pwd.length >= MIN_LENGTH) score++
+  if (pwd.length >= 12) score++
+  if (/[a-z]/.test(pwd) && /[A-Z]/.test(pwd)) score++
+  if (/\d/.test(pwd)) score++
+  if (/[^A-Za-z0-9]/.test(pwd)) score++
+  if (score <= 2) return { level: 1, label: 'debole' }
+  if (score <= 3) return { level: 2, label: 'discreta' }
+  return { level: 3, label: 'buona' }
 }
