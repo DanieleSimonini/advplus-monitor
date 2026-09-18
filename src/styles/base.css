@@ -1,0 +1,165 @@
+/* ==========================================================================
+   GuideUp — Reset + primitive globali
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--gu-bg);
+  color: var(--gu-text);
+  font-family: var(--gu-font-ui);
+  font-size: var(--gu-text-md);
+  line-height: var(--gu-leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-family: var(--gu-font-display);
+  font-weight: var(--gu-weight-bold);
+  line-height: var(--gu-leading-tight);
+  letter-spacing: -0.015em;
+  color: var(--gu-text);
+}
+
+p { margin: 0; }
+
+a {
+  color: var(--gu-primary);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button { cursor: pointer; }
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+img, svg { display: block; max-width: 100%; }
+
+/* Focus visibile ovunque — mai rimosso, solo sostituito con un anello più leggibile */
+:focus-visible {
+  outline: 2px solid var(--gu-border-focus);
+  outline-offset: 2px;
+  border-radius: var(--gu-radius-xs);
+}
+:focus:not(:focus-visible) { outline: none; }
+
+::selection {
+  background: var(--gu-brand-100);
+  color: var(--gu-brand-900);
+}
+
+/* Scrollbar discreta ma sempre visibile quando serve */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--gu-n-300) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--gu-n-300);
+  border: 3px solid transparent;
+  border-radius: var(--gu-radius-full);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: var(--gu-n-400); background-clip: content-box; }
+
+/* --- Utility minime, usate ovunque ------------------------------------- */
+
+.gu-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.gu-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gu-stack { display: grid; gap: var(--gu-space-4); }
+.gu-stack-sm { display: grid; gap: var(--gu-space-2); }
+.gu-stack-lg { display: grid; gap: var(--gu-space-6); }
+.gu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-2);
+  flex-wrap: wrap;
+}
+.gu-row-tight { display: flex; align-items: center; gap: var(--gu-space-1); }
+.gu-spacer { flex: 1 1 auto; }
+
+.gu-num { font-variant-numeric: tabular-nums; }
+.gu-mono { font-family: var(--gu-font-mono); }
+
+/* Skip link per la navigazione da tastiera */
+.gu-skip-link {
+  position: absolute;
+  left: var(--gu-space-4);
+  top: -100px;
+  z-index: var(--gu-z-toast);
+  padding: var(--gu-space-2) var(--gu-space-4);
+  background: var(--gu-primary);
+  color: var(--gu-text-invert);
+  border-radius: var(--gu-radius-md);
+  font-weight: var(--gu-weight-semibold);
+  transition: top var(--gu-duration) var(--gu-ease);
+}
+.gu-skip-link:focus { top: var(--gu-space-4); text-decoration: none; }
+
+@keyframes gu-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes gu-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes gu-slide-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes gu-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes gu-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}

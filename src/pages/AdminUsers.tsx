@@ -1,348 +1,565 @@
-import React, { useEffect, useState } from 'react'
-import { supabase } from '@/supabaseClient'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { supabase } from '../supabaseClient'
+import {
+  Alert,
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  EmptyState,
+  Icon,
+  IconButton,
+  Modal,
+  SearchInput,
+  SelectField,
+  SkeletonRows,
+  TextField,
+  useConfirm,
+  useToast,
+} from '../ui'
+import { PageHeader } from '../app/AppShell'
+import { useAuth } from '../auth/AuthProvider'
+import { ADVISOR_FIELDS, ROLES, isActiveAdvisor, roleTone, type Advisor, type Role } from '../lib/domain'
+import { displayName, errorMessage } from '../lib/format'
 
-/**
- * AdminUsers.tsx — Gestione Utenti (solo Admin)
- *
- * Funzioni chiave:
- * - Lista utenti (Nome | Email | Ruolo | Responsabile | Azioni)
- * - Nuovo utente → invio invito: prova Edge Function `invite`,
- *   se non raggiungibile/fa errore usa fallback `smtp_invite` (altra Edge Function)
- * - Modifica: full_name, email (anagrafica), ruolo, team_lead_user_id
- * - Cancella: se user_id mancante → delete by email; se presente e possiede lead → modale di riassegnazione
- *
- * Note SMTP (per la Edge Function fallback `smtp_invite`):
- *   Configurare su Supabase (Function Secrets) o Vercel (Serverless) le env:
- *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_SECURE ("true"/"false").
- */
-
-type Role = 'Admin' | 'Team Lead' | 'Junior'
-
-type Advisor = {
-  user_id: string | null
+type Draft = {
+  id: string | null
+  full_name: string
   email: string
-  full_name: string | null
   role: Role
-  team_lead_user_id?: string | null
+  team_lead_user_id: string
 }
 
-const box: React.CSSProperties = { background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }
-const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid #ddd', borderRadius:8, background:'#fff', width:'100%', maxWidth:'100%', minWidth:0, boxSizing:'border-box' }
-const label: React.CSSProperties = { fontSize:12, color:'#666' }
+const EMPTY_DRAFT: Draft = { id: null, full_name: '', email: '', role: 'Junior', team_lead_user_id: '' }
 
-export default function AdminUsersPage(){
-  const [meRole, setMeRole] = useState<Role>('Junior')
+export default function AdminUsersPage() {
+  const { me } = useAuth()
+  const toast = useToast()
+  const confirm = useConfirm()
+
   const [rows, setRows] = useState<Advisor[]>([])
-  const [tls, setTls] = useState<Advisor[]>([])
   const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
+  const [error, setError] = useState('')
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState<Role | ''>('')
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [inviting, setInviting] = useState<string | null>(null)
+  const [reassign, setReassign] = useState<{ advisor: Advisor; count: number; to: string } | null>(null)
 
-  // EDIT
-  const [isOpen, setIsOpen] = useState(false)
-  const [editUid, setEditUid] = useState<string|null>(null)
-  const emptyDraft = { full_name:'', email:'', role:'Junior' as Role, team_lead_user_id:'' }
-  const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const { data, error } = await supabase.from('advisors').select(ADVISOR_FIELDS).order('full_name', { ascending: true })
+      if (error) throw error
+      setRows((data || []) as Advisor[])
+    } catch (e) {
+      setError(errorMessage(e, 'Impossibile caricare gli utenti'))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  // DELETE → REASSIGN
-  const [reassignUid, setReassignUid] = useState<string|null>(null)
-  const [reassignTo, setReassignTo] = useState<string>('')
-  const [reassignCount, setReassignCount] = useState<number>(0)
+  useEffect(() => {
+    void load()
+  }, [load])
 
-  // NEW USER
-  const [newUser, setNewUser] = useState<{full_name:string; email:string; role:Role; team_lead_user_id:string}>({ full_name:'', email:'', role:'Junior', team_lead_user_id:'' })
+  const teamLeads = useMemo(() => rows.filter(r => (r.role === 'Team Lead' || r.role === 'Admin') && r.user_id), [rows])
 
-  useEffect(()=>{ (async()=>{
-    setLoading(true); setErr('')
-    try{
-      const u = await supabase.auth.getUser()
-      const uid = u.data.user?.id || ''
-      if (uid){
-        const { data: me } = await supabase.from('advisors').select('role').eq('user_id', uid).maybeSingle()
-        if (me?.role) setMeRole(me.role as Role)
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    return rows.filter(r => {
+      if (roleFilter && r.role !== roleFilter) return false
+      if (!term) return true
+      return `${r.full_name || ''} ${r.email}`.toLowerCase().includes(term)
+    })
+  }, [rows, search, roleFilter])
+
+  const stats = useMemo(
+    () => ({
+      total: rows.length,
+      active: rows.filter(isActiveAdvisor).length,
+      pending: rows.filter(r => !r.user_id).length,
+    }),
+    [rows],
+  )
+
+  function nameOfUser(userId?: string | null) {
+    if (!userId) return '—'
+    const a = rows.find(r => r.user_id === userId)
+    return a ? displayName(a) : '—'
+  }
+
+  /**
+   * Invio dell'invito.
+   *
+   * La versione precedente chiamava la Edge Function con una fetch manuale
+   * passando la chiave anonima come Bearer: la funzione riceveva quindi un
+   * token che non identifica nessuno e non poteva verificare che a invitare
+   * fosse davvero un Admin. `functions.invoke` allega il JWT dell'utente
+   * collegato, che è quello che serve per fare i controlli lato server.
+   */
+  async function sendInvite(payload: { email: string; role: Role; full_name?: string }) {
+    const attempts: string[] = ['invite', 'smtp_invite']
+    const failures: string[] = []
+    for (const fn of attempts) {
+      try {
+        const { error } = await supabase.functions.invoke(fn, { body: payload })
+        if (error) throw error
+        return fn
+      } catch (e) {
+        failures.push(`${fn}: ${errorMessage(e)}`)
       }
-      await loadAdvisors()
-    } catch(e:any){ setErr(e.message||'Errore caricamento') } finally { setLoading(false) }
-  })() },[])
-
-  async function loadAdvisors(){
-    const { data, error } = await supabase
-      .from('advisors')
-      .select('user_id,email,full_name,role,team_lead_user_id')
-      .order('full_name', { ascending:true })
-    if (error){ setErr(error.message); return }
-    const list = (data||[]) as Advisor[]
-    setRows(list)
-    setTls(list.filter(a => a.role === 'Team Lead' || a.role === 'Admin'))
+    }
+    throw new Error(failures.join(' — '))
   }
 
-  function canAdmin(){ return meRole==='Admin' }
-  function nameOf(a: Advisor){ return (a.full_name && a.full_name.trim()) || a.email }
-  function nameByUid(uid: string|null){ const tl = rows.find(r=>r.user_id===uid); return tl ? nameOf(tl) : '—' }
-
-  // ====== INVITES ======
-async function sendInvite(payload: { email:string; role:Role; full_name?:string }){
-  const url  = (import.meta as any).env?.VITE_SUPABASE_URL;
-  const anon = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-  if (!url || !anon) throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
-
-  // 1) Direct fetch (mostra il body d'errore completo)
-  try{
-    const resp = await fetch(`${url}/functions/v1/invite`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': anon,
-        'authorization': `Bearer ${anon}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!resp.ok){
-      const txt = await resp.text();
-      throw new Error(`HTTP ${resp.status} — ${txt}`);
-    }
-    return 'direct';
-  }catch(e1:any){
-    // 2) Fallback SDK (se per qualche motivo la route diretta non va)
-    try{
-      const { error } = await supabase.functions.invoke('invite', { body: payload });
-      if (error) throw error;
-      return 'edge';
-    }catch(e2:any){
-      throw new Error(`Invio invito fallito. direct: ${e1?.message||e1}; edge: ${e2?.message||e2}`);
+  async function invite(advisor: Advisor) {
+    setInviting(advisor.id)
+    try {
+      await sendInvite({ email: advisor.email, role: advisor.role, full_name: advisor.full_name || undefined })
+      toast.success('Invito inviato', advisor.email)
+    } catch (e) {
+      toast.error('Invio non riuscito', errorMessage(e))
+    } finally {
+      setInviting(null)
     }
   }
-}
 
-
-  async function inviteNew(){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-    if (!newUser.email.trim()) return alert('Email obbligatoria')
-    try{
-      const mode = await sendInvite({ email:newUser.email, role:newUser.role, full_name: newUser.full_name || undefined })
-      alert(`Invito inviato (${mode}).`)
-      setNewUser({ full_name:'', email:'', role:'Junior', team_lead_user_id:'' })
-      await loadAdvisors()
-    } catch(e:any){ alert(e.message||'Errore invito') }
-  }
-
-  async function resendInvite(a: Advisor){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-    if (!a?.email) return alert('Email non valida')
-    try{
-      const mode = await sendInvite({ email:a.email, role:a.role, full_name: a.full_name||undefined })
-      alert(`Invito inviato a ${a.email} (${mode}).`)
-    } catch(e:any){ alert(e.message||'Errore invio invito') }
-  }
-
-  // ====== EDIT ======
-  function openEdit(a: Advisor){
-    setEditUid(a.user_id || null)
-    setDraft({ full_name: a.full_name || '', email: a.email || '', role: a.role, team_lead_user_id: a.team_lead_user_id || '' })
-    setIsOpen(true)
-  }
-  function closeEdit(){ setIsOpen(false); setEditUid(null); setDraft(emptyDraft) }
-
-  async function saveEdit(){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-    if (!editUid) return
-    if (!draft.email.trim()) return alert('Email obbligatoria')
-
-    const payload: Partial<Advisor> = { full_name: draft.full_name || null, email: draft.email, role: draft.role, team_lead_user_id: draft.team_lead_user_id || null }
-    const { error } = await supabase.from('advisors').update(payload).eq('user_id', editUid)
-    if (error){ alert(error.message); return }
-    await loadAdvisors(); closeEdit()
-  }
-
-  // ====== DELETE + REASSIGN ======
-  async function requestDelete(a: Advisor){
-    if (!canAdmin()) return alert('Accesso negato: solo Admin')
-
-    // Utente mai loggato: niente user_id → elimina per email
-    if (!a.user_id){
-      const ok = confirm(`Confermi l'eliminazione di ${nameOf(a)}?`)
-      if (!ok) return
-      const del = await supabase.from('advisors').delete().eq('email', a.email)
-      if (del.error){ alert(del.error.message); return }
-      await loadAdvisors();
+  async function save() {
+    if (!draft) return
+    const email = draft.email.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast.error('Indirizzo email non valido')
+      return
+    }
+    if (draft.role === 'Junior' && !draft.team_lead_user_id) {
+      toast.error('Un Junior deve avere un responsabile', 'Serve per calcolare i dati di team.')
       return
     }
 
-    // Conta lead posseduti
-    const { count, error } = await supabase
-      .from('leads')
-      .select('id', { count:'exact', head:true })
-      .eq('owner_id', a.user_id)
-    if (error){ alert(error.message); return }
+    setSaving(true)
+    try {
+      const payload = {
+        full_name: draft.full_name.trim() || null,
+        email,
+        role: draft.role,
+        team_lead_user_id: draft.team_lead_user_id || null,
+      }
 
-    if ((count||0) > 0){
-      setReassignUid(a.user_id)
-      setReassignTo(a.team_lead_user_id || '')
-      setReassignCount(count||0)
-    } else {
-      const ok = confirm(`Confermi l'eliminazione di ${nameOf(a)}?`)
-      if (!ok) return
-      const del = await supabase.from('advisors').delete().eq('user_id', a.user_id)
-      if (del.error){ alert(del.error.message); return }
-      await loadAdvisors()
+      if (draft.id) {
+        const { error } = await supabase.from('advisors').update(payload).eq('id', draft.id)
+        if (error) throw error
+        toast.success('Utente aggiornato')
+      } else {
+        if (rows.some(r => r.email.toLowerCase() === email)) {
+          throw new Error('Esiste già un utente con questa email')
+        }
+        const { error } = await supabase.from('advisors').insert(payload)
+        if (error) throw error
+        try {
+          await sendInvite({ email, role: draft.role, full_name: payload.full_name || undefined })
+          toast.success('Utente creato e invito inviato', email)
+        } catch (e) {
+          toast.error('Utente creato, ma invito non inviato', errorMessage(e))
+        }
+      }
+      setDraft(null)
+      await load()
+    } catch (e) {
+      toast.error('Salvataggio non riuscito', errorMessage(e))
+    } finally {
+      setSaving(false)
     }
   }
 
-  async function confirmReassignAndDelete(){
-    if (!reassignUid) return
-    if (!reassignTo) return alert('Seleziona un nuovo assegnatario per i lead')
-    const upd = await supabase.from('leads').update({ owner_id: reassignTo }).eq('owner_id', reassignUid)
-    if (upd.error){ alert(upd.error.message); return }
-    const del = await supabase.from('advisors').delete().eq('user_id', reassignUid)
-    if (del.error){ alert(del.error.message); return }
-    setReassignUid(null); setReassignTo(''); setReassignCount(0)
-    await loadAdvisors()
+  /** Disattiva senza cancellare: i dati storici restano attribuiti. */
+  async function toggleActive(advisor: Advisor) {
+    const disabling = isActiveAdvisor(advisor)
+    const ok = await confirm({
+      title: disabling ? `Disattivare ${displayName(advisor)}?` : `Riattivare ${displayName(advisor)}?`,
+      description: disabling
+        ? "L'utente non potrà più accedere e sparirà dai filtri, ma lead, appuntamenti e produzione restano collegati a lui."
+        : "L'utente tornerà operativo e visibile nei filtri.",
+      confirmLabel: disabling ? 'Disattiva' : 'Riattiva',
+      tone: disabling ? 'danger' : 'primary',
+    })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('advisors')
+        .update({ is_active: !disabling, disabled: disabling })
+        .eq('id', advisor.id)
+      if (error) throw error
+      toast.success(disabling ? 'Utente disattivato' : 'Utente riattivato')
+      await load()
+    } catch (e) {
+      toast.error('Operazione non riuscita', errorMessage(e))
+    }
   }
 
-  if (meRole!=='Admin'){
-    return <div style={{ ...box, maxWidth:1100, margin:'0 auto' }}>Accesso negato: solo Admin.</div>
+  async function requestDelete(advisor: Advisor) {
+    if (advisor.user_id && advisor.user_id === me?.user_id) {
+      toast.error('Non puoi eliminare il tuo stesso profilo')
+      return
+    }
+    try {
+      let count = 0
+      if (advisor.user_id) {
+        const res = await supabase
+          .from('leads')
+          .select('id', { count: 'exact', head: true })
+          .eq('owner_id', advisor.user_id)
+        if (res.error) throw res.error
+        count = res.count || 0
+      }
+
+      if (count > 0) {
+        setReassign({ advisor, count, to: '' })
+        return
+      }
+
+      const ok = await confirm({
+        title: `Eliminare ${displayName(advisor)}?`,
+        description: 'Il profilo verrà rimosso definitivamente. Per conservare lo storico usa invece la disattivazione.',
+        confirmLabel: 'Elimina',
+      })
+      if (!ok) return
+
+      const { error } = await supabase.from('advisors').delete().eq('id', advisor.id)
+      if (error) throw error
+      toast.success('Utente eliminato')
+      await load()
+    } catch (e) {
+      toast.error('Eliminazione non riuscita', errorMessage(e))
+    }
   }
+
+  async function confirmReassign() {
+    if (!reassign || !reassign.to) return
+    try {
+      const { error: updErr } = await supabase
+        .from('leads')
+        .update({ owner_id: reassign.to })
+        .eq('owner_id', reassign.advisor.user_id!)
+      if (updErr) throw updErr
+
+      const { error: delErr } = await supabase.from('advisors').delete().eq('id', reassign.advisor.id)
+      if (delErr) throw delErr
+
+      toast.success(`${reassign.count} lead riassegnati`, 'Profilo eliminato')
+      setReassign(null)
+      await load()
+    } catch (e) {
+      toast.error('Operazione non riuscita', errorMessage(e))
+    }
+  }
+
+  const orphanJuniors = rows.filter(r => r.role === 'Junior' && !r.team_lead_user_id && isActiveAdvisor(r))
 
   return (
-    <div style={{ maxWidth:1100, margin:'0 auto', display:'grid', gap:16 }}>
-      {/* Nuovo utente */}
-      <div className="brand-card" style={{ ...box }}>
-        <div style={{ fontWeight:700, marginBottom:12 }}>Nuovo utente</div>
-        <div style={{ display:'grid', gridTemplateColumns:'1.2fr 1.4fr 1fr 1fr auto', gap:8, alignItems:'end' }}>
-          <div>
-            <div style={label}>Nome</div>
-            <input value={newUser.full_name} onChange={e=>setNewUser(s=>({ ...s, full_name:e.target.value }))} style={ipt} placeholder="Nome e cognome" />
-          </div>
-          <div>
-            <div style={label}>Email</div>
-            <input type="email" value={newUser.email} onChange={e=>setNewUser(s=>({ ...s, email:e.target.value }))} style={ipt} placeholder="name@domain" />
-          </div>
-          <div>
-            <div style={label}>Ruolo</div>
-            <select value={newUser.role} onChange={e=>setNewUser(s=>({ ...s, role: e.target.value as Role }))} style={ipt}>
-              <option value="Junior">Junior</option>
-              <option value="Team Lead">Team Lead</option>
-              <option value="Admin">Admin</option>
-            </select>
-          </div>
-          <div>
-            <div style={label}>Responsabile (TL)</div>
-            <select value={newUser.team_lead_user_id} onChange={e=>setNewUser(s=>({ ...s, team_lead_user_id:e.target.value }))} style={ipt}>
-              <option value="">— Nessuno —</option>
-              {tls.map(t => <option key={t.user_id||t.email} value={t.user_id||''}>{nameOf(t)}</option>)}
-            </select>
-          </div>
-          <div>
-            <button className="brand-btn" onClick={inviteNew}>Invia invito</button>
-          </div>
-        </div>
+    <>
+      <PageHeader
+        title="Utenti"
+        description="Advisor della rete, ruoli, responsabili e inviti."
+        actions={
+          <Button variant="primary" icon="plus" onClick={() => setDraft({ ...EMPTY_DRAFT })}>
+            Nuovo utente
+          </Button>
+        }
+      />
+
+      <div className="gu-grid gu-grid--3">
+        <Card>
+          <CardBody>
+            <div className="gu-row" style={{ justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>Utenti totali</span>
+              <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{stats.total}</strong>
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardBody>
+            <div className="gu-row" style={{ justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>Attivi</span>
+              <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{stats.active}</strong>
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardBody>
+            <div className="gu-row" style={{ justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>
+                In attesa del primo accesso
+              </span>
+              <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{stats.pending}</strong>
+            </div>
+          </CardBody>
+        </Card>
       </div>
 
-      {/* Lista utenti */}
-      <div className="brand-card" style={{ ...box }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-          <div style={{ fontSize:18, fontWeight:700 }}>Gestione utenti</div>
-          <div style={{ fontSize:12, color:'#666' }}>{rows.length} utenti</div>
-        </div>
+      {error && <Alert tone="danger" title="Errore">{error}</Alert>}
 
-        {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
+      {orphanJuniors.length > 0 && (
+        <Alert tone="warning" title={`${orphanJuniors.length} Junior senza responsabile`}>
+          I loro dati non rientrano in nessun team e non compaiono nei report di squadra:{' '}
+          {orphanJuniors.map(j => displayName(j)).join(', ')}.
+        </Alert>
+      )}
 
-        <div style={{ overflowX:'auto' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <thead>
-              <tr style={{ textAlign:'left' }}>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Nome</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Email</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Ruolo</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Responsabile</th>
-                <th style={{ padding:'8px 6px', borderBottom:'1px solid #eee' }}>Azioni</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(a => (
-                <tr key={a.user_id || a.email}>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{nameOf(a)}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{a.email}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{a.role}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>{nameByUid(a.team_lead_user_id||null)}</td>
-                  <td style={{ padding:'8px 6px', borderBottom:'1px solid #f2f2f2' }}>
-                    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                      <button className="brand-btn" onClick={()=>resendInvite(a)}>Reinvia invito</button>
-                      <button className="brand-btn" onClick={()=>openEdit(a)}>Modifica</button>
-                      <button className="brand-btn" onClick={()=>requestDelete(a)} style={{ background:'#c00', borderColor:'#c00', color:'#fff' }}>Cancella</button>
-                    </div>
-                  </td>
-                </tr>
+      <Card>
+        <CardHeader
+          title="Rete commerciale"
+          subtitle={`${filtered.length} utenti visualizzati`}
+          icon="users"
+          actions={
+            <div className="gu-row" style={{ flexWrap: 'nowrap' }}>
+              <div style={{ width: 220 }}>
+                <SearchInput label="Cerca" value={search} onValueChange={setSearch} placeholder="Nome o email" />
+              </div>
+              <SelectField label="Ruolo" value={roleFilter} onChange={e => setRoleFilter(e.target.value as Role | '')}>
+                <option value="">Tutti</option>
+                {ROLES.map(r => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </SelectField>
+            </div>
+          }
+        />
+        <CardBody style={{ padding: 0 }}>
+          {loading ? (
+            <SkeletonRows rows={5} />
+          ) : filtered.length === 0 ? (
+            <EmptyState icon="users" title="Nessun utente trovato" text="Prova a modificare i criteri di ricerca." />
+          ) : (
+            <div className="gu-table-wrap">
+              <table className="gu-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Utente</th>
+                    <th scope="col">Ruolo</th>
+                    <th scope="col">Responsabile</th>
+                    <th scope="col">Stato</th>
+                    <th scope="col" className="gu-table__actions">
+                      Azioni
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map(a => {
+                    const active = isActiveAdvisor(a)
+                    return (
+                      <tr key={a.id} style={active ? undefined : { opacity: 0.6 }}>
+                        <td>
+                          <div className="gu-row-tight" style={{ gap: 'var(--gu-space-2)' }}>
+                            <Avatar name={displayName(a)} tone={a.role === 'Junior' ? 'accent' : 'primary'} />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 600 }} className="gu-truncate">
+                                {displayName(a)}
+                              </div>
+                              <div
+                                style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}
+                                className="gu-truncate"
+                              >
+                                {a.email}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <Badge tone={roleTone(a.role)}>{a.role}</Badge>
+                        </td>
+                        <td style={{ fontSize: 'var(--gu-text-sm)' }}>{nameOfUser(a.team_lead_user_id)}</td>
+                        <td>
+                          {!active ? (
+                            <Badge tone="neutral" dot>
+                              Disattivato
+                            </Badge>
+                          ) : !a.user_id ? (
+                            <Badge tone="warning" dot>
+                              Invito da accettare
+                            </Badge>
+                          ) : (
+                            <Badge tone="success" dot>
+                              Attivo
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="gu-table__actions">
+                          <div className="gu-row-tight" style={{ justifyContent: 'flex-end' }}>
+                            <IconButton
+                              icon="send"
+                              label={`Invia invito a ${a.email}`}
+                              size="sm"
+                              disabled={inviting === a.id}
+                              onClick={() => void invite(a)}
+                            />
+                            <IconButton
+                              icon="edit"
+                              label={`Modifica ${displayName(a)}`}
+                              size="sm"
+                              onClick={() =>
+                                setDraft({
+                                  id: a.id,
+                                  full_name: a.full_name || '',
+                                  email: a.email,
+                                  role: a.role,
+                                  team_lead_user_id: a.team_lead_user_id || '',
+                                })
+                              }
+                            />
+                            <IconButton
+                              icon={active ? 'pause' : 'play'}
+                              label={active ? `Disattiva ${displayName(a)}` : `Riattiva ${displayName(a)}`}
+                              size="sm"
+                              onClick={() => void toggleActive(a)}
+                            />
+                            <IconButton
+                              icon="trash"
+                              label={`Elimina ${displayName(a)}`}
+                              size="sm"
+                              tone="danger"
+                              onClick={() => void requestDelete(a)}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* Creazione / modifica */}
+      <Modal
+        open={!!draft}
+        onClose={() => setDraft(null)}
+        title={draft?.id ? 'Modifica utente' : 'Nuovo utente'}
+        description={draft?.id ? undefined : "Alla creazione viene inviato automaticamente l'invito via email."}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDraft(null)}>
+              Annulla
+            </Button>
+            <Button variant="primary" icon="check" onClick={save} loading={saving}>
+              {draft?.id ? 'Salva' : 'Crea e invita'}
+            </Button>
+          </>
+        }
+      >
+        {draft && (
+          <div className="gu-stack">
+            <TextField
+              label="Nome e cognome"
+              value={draft.full_name}
+              onChange={e => setDraft({ ...draft, full_name: e.target.value })}
+              autoComplete="name"
+            />
+            <TextField
+              label="Email"
+              type="email"
+              required
+              value={draft.email}
+              onChange={e => setDraft({ ...draft, email: e.target.value })}
+              hint={draft.id ? "Modifica l'anagrafica, non l'indirizzo usato per accedere." : undefined}
+            />
+            <SelectField
+              label="Ruolo"
+              value={draft.role}
+              onChange={e => setDraft({ ...draft, role: e.target.value as Role })}
+            >
+              {ROLES.map(r => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Modal Edit */}
-      {isOpen && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:'min(92vw, 560px)' }}>
-            <div style={{ fontWeight:700, marginBottom:12 }}>Modifica utente</div>
-            <div style={{ display:'grid', gap:12 }}>
-              <div>
-                <div style={label}>Nome</div>
-                <input value={draft.full_name} onChange={e=>setDraft(d=>({ ...d, full_name:e.target.value }))} style={ipt} />
-              </div>
-              <div>
-                <div style={label}>Email (anagrafica)</div>
-                <input type="email" value={draft.email} onChange={e=>setDraft(d=>({ ...d, email:e.target.value }))} style={ipt} />
-                <div style={{ fontSize:11, color:'#777', marginTop:4 }}>Nota: non modifica l'email di login.</div>
-              </div>
-              <div>
-                <div style={label}>Ruolo</div>
-                <select value={draft.role} onChange={e=>setDraft(d=>({ ...d, role: e.target.value as Role }))} style={ipt}>
-                  <option value="Junior">Junior</option>
-                  <option value="Team Lead">Team Lead</option>
-                  <option value="Admin">Admin</option>
-                </select>
-              </div>
-              <div>
-                <div style={label}>Responsabile (Team Lead)</div>
-                <select value={draft.team_lead_user_id} onChange={e=>setDraft(d=>({ ...d, team_lead_user_id:e.target.value }))} style={ipt}>
-                  <option value="">— Nessuno —</option>
-                  {tls.map(t => <option key={t.user_id||t.email} value={t.user_id||''}>{nameOf(t)}</option>)}
-                </select>
-              </div>
-              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-                <button className="brand-btn" onClick={closeEdit}>Annulla</button>
-                <button className="brand-btn" onClick={saveEdit}>Salva</button>
-              </div>
-            </div>
+            </SelectField>
+            <SelectField
+              label="Responsabile"
+              required={draft.role === 'Junior'}
+              value={draft.team_lead_user_id}
+              onChange={e => setDraft({ ...draft, team_lead_user_id: e.target.value })}
+              hint="Determina in quale team confluiscono i dati di questo advisor."
+            >
+              <option value="">— Nessuno —</option>
+              {teamLeads
+                .filter(t => t.id !== draft.id)
+                .map(t => (
+                  <option key={t.user_id!} value={t.user_id!}>
+                    {displayName(t)} ({t.role})
+                  </option>
+                ))}
+            </SelectField>
+            {draft.role === 'Junior' && !draft.team_lead_user_id && (
+              <Alert tone="warning">
+                Senza responsabile questo Junior non comparirà in nessun report di team.
+              </Alert>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
 
-      {/* Modal Reassign + Delete */}
-      {reassignUid && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:'min(92vw, 560px)' }}>
-            <div style={{ fontWeight:700, marginBottom:12 }}>Riassegna {reassignCount} lead</div>
-            <div style={{ display:'grid', gap:12 }}>
-              <div>
-                <div style={label}>Nuovo assegnatario</div>
-                <select value={reassignTo} onChange={e=>setReassignTo(e.target.value)} style={ipt}>
-                  <option value="">— Seleziona —</option>
-                  {rows.filter(r=>r.user_id!==reassignUid).map(r=> (
-                    <option key={r.user_id||r.email} value={r.user_id||''}>{nameOf(r)} — {r.role}</option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-                <button className="brand-btn" onClick={()=>{ setReassignUid(null); setReassignTo(''); setReassignCount(0) }}>Annulla</button>
-                <button className="brand-btn" onClick={confirmReassignAndDelete}>Riassegna e cancella</button>
-              </div>
-            </div>
+      {/* Riassegnazione lead prima dell'eliminazione */}
+      <Modal
+        open={!!reassign}
+        onClose={() => setReassign(null)}
+        title="Riassegna i lead prima di eliminare"
+        description={
+          reassign
+            ? `${displayName(reassign.advisor)} ha ${reassign.count} lead in carico. Scegli a chi passarli.`
+            : undefined
+        }
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setReassign(null)}>
+              Annulla
+            </Button>
+            <Button variant="danger" onClick={confirmReassign} disabled={!reassign?.to}>
+              Riassegna ed elimina
+            </Button>
+          </>
+        }
+      >
+        {reassign && (
+          <div className="gu-stack">
+            <Alert tone="info">
+              Se vuoi solo togliere l'accesso senza spostare nulla, chiudi questa finestra e usa la{' '}
+              <strong>disattivazione</strong>: lo storico resta attribuito alla persona corretta.
+            </Alert>
+            <SelectField
+              label="Nuovo assegnatario"
+              required
+              value={reassign.to}
+              onChange={e => setReassign({ ...reassign, to: e.target.value })}
+            >
+              <option value="">— Seleziona —</option>
+              {rows
+                .filter(r => r.user_id && r.user_id !== reassign.advisor.user_id && isActiveAdvisor(r))
+                .map(r => (
+                  <option key={r.user_id!} value={r.user_id!}>
+                    {displayName(r)} — {r.role}
+                  </option>
+                ))}
+            </SelectField>
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
 
-      {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
-      {loading && <div>Caricamento…</div>}
-    </div>
+      <Alert tone="info" title="Come funziona l'accesso">
+        <span className="gu-row-tight" style={{ gap: 6 }}>
+          <Icon name="info" size={14} />
+          L'utente creato qui riceve un invito via email e imposta la password al primo accesso. Finché non accede, lo
+          stato resta «Invito da accettare».
+        </span>
+      </Alert>
+    </>
   )
 }

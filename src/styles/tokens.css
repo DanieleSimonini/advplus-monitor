@@ -1,0 +1,201 @@
+/* ==========================================================================
+   GuideUp — Design Tokens
+   Sorgente unica di verità per colori, spazi, tipografia, ombre, motion.
+   Estratti dai loghi ufficiali: navy #011750, blu #0029AE, teal #26C2A9,
+   aqua #3BEEE2, rosso #E63A34 (triangolo).
+   Payoff di brand: "Turn process into progress."
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* --- Brand: Navy / Blu ------------------------------------------------ */
+  --gu-brand-50:  #eef2ff;
+  --gu-brand-100: #dce4ff;
+  --gu-brand-200: #b9c8ff;
+  --gu-brand-300: #8aa3ff;
+  --gu-brand-400: #5570f5;
+  --gu-brand-500: #2946d6;
+  --gu-brand-600: #0029ae; /* colore d'azione ufficiale */
+  --gu-brand-700: #021f87;
+  --gu-brand-800: #011a66;
+  --gu-brand-900: #011750; /* navy ufficiale */
+  --gu-brand-950: #010e33;
+
+  /* --- Brand: Teal / Aqua ("Up") --------------------------------------- */
+  --gu-accent-50:  #ecfdf9;
+  --gu-accent-100: #d3faf2;
+  --gu-accent-200: #9bf4e9;
+  --gu-accent-300: #3beee2; /* aqua ufficiale */
+  --gu-accent-400: #4ad9c3;
+  --gu-accent-500: #26c2a9; /* teal ufficiale */
+  --gu-accent-600: #119c88;
+  --gu-accent-700: #0b7c6d;
+  --gu-accent-800: #0d6257;
+  --gu-accent-900: #0e5149;
+
+  /* --- Brand: Rosso (triangolo del logo) ------------------------------- */
+  --gu-red-50:  #fef3f2;
+  --gu-red-100: #fee4e2;
+  --gu-red-200: #fecdca;
+  --gu-red-300: #fda29b;
+  --gu-red-500: #e63a34; /* rosso ufficiale */
+  --gu-red-600: #cc2a24;
+  --gu-red-700: #a81f1a;
+
+  /* --- Ambra (attenzione) ---------------------------------------------- */
+  --gu-amber-50:  #fffaeb;
+  --gu-amber-100: #fef0c7;
+  --gu-amber-200: #fedf89;
+  --gu-amber-500: #f79009;
+  --gu-amber-600: #dc6803;
+  --gu-amber-700: #b54708;
+
+  /* --- Neutri (leggera dominante navy) --------------------------------- */
+  --gu-n-0:   #ffffff;
+  --gu-n-25:  #fbfcfe;
+  --gu-n-50:  #f6f8fc;
+  --gu-n-100: #eef1f7;
+  --gu-n-200: #e1e6ef;
+  --gu-n-300: #cbd3e1;
+  --gu-n-400: #97a3b8;
+  --gu-n-500: #6b7890;
+  --gu-n-600: #505c73;
+  --gu-n-700: #3b4557;
+  --gu-n-800: #27303f;
+  --gu-n-900: #171d28;
+
+  /* --- Ruoli semantici -------------------------------------------------- */
+  --gu-bg:            var(--gu-n-50);
+  --gu-bg-elevated:   var(--gu-n-0);
+  --gu-bg-sunken:     var(--gu-n-100);
+  --gu-surface:       var(--gu-n-0);
+  --gu-surface-hover: var(--gu-n-50);
+  --gu-surface-active: var(--gu-brand-50);
+
+  --gu-text:        var(--gu-n-900);
+  --gu-text-muted:  var(--gu-n-600);
+  --gu-text-subtle: var(--gu-n-500);
+  --gu-text-invert: var(--gu-n-0);
+
+  --gu-border:        var(--gu-n-200);
+  --gu-border-strong: var(--gu-n-300);
+  --gu-border-focus:  var(--gu-brand-600);
+
+  --gu-primary:        var(--gu-brand-600);
+  --gu-primary-hover:  var(--gu-brand-700);
+  --gu-primary-active: var(--gu-brand-800);
+  --gu-primary-soft:   var(--gu-brand-50);
+  --gu-primary-soft-fg: var(--gu-brand-700);
+
+  --gu-accent:      var(--gu-accent-500);
+  --gu-accent-soft: var(--gu-accent-50);
+  --gu-accent-fg:   var(--gu-accent-700);
+
+  --gu-success:      var(--gu-accent-600);
+  --gu-success-soft: var(--gu-accent-50);
+  --gu-success-fg:   var(--gu-accent-700);
+
+  --gu-warning:      var(--gu-amber-500);
+  --gu-warning-soft: var(--gu-amber-50);
+  --gu-warning-fg:   var(--gu-amber-700);
+
+  --gu-danger:      var(--gu-red-500);
+  --gu-danger-hover: var(--gu-red-600);
+  --gu-danger-soft: var(--gu-red-50);
+  --gu-danger-fg:   var(--gu-red-700);
+
+  /* Sequenza per grafici — testata per distinguibilità e contrasto */
+  --gu-chart-1: var(--gu-brand-600);
+  --gu-chart-2: var(--gu-accent-500);
+  --gu-chart-3: var(--gu-brand-300);
+  --gu-chart-4: var(--gu-amber-500);
+  --gu-chart-5: var(--gu-brand-900);
+  --gu-chart-track: var(--gu-n-200);
+
+  /* --- Tipografia ------------------------------------------------------- */
+  --gu-font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --gu-font-display: 'Plus Jakarta Sans', var(--gu-font-ui);
+  --gu-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --gu-text-2xs: 0.6875rem; /* 11px — solo micro-label, mai testo corrente */
+  --gu-text-xs:  0.75rem;   /* 12px */
+  --gu-text-sm:  0.8125rem; /* 13px */
+  --gu-text-md:  0.875rem;  /* 14px — base UI dense */
+  --gu-text-base: 1rem;     /* 16px — base testo */
+  --gu-text-lg:  1.125rem;
+  --gu-text-xl:  1.375rem;
+  --gu-text-2xl: 1.75rem;
+  --gu-text-3xl: 2.25rem;
+
+  --gu-leading-tight: 1.25;
+  --gu-leading-snug: 1.4;
+  --gu-leading-normal: 1.55;
+
+  --gu-weight-regular: 400;
+  --gu-weight-medium: 500;
+  --gu-weight-semibold: 600;
+  --gu-weight-bold: 700;
+  --gu-weight-black: 800;
+
+  /* --- Spaziatura (scala densa da dashboard) ---------------------------- */
+  --gu-space-1: 4px;
+  --gu-space-2: 8px;
+  --gu-space-3: 12px;
+  --gu-space-4: 16px;
+  --gu-space-5: 20px;
+  --gu-space-6: 24px;
+  --gu-space-8: 32px;
+  --gu-space-10: 40px;
+  --gu-space-12: 48px;
+  --gu-space-16: 64px;
+
+  /* --- Raggi ------------------------------------------------------------ */
+  --gu-radius-xs: 4px;
+  --gu-radius-sm: 6px;
+  --gu-radius-md: 8px;
+  --gu-radius-lg: 12px;
+  --gu-radius-xl: 16px;
+  --gu-radius-full: 999px;
+
+  /* --- Ombre (sobrie: niente ombre complesse) --------------------------- */
+  --gu-shadow-xs: 0 1px 2px rgba(1, 23, 80, 0.05);
+  --gu-shadow-sm: 0 1px 3px rgba(1, 23, 80, 0.07), 0 1px 2px rgba(1, 23, 80, 0.04);
+  --gu-shadow-md: 0 4px 12px rgba(1, 23, 80, 0.08), 0 1px 3px rgba(1, 23, 80, 0.04);
+  --gu-shadow-lg: 0 12px 32px rgba(1, 23, 80, 0.12), 0 2px 8px rgba(1, 23, 80, 0.06);
+  --gu-shadow-focus: 0 0 0 3px rgba(0, 41, 174, 0.18);
+  --gu-shadow-focus-danger: 0 0 0 3px rgba(230, 58, 52, 0.18);
+
+  /* --- Layout ----------------------------------------------------------- */
+  --gu-sidebar-w: 248px;
+  --gu-sidebar-w-collapsed: 68px;
+  --gu-topbar-h: 60px;
+  --gu-content-max: 1440px;
+  --gu-control-h: 36px;
+  --gu-control-h-sm: 30px;
+  --gu-control-h-lg: 42px;
+  --gu-tap-target: 44px;
+
+  /* --- Motion ----------------------------------------------------------- */
+  --gu-duration-fast: 120ms;
+  --gu-duration: 180ms;
+  --gu-duration-slow: 260ms;
+  --gu-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --gu-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* --- Z-index ---------------------------------------------------------- */
+  --gu-z-sticky: 20;
+  --gu-z-sidebar: 40;
+  --gu-z-overlay: 60;
+  --gu-z-modal: 70;
+  --gu-z-toast: 90;
+}
+
+/* Nessun movimento per chi lo ha disattivato a livello di sistema */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --gu-duration-fast: 0ms;
+    --gu-duration: 0ms;
+    --gu-duration-slow: 0ms;
+  }
+}

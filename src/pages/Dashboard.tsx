@@ -1,597 +1,490 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/supabaseClient'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { supabase } from '../supabaseClient'
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  EmptyState,
+  Icon,
+  Skeleton,
+  Stat,
+} from '../ui'
+import { PageHeader } from '../app/AppShell'
+import { MonthRange, ScopeSelect } from '../app/ScopeSelect'
+import { useAdvisors, type Scope } from '../lib/useAdvisors'
+import { chunk, fetchAllPages, inChunks, uniq } from '../lib/db'
+import { addMonths, monthKeyOf, monthRangeDate, monthRangeIso } from '../lib/datetime'
+import { errorMessage, formatCurrency, formatNumber, formatPercent } from '../lib/format'
+import { CONTRACT_TYPES, FUNNEL_STAGES, METRICS } from '../lib/domain'
 
-/**
- * Dashboard.tsx — Funnel + "Lead non contattati" (UX migliorata)
- * - Filtri Advisor (Solo me / Tutti / Team Lead / Junior) e Periodo (mese da / a)
- * - KPI + grafico ad imbuto vero (trapezi SVG con % di conversione)
- * - Riquadro evidenziato "Lead non contattati" (scope-aware)
- */
-
-type Role = 'Admin'|'Team Lead'|'Junior'
-
-type Advisor = { id?: string; user_id: string; full_name: string|null; email: string; role: Role; team_lead_user_id?: string|null }
-
-type Period = { fromMonthKey: string; toMonthKey: string }
-
-// ✅ Nuovo tipo filtro owner
-type OwnerFilter =
-  | { type: 'me' }
-  | { type: 'all' }
-  | { type: 'user', userId: string }      // Junior singolo
-  | { type: 'teamlead', userId: string }  // Team Lead (TL + junior del TL)
-
-type Kpi = {
+type Totals = {
+  leads: number
   contacts: number
   appointments: number
   proposals: number
   contracts: number
-  prodDanni: number
-  prodVProt: number
-  prodVPR: number
-  prodVPU: number
+  production: Record<string, number>
+  notContacted: number
 }
 
-function addMonths(ym: string, delta: number){
-  const [y,m] = ym.split('-').map(Number)
-  const d = new Date(y, m-1+delta, 1)
-  const y2 = d.getFullYear(), m2 = (d.getMonth()+1).toString().padStart(2,'0')
-  return `${y2}-${m2}`
-}
-function defaultPeriod(): Period{
-  // ultimi 6 mesi inclusi → from = now-5m; to = now
-  const now = new Date()
-  const ym = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}`
-  return { fromMonthKey: addMonths(ym, -5), toMonthKey: ym }
-}
-function monthKeyToRange(ym: string){
-  const [y,m] = ym.split('-').map(Number)
-  const start = new Date(y, m-1, 1)
-  const end = new Date(y, m, 1) // esclusivo
-  return { start: start.toISOString(), end: end.toISOString() }
-}
-function periodToRange(p: Period){
-  const a = monthKeyToRange(p.fromMonthKey)
-  const b = monthKeyToRange(p.toMonthKey)
-  // uniamo start del primo e end dell'ultimo mese
-  return { start: a.start, end: b.end }
+const EMPTY: Totals = {
+  leads: 0,
+  contacts: 0,
+  appointments: 0,
+  proposals: 0,
+  contracts: 0,
+  production: {},
+  notContacted: 0,
 }
 
-// 🔁 Filtro owners aggiornato alle nuove opzioni
-function ownersToQuery(sel: OwnerFilter, me: Advisor|null, advisors: Advisor[]): string[]{
-  if (!me) return []
-
-  if (sel.type === 'me') return [me.user_id]
-  if (sel.type === 'all') return advisors.map(a => a.user_id)
-  if (sel.type === 'user') return [sel.userId]
-  if (sel.type === 'teamlead') {
-    const team = advisors.filter(a => a.user_id === sel.userId || a.team_lead_user_id === sel.userId)
-    return team.map(a => a.user_id)
-  }
-  return []
-}
-
-async function fetchLeadIds(ownerIds: string[]): Promise<string[]>{
-  if (!ownerIds.length) return []
-  const { data } = await supabase.from('leads').select('id').in('owner_id', ownerIds)
-  return (data||[]).map(r=>r.id)
-}
-
-async function countIn(table: 'activities'|'appointments'|'proposals'|'contracts', leadIds: string[], startIso: string, endIso: string){
-  if (!leadIds.length) return 0
-  const { count } = await supabase
-    .from(table)
-    .select('id', { count:'exact', head:true })
-    .in('lead_id', leadIds)
-    .gte('ts', startIso)
-    .lt('ts', endIso)
-  return count||0
-}
-
-async function sumContractsByType(leadIds: string[], startIso: string, endIso: string, types: string[]){
-  if (!leadIds.length) return 0
-  const { data, error } = await supabase
-    .from('contracts')
-    .select('amount, contract_type, ts')
-    .in('lead_id', leadIds)
-    .in('contract_type', types)
-    .gte('ts', startIso).lt('ts', endIso)
-  if (error || !data) return 0
-  return data.reduce((s,r)=> s + Number(r.amount||0), 0)
-}
-
-async function countLeadsCreated(ownerIds: string[], startIso: string, endIso: string){
-  if (!ownerIds.length) return 0
-  const { count } = await supabase
-    .from('leads')
-    .select('id', { count:'exact', head:true })
-    .in('owner_id', ownerIds)
-    .gte('created_at', startIso)
-    .lt('created_at', endIso)
-  return count||0
-}
-
-async function countLeadsNeverContacted(ownerIds: string[]): Promise<number>{
-  if (!ownerIds.length) return 0
-  // all-time: lead senza alcuna activity
-  const { data, error } = await supabase
-    .from('leads')
-    .select('id')
-    .in('owner_id', ownerIds)
-  if (error || !data) return 0
-  const leadIds = data.map(d=>d.id)
-  if (!leadIds.length) return 0
-  const { data: acts } = await supabase
-    .from('activities')
-    .select('lead_id')
-    .in('lead_id', leadIds)
-  const contacted = new Set((acts||[]).map(a=>a.lead_id))
-  return leadIds.filter(id=> !contacted.has(id)).length
-}
-
-function formatNumber(n:number){ return new Intl.NumberFormat('it-IT').format(n) }
-function formatCurrency(n:number){ return new Intl.NumberFormat('it-IT',{ style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n) }
-
-// ➕ formattazione percentuali
-function formatPercent(n:number){
-  return new Intl.NumberFormat('it-IT', {
-    maximumFractionDigits: 1,
-    minimumFractionDigits: 0,
-  }).format(n) + ' %'
-}
-
-/**
- * Funnel a trapezi SVG con % conversione
- */
-function Funnel({ steps }:{ steps: { label:string; value:number }[] }) {
-  // Allineamento etichette/trapezi: stessa griglia a righe fisse
-  const max = Math.max(1, ...steps.map(s => s.value))
-  const rowH = 64          // altezza di ogni fascia (etichetta + trapezio)
-  const padX = 12
-  const labelW = 164
-  const width = 560
-  const totalH = steps.length * rowH
-
-  const pill: React.CSSProperties = {
-    padding: '6px 10px',
-    borderRadius: 999,
-    border: '1px solid #e5e7eb',
-    background: '#f8fafc',
-    display: 'inline-flex',
-    gap: 6,
-    alignItems: 'baseline'
-  }
-
-  const conv = steps.map((s, i) => {
-    if (i === 0) return 0
-    const from = steps[i - 1].value || 0
-    const to = s.value || 0
-    return from > 0 ? Math.round((to / from) * 100) : 0
+export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void }) {
+  const { resolveScope, scopeOptions, defaultScope, loading: advisorsLoading } = useAdvisors()
+  const [scope, setScope] = useState<Scope | null>(null)
+  const [period, setPeriod] = useState(() => {
+    const now = monthKeyOf(new Date())
+    return { from: addMonths(now, -5), to: now }
   })
-
-  return (
-    <div className="brand-card" style={{ background:'#fff', border:'1px solid #eee', borderRadius:16, padding:16 }}>
-      <div style={{ fontWeight:700, marginBottom:12 }}>Imbuto di conversione</div>
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: `${labelW}px ${width}px`,
-          gridTemplateRows: `repeat(${steps.length}, ${rowH}px)`,
-          columnGap: 12,
-          rowGap: 0,
-          alignItems: 'center'
-        }}
-      >
-        {/* Colonna etichette (una riga = una fascia) */}
-        {steps.map((s, i) => (
-          <div key={`lbl-${s.label}`} style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-            <div>
-              <div style={{ fontSize:13, fontWeight:600 }}>{s.label}</div>
-              <div style={{ fontSize:12, color:'#6b7280' }}>{new Intl.NumberFormat('it-IT').format(s.value)}</div>
-            </div>
-            {i > 0 && (
-              <div style={pill}>
-                <span style={{ fontSize:11, color:'#6b7280' }}>→</span>
-                <strong style={{ fontSize:14 }}>{conv[i]}%</strong>
-              </div>
-            )}
-          </div>
-        ))}
-
-        {/* Colonna funnel: un solo SVG che occupa tutte le righe */}
-        <svg
-          width={width}
-          height={totalH}
-          viewBox={`0 0 ${width} ${totalH}`}
-          role="img"
-          aria-label="Funnel"
-          style={{ gridColumn: 2, gridRow: `1 / span ${steps.length}` }}
-        >
-          <defs>
-            <linearGradient id="gFunnel" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#0b57d0" stopOpacity="0.85" />
-              <stop offset="100%" stopColor="#0b57d0" stopOpacity="0.55" />
-            </linearGradient>
-          </defs>
-
-          {steps.map((s, i) => {
-            // larghezze relative rispetto al massimo
-            const topW = i === 0 ? (width - padX * 2)
-                                 : (width - padX * 2) * (steps[i - 1].value / max)
-            const botW = (width - padX * 2) * (s.value / max)
-
-            // ogni fascia è centrata verticalmente nella sua riga
-            const yCenter = i * rowH + rowH / 2
-            const bandH = rowH - 14
-            const yTop = yCenter - bandH / 2
-            const yBot = yCenter + bandH / 2
-
-            const xTop = (width - topW) / 2
-            const xBot = (width - botW) / 2
-
-            return (
-              <g key={`poly-${s.label}`}>
-                <polygon
-                  points={`${xTop},${yTop} ${xTop + topW},${yTop} ${xBot + botW},${yBot} ${xBot},${yBot}`}
-                  fill="url(#gFunnel)"
-                  stroke="#e5e7eb"
-                  strokeWidth="1"
-                />
-                <text
-                  x={width / 2}
-                  y={yCenter}
-                  dominantBaseline="middle"
-                  textAnchor="middle"
-                  fontSize="13"
-                  fill="#0f172a"
-                >
-                  {new Intl.NumberFormat('it-IT').format(s.value)}
-                </text>
-              </g>
-            )
-          })}
-        </svg>
-      </div>
-    </div>
-  )
-}
-
-export default function DashboardPage(){
-  const [me, setMe] = useState<Advisor|null>(null)
-  const [advisors, setAdvisors] = useState<Advisor[]>([])
-
-  // 🔁 nuovo stato filtro
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>({ type:'me' })
-  const [period, setPeriod] = useState<Period>(defaultPeriod())
-
+  const [totals, setTotals] = useState<Totals>(EMPTY)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // KPI base
-  const [kpi, setKpi] = useState<Kpi|null>(null)
-  // Funnel + Not Contacted
-  const [funnel, setFunnel] = useState<{leads:number; contacts:number; appointments:number; proposals:number; contracts:number}>({leads:0,contacts:0,appointments:0,proposals:0,contracts:0})
-  const [notContacted, setNotContacted] = useState<number>(0)
+  useEffect(() => {
+    if (!scope) setScope(defaultScope)
+  }, [defaultScope, scope])
 
-  // bootstrap me+advisors
-  useEffect(()=>{ (async()=>{
+  const ownerIds = useMemo(() => (scope ? resolveScope(scope) : []), [scope, resolveScope])
+  const ownerKey = ownerIds.join(',')
+
+  const load = useCallback(async () => {
+    if (!ownerIds.length) {
+      setTotals(EMPTY)
+      setLoading(false)
+      return
+    }
     setLoading(true)
-    try{
-      const u = await supabase.auth.getUser()
-      const uid = u.data.user?.id
-      if (uid){
-        const { data: meRow } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id').eq('user_id', uid).maybeSingle()
-        if (meRow) setMe(meRow as any)
+    setError('')
+    try {
+      const tsRange = monthRangeIso(period.from, period.to)
+      const dateRange = monthRangeDate(period.from, period.to)
+
+      // Lead nel perimetro: solo gli id, paginati (PostgREST si ferma a 1000
+      // righe per richiesta e prima nessuno lo gestiva).
+      const ownedLeads = await inChunks(ownerIds, slice =>
+        fetchAllPages<{ id: string }>(() => supabase.from('leads').select('id').in('owner_id', slice) as never),
+      )
+      const leadIds = ownedLeads.map(l => l.id)
+
+      const [leadsCreated, contacts, appointments, proposals, contractRows, notContacted] = await Promise.all([
+        countLeadsCreated(ownerIds, tsRange),
+        countByLead('activities', leadIds, tsRange, 'ts'),
+        countByLead('appointments', leadIds, tsRange, 'ts'),
+        // proposals.ts e contracts.ts sono colonne `date`: il confronto va
+        // fatto con 'YYYY-MM-DD', non con un timestamp completo.
+        countByLead('proposals', leadIds, dateRange, 'ts'),
+        loadContracts(leadIds, dateRange),
+        countNeverContacted(ownerIds, leadIds),
+      ])
+
+      const production: Record<string, number> = {}
+      for (const t of CONTRACT_TYPES) production[t] = 0
+      for (const row of contractRows) {
+        const type = row.contract_type || ''
+        if (!(type in production)) continue
+        // `amount` è nullable e `premium_annual` è obbligatoria: a seconda di
+        // come è stato inserito il contratto il premio sta nell'una o
+        // nell'altra. Si prende il primo valore disponibile.
+        production[type] += Number(row.amount ?? row.premium_annual ?? 0)
       }
-      const { data: adv } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id')
-      setAdvisors((adv||[]) as any)
-    } finally { setLoading(false) }
-  })() },[])
 
-  // 🔁 helper: parsing e valore stringa della select
-  function parseOwnerValue(v: string): OwnerFilter {
-    if (v === 'me') return { type:'me' }
-    if (v === 'all') return { type:'all' }
-    if (v.startsWith('tl:')) return { type:'teamlead', userId: v.slice(3) }
-    if (v.startsWith('u:')) return { type:'user', userId: v.slice(2) }
-    return { type:'me' }
-  }
+      setTotals({
+        leads: leadsCreated,
+        contacts,
+        appointments,
+        proposals,
+        contracts: contractRows.length,
+        production,
+        notContacted,
+      })
+    } catch (e) {
+      setError(errorMessage(e, 'Impossibile caricare i dati della dashboard'))
+    } finally {
+      setLoading(false)
+    }
+  }, [ownerKey, period.from, period.to])
 
-  const ownerValue = useMemo(() => {
-    if (ownerFilter.type==='me') return 'me'
-    if (ownerFilter.type==='all') return 'all'
-    if (ownerFilter.type==='teamlead') return `tl:${ownerFilter.userId}`
-    if (ownerFilter.type==='user') return `u:${ownerFilter.userId}`
-    return 'me'
-  }, [ownerFilter])
+  useEffect(() => {
+    void load()
+  }, [load])
 
-  const teamLeads = useMemo(() => advisors.filter(a => a.role === 'Team Lead'), [advisors])
-  const juniors   = useMemo(() => advisors.filter(a => a.role === 'Junior'), [advisors])
-
-  // 🔁 NEW: solo i Junior del mio team (per TL)
-  const myTeamJuniors = useMemo(() => {
-    if (!me) return []
-    return advisors.filter(a => a.team_lead_user_id === me.user_id)
-  }, [advisors, me])
-
-  const owners = useMemo(
-    () => ownersToQuery(ownerFilter, me, advisors),
-    // dipendo da ownerValue per semplicità (è derivato da ownerFilter e cambia insieme)
-    [ownerValue, me, advisors]
+  const funnel = useMemo(
+    () => [
+      { ...FUNNEL_STAGES[0], value: totals.leads },
+      { ...FUNNEL_STAGES[1], value: totals.contacts },
+      { ...FUNNEL_STAGES[2], value: totals.appointments },
+      { ...FUNNEL_STAGES[3], value: totals.proposals },
+      { ...FUNNEL_STAGES[4], value: totals.contracts },
+    ],
+    [totals],
   )
-  const { start, end } = useMemo(()=> periodToRange(period), [period])
 
-  // ricarica KPI + funnel + notContacted quando cambiano filtri
-  useEffect(()=>{ (async()=>{
-    if (!owners.length) return
-    setLoading(true); setError('')
-    try{
-      const leadIds = await fetchLeadIds(owners)
-      // KPI base
-      const [contacts, appointments, proposals, contracts] = await Promise.all([
-        countIn('activities', leadIds, start, end),
-        countIn('appointments', leadIds, start, end),
-        countIn('proposals', leadIds, start, end),
-        countIn('contracts', leadIds, start, end),
-      ])
-      const [prodDanni, prodVProt, prodVPR, prodVPU] = await Promise.all([
-        sumContractsByType(leadIds, start, end, ['Danni Non Auto']),
-        sumContractsByType(leadIds, start, end, ['Vita Protection']),
-        sumContractsByType(leadIds, start, end, ['Vita Premi Ricorrenti']),
-        sumContractsByType(leadIds, start, end, ['Vita Premi Unici']),
-      ])
-      setKpi({ contacts, appointments, proposals, contracts, prodDanni, prodVProt, prodVPR, prodVPU })
+  const rates = useMemo(
+    () => [
+      {
+        label: 'Tasso di attivazione',
+        formula: 'Contratti su lead caricati',
+        value: totals.leads ? (totals.contracts / totals.leads) * 100 : null,
+      },
+      {
+        label: 'Tasso di chiusura',
+        formula: 'Contratti su appuntamenti',
+        value: totals.appointments ? (totals.contracts / totals.appointments) * 100 : null,
+      },
+      {
+        label: 'Tasso di conversione',
+        formula: 'Contratti su contatti',
+        value: totals.contacts ? (totals.contracts / totals.contacts) * 100 : null,
+      },
+    ],
+    [totals],
+  )
 
-      // Funnel
-      const leadsCreated = await countLeadsCreated(owners, start, end)
-      setFunnel({ leads: leadsCreated, contacts, appointments, proposals, contracts })
-
-      // Lead mai contattati (all-time per scope selezionato)
-      const nc = await countLeadsNeverContacted(owners)
-      setNotContacted(nc)
-    } catch(e:any){ setError(e.message||'Errore caricamento KPI') }
-    finally{ setLoading(false) }
-  })() }, [owners.join(','), start, end])
-
-  // ➕ Calcolo tassi percentuali per il pannello a destra
-  const activationRate = funnel.leads > 0
-    ? (funnel.contracts / funnel.leads) * 100
-    : 0
-
-  const closingRate = funnel.appointments > 0
-    ? (funnel.contracts / funnel.appointments) * 100
-    : 0
-
-  const conversionRate = funnel.contacts > 0
-    ? (funnel.contracts / funnel.contacts) * 100
-    : 0
+  const totalProduction = useMemo(
+    () => Object.values(totals.production).reduce((s, v) => s + v, 0),
+    [totals.production],
+  )
 
   return (
-    <div style={{ display:'grid', gap:16 }}>
-      {/* Filtri */}
-      <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
-        <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Advisor</div>
-          <select
-            value={ownerValue}
-            onChange={e=>setOwnerFilter(parseOwnerValue(e.target.value))}
-            style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }}
-          >
-            {/* Sempre visibile */}
-            <option value="me">Solo me</option>
+    <>
+      <PageHeader
+        title="Dashboard"
+        description="Come si muove la pipeline nel periodo selezionato."
+        actions={
+          <Button icon="refresh" onClick={() => void load()} loading={loading}>
+            Aggiorna
+          </Button>
+        }
+      />
 
-            {/* ADMIN → comportamento invariato (opzioni globali) */}
-            {(me?.role==='Admin') && <option value="all">Tutti</option>}
-
-            {(me?.role==='Admin') && teamLeads.length > 0 && (
-              <optgroup label="Team Lead">
-                {teamLeads.map(tl => (
-                  <option key={tl.user_id} value={`tl:${tl.user_id}`}>
-                    {tl.full_name || tl.email}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-
-            {(me?.role==='Admin') && juniors.length > 0 && (
-              <optgroup label="Junior">
-                {juniors.map(j => (
-                  <option key={j.user_id} value={`u:${j.user_id}`}>
-                    {j.full_name || j.email}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-
-            {/* TEAM LEAD → stesse sezioni ma ristrette al proprio team */}
-            {(me?.role==='Team Lead') && (
-              <>
-                {/* "Totale team" (TL + suoi junior) */}
-                <option value={`tl:${me.user_id}`}>Totale team</option>
-
-                {/* Sezione Team Lead (solo se stesso, in scope di team) */}
-                <optgroup label="Team Lead">
-                  <option value={`tl:${me.user_id}`}>
-                    {me.full_name || me.email}
-                  </option>
-                </optgroup>
-
-                {/* Solo i propri junior */}
-                {myTeamJuniors.length > 0 && (
-                  <optgroup label="Junior">
-                    {myTeamJuniors.map(j => (
-                      <option key={j.user_id} value={`u:${j.user_id}`}>
-                        {j.full_name || j.email}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </>
-            )}
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Dal mese</div>
-          <input type="month" value={period.fromMonthKey} onChange={e=>setPeriod(p=>({ ...p, fromMonthKey:e.target.value }))} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }} />
-        </div>
-        <div>
-          <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Al mese</div>
-          <input type="month" value={period.toMonthKey} onChange={e=>setPeriod(p=>({ ...p, toMonthKey:e.target.value }))} style={{ padding:'6px 10px', border:'1px solid #ddd', borderRadius:8 }} />
+      <div className="gu-filters">
+        {scope && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
+        <MonthRange from={period.from} to={period.to} onChange={setPeriod} />
+        <div className="gu-spacer" />
+        <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', alignSelf: 'center' }}>
+          {ownerIds.length === 1 ? '1 advisor' : `${ownerIds.length} advisor`} nel perimetro
         </div>
       </div>
 
-      {error && <div style={{ padding:10, background:'#fee', border:'1px solid #fbb', borderRadius:8, color:'#900' }}>{error}</div>}
+      {error && <Alert tone="danger" title="Errore di caricamento">{error}</Alert>}
 
-      {/* KPI cards */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(5, 1fr)', gap:12 }}>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Contatti</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contacts||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Appuntamenti</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.appointments||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Proposte</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.proposals||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Contratti</div>
-          <div style={{ fontSize:24, fontWeight:700 }}>{formatNumber(kpi?.contracts||0)}</div>
-        </div>
-        {/* KPI speciale: Lead non contattati */}
-        <div style={{ background:'#F5FBFF', border:'1px solid #BFE4FF', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#0b57d0' }}>Lead non contattati</div>
-          <div style={{ fontSize:24, fontWeight:800, color:'#0b57d0' }}>{formatNumber(notContacted)}</div>
-          <div style={{ fontSize:11, color:'#2563eb' }}>Opportunità da lavorare</div>
-        </div>
+      {!advisorsLoading && !ownerIds.length && (
+        <EmptyState
+          icon="users"
+          title="Nessun advisor nel perimetro"
+          text="Il profilo selezionato non ha advisor associati. Verifica la struttura del team nella sezione Utenti."
+        />
+      )}
+
+      {/* KPI principali */}
+      <div className="gu-grid gu-grid--4">
+        <Stat label="Contatti" value={formatNumber(totals.contacts)} icon="phone" loading={loading} />
+        <Stat label="Appuntamenti" value={formatNumber(totals.appointments)} icon="calendar" loading={loading} />
+        <Stat label="Proposte" value={formatNumber(totals.proposals)} icon="fileText" loading={loading} />
+        <Stat
+          label="Contratti"
+          value={formatNumber(totals.contracts)}
+          icon="checkCircle"
+          tone="accent"
+          loading={loading}
+          hint={totalProduction > 0 ? `${formatCurrency(totalProduction)} di produzione` : undefined}
+        />
       </div>
 
-      {/* Produzione per linee */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Danni Non Auto</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodDanni||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Protection</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVProt||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Premi Ricorrenti</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVPR||0)}</div>
-        </div>
-        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:12, padding:12 }}>
-          <div style={{ fontSize:12, color:'#666' }}>Prod. Vita Premi Unici</div>
-          <div style={{ fontSize:20, fontWeight:700 }}>{formatCurrency(kpi?.prodVPU||0)}</div>
-        </div>
-      </div>
-
-      {/* Funnel + pannello tassi a destra */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 12,
-          alignItems: 'stretch',
-        }}
-      >
-        <Funnel steps={[
-          { label:'Leads', value: funnel.leads },
-          { label:'Contatti', value: funnel.contacts },
-          { label:'Appuntamenti', value: funnel.appointments },
-          { label:'Proposte', value: funnel.proposals },
-          { label:'Contratti', value: funnel.contracts },
-        ]} />
-
-        {/* Pannello Indicatori di conversione */}
-        <div
-          style={{
-            background: '#F5FBFF',
-            border: '1px solid #BFE4FF',
-            borderRadius: 16,
-            padding: 16,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 12,
-          }}
-        >
-          <div style={{ fontWeight: 700, fontSize: 14, color: '#0b57d0' }}>
-            Indicatori di conversione
+      {/* Lead da lavorare — è l'azione, non una statistica */}
+      <Card>
+        <CardBody>
+          <div className="gu-row" style={{ justifyContent: 'space-between', gap: 'var(--gu-space-4)' }}>
+            <div className="gu-row" style={{ gap: 'var(--gu-space-3)', flexWrap: 'nowrap', minWidth: 0 }}>
+              <div
+                style={{
+                  display: 'grid',
+                  placeItems: 'center',
+                  width: 44,
+                  height: 44,
+                  flex: 'none',
+                  borderRadius: 'var(--gu-radius-lg)',
+                  background: totals.notContacted > 0 ? 'var(--gu-warning-soft)' : 'var(--gu-success-soft)',
+                  color: totals.notContacted > 0 ? 'var(--gu-warning-fg)' : 'var(--gu-success-fg)',
+                }}
+              >
+                <Icon name={totals.notContacted > 0 ? 'bell' : 'checkCircle'} size={20} />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 'var(--gu-text-lg)' }}>
+                  {loading ? <Skeleton height={22} width={140} /> : (
+                    totals.notContacted > 0
+                      ? `${formatNumber(totals.notContacted)} lead mai contattati`
+                      : 'Tutti i lead sono stati contattati'
+                  )}
+                </div>
+                <div style={{ fontSize: 'var(--gu-text-sm)', color: 'var(--gu-text-subtle)' }}>
+                  Opportunità ferme in portafoglio, indipendenti dal periodo selezionato.
+                </div>
+              </div>
+            </div>
+            {totals.notContacted > 0 && (
+              <Button variant="primary" iconRight="arrowUpRight" onClick={onOpenLeads}>
+                Lavorali adesso
+              </Button>
+            )}
           </div>
+        </CardBody>
+      </Card>
 
-          {/* Tasso di Attivazione */}
+      <div className="gu-grid" style={{ gridTemplateColumns: 'minmax(0, 1.8fr) minmax(280px, 1fr)' }}>
+        <Card>
+          <CardHeader
+            title="Imbuto di conversione"
+            subtitle="Ogni riga mostra quanti passano allo stadio successivo"
+            icon="filter"
+          />
+          <CardBody>{loading ? <Skeleton height={280} radius={12} /> : <Funnel steps={funnel} />}</CardBody>
+        </Card>
+
+        <div className="gu-stack">
+          <Card>
+            <CardHeader title="Indicatori" icon="trendUp" />
+            <CardBody className="gu-stack">
+              {rates.map(r => (
+                <div key={r.label}>
+                  <div className="gu-row" style={{ justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 'var(--gu-text-sm)', fontWeight: 600 }}>{r.label}</span>
+                    <span style={{ fontWeight: 800, fontFamily: 'var(--gu-font-display)' }}>
+                      {r.value === null ? '—' : formatPercent(r.value)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>{r.formula}</div>
+                </div>
+              ))}
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Produzione per linea" icon="shield" />
+            <CardBody className="gu-stack-sm">
+              {METRICS.filter(m => m.contractType).map(m => {
+                const value = totals.production[m.contractType!] || 0
+                const share = totalProduction ? (value / totalProduction) * 100 : 0
+                return (
+                  <div key={m.key}>
+                    <div className="gu-row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontSize: 'var(--gu-text-sm)' }}>{m.label}</span>
+                      <span style={{ fontSize: 'var(--gu-text-sm)', fontWeight: 700 }}>{formatCurrency(value)}</span>
+                    </div>
+                    <div className="gu-progress" style={{ height: 6 }}>
+                      <div
+                        className="gu-progress__fill"
+                        style={{ width: `${share}%`, background: 'var(--gu-chart-2)' }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+              <div
+                className="gu-row"
+                style={{ justifyContent: 'space-between', paddingTop: 8, borderTop: '1px solid var(--gu-border)' }}
+              >
+                <span style={{ fontSize: 'var(--gu-text-sm)', fontWeight: 600 }}>Totale</span>
+                <span style={{ fontWeight: 800 }}>{formatCurrency(totalProduction)}</span>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      </div>
+    </>
+  )
+}
+
+/* ========================================================================== */
+/* Funnel                                                                      */
+/* ========================================================================== */
+
+function Funnel({ steps }: { steps: { key: string; label: string; help: string; value: number }[] }) {
+  const max = Math.max(1, ...steps.map(s => s.value))
+  const rowH = 54
+  const width = 420
+  const pad = 8
+
+  if (steps.every(s => s.value === 0)) {
+    return (
+      <EmptyState
+        icon="filter"
+        title="Nessun dato nel periodo"
+        text="Non ci sono lead né attività registrate nell'intervallo selezionato. Prova ad allargare il periodo."
+      />
+    )
+  }
+
+  return (
+    <div className="gu-stack-sm">
+      {steps.map((s, i) => {
+        const prev = i > 0 ? steps[i - 1].value : 0
+        const conv = i > 0 && prev > 0 ? (s.value / prev) * 100 : null
+        // Larghezza minima: senza, uno stadio a zero collassa in un triangolo
+        // che sembra un errore di rendering invece di un dato.
+        const usable = width - pad * 2
+        const minW = usable * 0.06
+        const widthFor = (v: number) => Math.max(minW, (usable * v) / max)
+        const topW = i === 0 ? usable : widthFor(steps[i - 1].value)
+        const botW = widthFor(s.value)
+        // Il calo più marcato è quello su cui intervenire: va evidenziato.
+        const isWorst =
+          conv !== null &&
+          conv ===
+            Math.min(
+              ...steps
+                .map((x, j) => (j > 0 && steps[j - 1].value > 0 ? (x.value / steps[j - 1].value) * 100 : Infinity))
+                .filter(n => Number.isFinite(n)),
+            )
+
+        return (
           <div
+            key={s.key}
             style={{
-              background: '#ffffff',
-              borderRadius: 12,
-              padding: 10,
-              border: '1px solid #E0ECFF',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
+              display: 'grid',
+              gridTemplateColumns: 'minmax(140px, 1fr) minmax(0, 1.4fr) auto',
+              gap: 'var(--gu-space-3)',
+              alignItems: 'center',
             }}
           >
-            <div style={{ fontSize: 12, color: '#0b57d0', fontWeight: 600 }}>
-              Tasso di Attivazione
+            <div>
+              <div style={{ fontSize: 'var(--gu-text-sm)', fontWeight: 600 }}>{s.label}</div>
+              <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>{s.help}</div>
             </div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: '#0b57d0' }}>
-              {funnel.leads > 0 ? formatPercent(activationRate) : '—'}
-            </div>
-            <div style={{ fontSize: 11, color: '#64748b' }}>
-              Contratti / Leads
-            </div>
-          </div>
 
-          {/* Tasso di Chiusura */}
-          <div
-            style={{
-              background: '#ffffff',
-              borderRadius: 12,
-              padding: 10,
-              border: '1px solid #E0ECFF',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
-            }}
-          >
-            <div style={{ fontSize: 12, color: '#0b57d0', fontWeight: 600 }}>
-              Tasso di Chiusura
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: '#0b57d0' }}>
-              {funnel.appointments > 0 ? formatPercent(closingRate) : '—'}
-            </div>
-            <div style={{ fontSize: 11, color: '#64748b' }}>
-              Contratti / Appuntamenti
-            </div>
-          </div>
+            <svg
+              width="100%"
+              height={rowH}
+              viewBox={`0 0 ${width} ${rowH}`}
+              preserveAspectRatio="none"
+              role="img"
+              aria-label={`${s.label}: ${formatNumber(s.value)}`}
+            >
+              <polygon
+                points={`${(width - topW) / 2},4 ${(width + topW) / 2},4 ${(width + botW) / 2},${rowH - 4} ${
+                  (width - botW) / 2
+                },${rowH - 4}`}
+                fill={i === steps.length - 1 ? 'var(--gu-chart-2)' : 'var(--gu-chart-1)'}
+                fillOpacity={0.85 - i * 0.08}
+              />
+            </svg>
 
-          {/* Tasso di Conversione */}
-          <div
-            style={{
-              background: '#ffffff',
-              borderRadius: 12,
-              padding: 10,
-              border: '1px solid #E0ECFF',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
-            }}
-          >
-            <div style={{ fontSize: 12, color: '#0b57d0', fontWeight: 600 }}>
-              Tasso di Conversione
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: '#0b57d0' }}>
-              {funnel.contacts > 0 ? formatPercent(conversionRate) : '—'}
-            </div>
-            <div style={{ fontSize: 11, color: '#64748b' }}>
-              Contratti / Contatti
+            <div style={{ textAlign: 'right', minWidth: 96 }}>
+              <div style={{ fontFamily: 'var(--gu-font-display)', fontWeight: 800, fontSize: 'var(--gu-text-lg)' }}>
+                {formatNumber(s.value)}
+              </div>
+              {conv !== null && (
+                <Badge tone={isWorst ? 'warning' : 'neutral'}>
+                  {isWorst && <Icon name="arrowDown" size={11} />}
+                  {formatPercent(conv, 0)}
+                </Badge>
+              )}
             </div>
           </div>
-        </div>
-      </div>
+        )
+      })}
     </div>
   )
+}
+
+/* ========================================================================== */
+/* Query                                                                       */
+/* ========================================================================== */
+
+async function countLeadsCreated(ownerIds: string[], range: { start: string; end: string }) {
+  const blocks = chunk(ownerIds)
+  const counts = await Promise.all(
+    blocks.map(async slice => {
+      const { count, error } = await supabase
+        .from('leads')
+        .select('id', { count: 'exact', head: true })
+        .in('owner_id', slice)
+        .gte('created_at', range.start)
+        .lt('created_at', range.end)
+      if (error) throw error
+      return count || 0
+    }),
+  )
+  return counts.reduce((a, b) => a + b, 0)
+}
+
+async function countByLead(
+  table: 'activities' | 'appointments' | 'proposals',
+  leadIds: string[],
+  range: { start: string; end: string },
+  tsColumn: string,
+) {
+  if (!leadIds.length) return 0
+  const blocks = chunk(leadIds)
+  const counts = await Promise.all(
+    blocks.map(async slice => {
+      const { count, error } = await supabase
+        .from(table)
+        .select('id', { count: 'exact', head: true })
+        .in('lead_id', slice)
+        .gte(tsColumn, range.start)
+        .lt(tsColumn, range.end)
+      if (error) throw error
+      return count || 0
+    }),
+  )
+  return counts.reduce((a, b) => a + b, 0)
+}
+
+async function loadContracts(leadIds: string[], range: { start: string; end: string }) {
+  if (!leadIds.length) return []
+  return inChunks(leadIds, slice =>
+    fetchAllPages<{ contract_type: string | null; amount: number | null; premium_annual: number | null }>(
+      () =>
+        supabase
+          .from('contracts')
+          .select('contract_type,amount,premium_annual')
+          .in('lead_id', slice)
+          .gte('ts', range.start)
+          .lt('ts', range.end) as never,
+    ),
+  )
+}
+
+/**
+ * Lead senza nessuna attività registrata.
+ * Prima veniva calcolato scaricando tutti i lead e tutte le activities e
+ * facendo la differenza nel browser. Qui si prova prima con una join lato
+ * server (conteggio puro, nessuna riga trasferita); se la relazione non è
+ * esposta si ricade sul metodo precedente, ma con paginazione corretta.
+ */
+async function countNeverContacted(ownerIds: string[], leadIds: string[]) {
+  try {
+    const blocks = chunk(ownerIds)
+    const withActivity = await Promise.all(
+      blocks.map(async slice => {
+        const { count, error } = await supabase
+          .from('leads')
+          .select('id, activities!inner(lead_id)', { count: 'exact', head: true })
+          .in('owner_id', slice)
+        if (error) throw error
+        return count || 0
+      }),
+    )
+    return Math.max(0, leadIds.length - withActivity.reduce((a, b) => a + b, 0))
+  } catch {
+    if (!leadIds.length) return 0
+    const acts = await inChunks(leadIds, slice =>
+      fetchAllPages<{ lead_id: string }>(() => supabase.from('activities').select('lead_id').in('lead_id', slice) as never),
+    )
+    const contacted = new Set(uniq(acts.map(a => a.lead_id)))
+    return leadIds.filter(id => !contacted.has(id)).length
+  }
 }

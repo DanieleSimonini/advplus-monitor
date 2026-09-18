@@ -1,0 +1,472 @@
+/* ==========================================================================
+   GuideUp — App shell: sidebar, topbar, area contenuti
+   ========================================================================== */
+
+.gu-shell {
+  display: grid;
+  grid-template-columns: var(--gu-sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--gu-bg);
+}
+
+/* --------------------------------------------------------------------------
+   Sidebar
+   -------------------------------------------------------------------------- */
+.gu-sidebar {
+  position: sticky;
+  top: 0;
+  z-index: var(--gu-z-sidebar);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--gu-brand-900);
+  color: rgba(255, 255, 255, 0.72);
+  border-right: 1px solid var(--gu-brand-950);
+}
+
+.gu-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-2);
+  height: var(--gu-topbar-h);
+  padding: 0 var(--gu-space-4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex: none;
+}
+
+/*
+  Il logo GuideUp ha la scritta in navy: sul fondo navy della sidebar
+  sparirebbe. Invece di alterarne i colori con un filtro (che ucciderebbe il
+  teal e il rosso del marchio) lo si appoggia su una targhetta chiara, come si
+  farebbe su uno stampato con fondo scuro.
+*/
+.gu-plaque {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: #fff;
+  border-radius: var(--gu-radius-md);
+  box-shadow: 0 1px 2px rgba(1, 14, 51, 0.25);
+}
+.gu-plaque--sm { padding: 4px 8px; border-radius: var(--gu-radius-sm); }
+.gu-sidebar__logo { height: 22px; width: auto; }
+
+.gu-sidebar__nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--gu-space-3) var(--gu-space-2);
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+.gu-sidebar__section {
+  padding: var(--gu-space-4) var(--gu-space-3) var(--gu-space-1);
+  font-size: var(--gu-text-2xs);
+  font-weight: var(--gu-weight-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.gu-navitem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-3);
+  min-height: 38px;
+  padding: 0 var(--gu-space-3);
+  border: none;
+  border-radius: var(--gu-radius-md);
+  background: transparent;
+  color: inherit;
+  font-size: var(--gu-text-md);
+  font-weight: var(--gu-weight-medium);
+  text-align: left;
+  width: 100%;
+  transition: background-color var(--gu-duration) var(--gu-ease), color var(--gu-duration) var(--gu-ease);
+}
+.gu-navitem:hover { background: rgba(255, 255, 255, 0.08); color: #fff; text-decoration: none; }
+.gu-navitem:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--gu-accent-300);
+}
+.gu-navitem__icon { flex: none; opacity: 0.85; }
+.gu-navitem__label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gu-navitem[aria-current='page'] {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: var(--gu-weight-semibold);
+}
+.gu-navitem[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--gu-space-2) * -1);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--gu-accent-300);
+}
+.gu-navitem[aria-current='page'] .gu-navitem__icon { opacity: 1; color: var(--gu-accent-300); }
+
+.gu-sidebar__footer {
+  flex: none;
+  padding: var(--gu-space-3);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: var(--gu-space-2);
+}
+.gu-sidebar__payoff {
+  font-family: var(--gu-font-display);
+  font-size: var(--gu-text-2xs);
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.01em;
+}
+.gu-sidebar__partner {
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-2);
+}
+.gu-sidebar__partner img { height: 18px; width: auto; }
+
+/* --------------------------------------------------------------------------
+   Area principale
+   -------------------------------------------------------------------------- */
+.gu-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100vh;
+}
+
+.gu-topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--gu-z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-3);
+  height: var(--gu-topbar-h);
+  padding: 0 var(--gu-space-5);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--gu-border);
+  flex: none;
+}
+.gu-topbar__title {
+  font-family: var(--gu-font-display);
+  font-size: var(--gu-text-lg);
+  font-weight: var(--gu-weight-bold);
+  letter-spacing: -0.02em;
+}
+.gu-topbar__sub {
+  font-size: var(--gu-text-xs);
+  color: var(--gu-text-subtle);
+  font-weight: var(--gu-weight-regular);
+}
+.gu-topbar__burger { display: none; }
+
+.gu-user {
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-2);
+  height: var(--gu-control-h);
+  padding: 0 var(--gu-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--gu-radius-md);
+  background: transparent;
+  transition: background-color var(--gu-duration) var(--gu-ease);
+}
+.gu-user:hover { background: var(--gu-n-100); }
+.gu-user:focus-visible { outline: none; box-shadow: var(--gu-shadow-focus); }
+.gu-user__meta { display: grid; text-align: right; line-height: 1.25; }
+.gu-user__name { font-size: var(--gu-text-sm); font-weight: var(--gu-weight-semibold); }
+.gu-user__role { font-size: var(--gu-text-2xs); color: var(--gu-text-subtle); }
+
+.gu-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 220px;
+  padding: var(--gu-space-1);
+  background: var(--gu-surface);
+  border: 1px solid var(--gu-border);
+  border-radius: var(--gu-radius-lg);
+  box-shadow: var(--gu-shadow-lg);
+  animation: gu-slide-up var(--gu-duration) var(--gu-ease-out);
+}
+.gu-menu__header {
+  padding: var(--gu-space-2) var(--gu-space-3);
+  border-bottom: 1px solid var(--gu-border);
+  margin-bottom: var(--gu-space-1);
+}
+.gu-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--gu-space-2);
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--gu-space-3);
+  border: none;
+  border-radius: var(--gu-radius-sm);
+  background: transparent;
+  color: var(--gu-text);
+  font-size: var(--gu-text-md);
+  text-align: left;
+}
+.gu-menu__item:hover { background: var(--gu-n-100); }
+.gu-menu__item--danger { color: var(--gu-danger-fg); }
+.gu-menu__item--danger:hover { background: var(--gu-danger-soft); }
+
+.gu-content {
+  flex: 1;
+  width: 100%;
+  max-width: var(--gu-content-max);
+  margin: 0 auto;
+  padding: var(--gu-space-5);
+  display: grid;
+  gap: var(--gu-space-4);
+  align-content: start;
+}
+
+.gu-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--gu-space-4);
+  flex-wrap: wrap;
+}
+.gu-page-head__title {
+  font-size: var(--gu-text-2xl);
+  font-weight: var(--gu-weight-black);
+  letter-spacing: -0.025em;
+}
+.gu-page-head__desc {
+  font-size: var(--gu-text-md);
+  color: var(--gu-text-subtle);
+  margin-top: 2px;
+}
+
+/* Barra filtri riutilizzabile */
+.gu-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--gu-space-3);
+  flex-wrap: wrap;
+  padding: var(--gu-space-3) var(--gu-space-4);
+  background: var(--gu-surface);
+  border: 1px solid var(--gu-border);
+  border-radius: var(--gu-radius-lg);
+  box-shadow: var(--gu-shadow-xs);
+}
+.gu-filters__group { display: grid; gap: var(--gu-space-1); min-width: 0; }
+.gu-filters__group--grow { flex: 1 1 200px; }
+
+/* --------------------------------------------------------------------------
+   Responsive: sidebar a scomparsa sotto 1024px
+   -------------------------------------------------------------------------- */
+@media (max-width: 1024px) {
+  .gu-shell { grid-template-columns: minmax(0, 1fr); }
+
+  .gu-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: var(--gu-sidebar-w);
+    transform: translateX(-100%);
+    transition: transform var(--gu-duration-slow) var(--gu-ease-out);
+    box-shadow: var(--gu-shadow-lg);
+  }
+  .gu-sidebar[data-open='true'] { transform: none; }
+
+  .gu-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--gu-z-overlay);
+    background: rgba(1, 14, 51, 0.45);
+    animation: gu-fade-in var(--gu-duration) var(--gu-ease);
+  }
+
+  .gu-topbar__burger {
+    display: inline-flex;
+    width: var(--gu-tap-target);
+    height: var(--gu-tap-target);
+  }
+  .gu-content { padding: var(--gu-space-4); }
+}
+
+@media (max-width: 560px) {
+  .gu-content { padding: var(--gu-space-3); }
+  .gu-topbar { padding: 0 var(--gu-space-3); }
+  .gu-page-head__title { font-size: var(--gu-text-xl); }
+  .gu-user__meta { display: none; }
+  .gu-toasts {
+    right: var(--gu-space-3);
+    left: var(--gu-space-3);
+    bottom: var(--gu-space-3);
+    width: auto;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Calendario
+   -------------------------------------------------------------------------- */
+.gu-cal__head,
+.gu-cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--gu-space-2);
+}
+.gu-cal__head {
+  margin-bottom: var(--gu-space-2);
+  font-size: var(--gu-text-xs);
+  font-weight: var(--gu-weight-semibold);
+  color: var(--gu-text-subtle);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gu-cal__cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gu-space-1);
+  min-height: 116px;
+  padding: var(--gu-space-2);
+  border: 1px solid var(--gu-border);
+  border-radius: var(--gu-radius-md);
+  background: var(--gu-surface);
+}
+.gu-cal__grid--week .gu-cal__cell { min-height: 220px; }
+.gu-cal__cell[data-outside='true'] { background: var(--gu-n-50); opacity: 0.7; }
+.gu-cal__cell[data-today='true'] {
+  border-color: var(--gu-primary);
+  box-shadow: inset 0 0 0 1px var(--gu-primary);
+}
+.gu-cal__cell-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.gu-cal__day { font-size: var(--gu-text-xs); font-weight: var(--gu-weight-bold); }
+.gu-cal__cell[data-today='true'] .gu-cal__day { color: var(--gu-primary); }
+.gu-cal__items { display: grid; gap: var(--gu-space-1); min-width: 0; }
+.gu-cal__more {
+  margin-top: auto;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: var(--gu-text-xs);
+  font-weight: var(--gu-weight-semibold);
+  color: var(--gu-primary);
+}
+.gu-cal__more:hover { text-decoration: underline; }
+
+/* Sotto i 780px la griglia a 7 colonne diventa illeggibile: si passa a un
+   elenco verticale dei soli giorni con appuntamenti. */
+@media (max-width: 780px) {
+  .gu-cal__head { display: none; }
+  .gu-cal__grid { grid-template-columns: minmax(0, 1fr); }
+  .gu-cal__cell { min-height: 0; }
+  .gu-cal__cell[data-outside='true'] { display: none; }
+}
+
+/* --------------------------------------------------------------------------
+   Pagina Lead: elenco + scheda
+   -------------------------------------------------------------------------- */
+.gu-leads {
+  display: grid;
+  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+  gap: var(--gu-space-4);
+  align-items: start;
+}
+.gu-leads__list { position: sticky; top: calc(var(--gu-topbar-h) + var(--gu-space-5)); }
+.gu-leads__card { display: flex; flex-direction: column; max-height: calc(100vh - var(--gu-topbar-h) - var(--gu-space-10)); }
+.gu-leads__card > ul { overflow-y: auto; flex: 1; }
+.gu-leads__back { display: none; margin-bottom: var(--gu-space-2); }
+
+@media (max-width: 1100px) {
+  .gu-leads { grid-template-columns: minmax(0, 1fr); }
+  .gu-leads__list { position: static; }
+  .gu-leads__card { max-height: none; }
+  /* Su schermi stretti elenco e scheda non stanno affiancati:
+     si mostra uno dei due, con un ritorno esplicito all'elenco. */
+  .gu-leads__list--hidden-mobile { display: none; }
+  .gu-leads__detail--hidden-mobile { display: none; }
+  .gu-leads__back { display: block; }
+}
+
+/* --------------------------------------------------------------------------
+   Pagina di autenticazione
+   -------------------------------------------------------------------------- */
+.gu-auth {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--gu-surface);
+}
+.gu-auth__aside {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: var(--gu-space-10);
+  background:
+    radial-gradient(1000px 500px at 80% -10%, rgba(59, 238, 226, 0.22), transparent 60%),
+    linear-gradient(160deg, var(--gu-brand-900) 0%, var(--gu-brand-950) 100%);
+  color: #fff;
+  overflow: hidden;
+}
+.gu-auth__aside::after {
+  content: '';
+  position: absolute;
+  right: -120px;
+  bottom: -160px;
+  width: 420px;
+  height: 420px;
+  border: 40px solid rgba(38, 194, 169, 0.14);
+  border-radius: var(--gu-radius-full);
+  pointer-events: none;
+}
+/* Il marchio vive sulla colonna chiara, sopra il form: a colori pieni e nella
+   stessa posizione su desktop e su telefono. Il pannello scuro resta
+   riconoscibile grazie al claim, ai punti e al logo del gruppo. */
+.gu-auth__logo { height: 34px; width: auto; }
+.gu-auth__claim {
+  position: relative;
+  font-family: var(--gu-font-display);
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  font-weight: var(--gu-weight-black);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  max-width: 16ch;
+  /* I titoli hanno un colore scuro di default: dentro i pannelli scuri va
+     riportato a quello ereditato, altrimenti il testo sparisce nel fondo. */
+  color: #fff;
+}
+.gu-auth__claim em { color: var(--gu-accent-300); font-style: normal; }
+.gu-auth__points { position: relative; display: grid; gap: var(--gu-space-3); }
+.gu-auth__point {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gu-space-3);
+  font-size: var(--gu-text-md);
+  color: rgba(255, 255, 255, 0.78);
+}
+.gu-auth__point svg { flex: none; color: var(--gu-accent-300); margin-top: 2px; }
+.gu-auth__partner { position: relative; display: flex; align-items: center; gap: var(--gu-space-3); opacity: 0.75; }
+.gu-auth__partner img { height: 26px; width: auto; }
+
+.gu-auth__main {
+  display: grid;
+  place-items: center;
+  padding: var(--gu-space-6);
+}
+.gu-auth__card { width: min(100%, 400px); display: grid; gap: var(--gu-space-5); justify-items: start; }
+.gu-auth__card > * { width: 100%; }
+.gu-auth__card > .gu-auth__logo { width: auto; }
+
+@media (max-width: 900px) {
+  .gu-auth { grid-template-columns: minmax(0, 1fr); }
+  .gu-auth__aside { display: none; }
+}

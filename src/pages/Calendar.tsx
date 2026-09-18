@@ -1,422 +1,572 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/supabaseClient'
-
-/**
- * Calendar.tsx — Agenda con vista mensile + settimanale
- * Patch v2: card appuntamento come mock + aggiunta indicazione Assegnatario
- * NOTE: non modifica logica, query o CRUD; solo rendering UI.
- */
-
-type Role = 'Admin' | 'Team Lead' | 'Junior'
-type Mode = 'inperson' | 'phone' | 'video'
-
-type Advisor = {
-  user_id: string
-  email: string
-  full_name: string | null
-  role: Role
-  team_lead_user_id?: string | null
-}
-
-type Lead = {
-  id: string
-  owner_id: string | null
-  first_name: string | null
-  last_name: string | null
-  company_name: string | null
-}
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { supabase } from '../supabaseClient'
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  EmptyState,
+  Icon,
+  IconButton,
+  Modal,
+  Segmented,
+  SelectField,
+  Skeleton,
+  TextField,
+  TextareaField,
+  useConfirm,
+  useToast,
+} from '../ui'
+import { PageHeader } from '../app/AppShell'
+import { ScopeSelect } from '../app/ScopeSelect'
+import { useAdvisors, type Scope } from '../lib/useAdvisors'
+import { fetchAllPages, inChunks } from '../lib/db'
+import { MODES, labelOf, leadName, type Lead } from '../lib/domain'
+import {
+  addDays,
+  dayKey,
+  fromLocalInput,
+  isValidLocalInput,
+  monthKeyOf,
+  parseMonthKey,
+  sameDay,
+  startOfWeek,
+  toIsoWithOffset,
+  toLocalInput,
+} from '../lib/datetime'
+import { displayName, errorMessage, formatFullDay, formatTime } from '../lib/format'
 
 type Appointment = {
   id: string
   lead_id: string
-  ts: string // ISO
-  mode: Mode
+  ts: string
+  mode: string
   notes: string | null
-  lead?: Lead
 }
 
-const MODE_OPTIONS: { label: string; db: Mode }[] = [
-  { label: 'In presenza', db: 'inperson' },
-  { label: 'Video', db: 'video' },
-  { label: 'Telefono', db: 'phone' },
-]
+type Draft = {
+  id: string | null
+  lead_id: string
+  ts: string
+  mode: string
+  notes: string
+  notify: boolean
+}
 
-function monthKey(d: Date) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` }
-function startOfMonth(d: Date){ return new Date(d.getFullYear(), d.getMonth(), 1) }
-function endOfMonth(d: Date){ return new Date(d.getFullYear(), d.getMonth()+1, 0) }
-function addMonths(d: Date, delta: number){ return new Date(d.getFullYear(), d.getMonth()+delta, 1) }
-function sameDay(a: Date, b: Date){ return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate() }
-function startOfWeek(d: Date){ const x=new Date(d); const w=(x.getDay()+6)%7; x.setDate(x.getDate()-w); x.setHours(0,0,0,0); return x }
-function addDays(d: Date,n:number){ const x=new Date(d); x.setDate(x.getDate()+n); return x }
-
-const box: React.CSSProperties = { background:'var(--card, #fff)', border:'1px solid var(--border, #eee)', borderRadius:16, padding:16 }
-const ipt: React.CSSProperties = { padding:'8px 10px', border:'1px solid var(--border,#ddd)', borderRadius:8, background:'#fff' }
-const label: React.CSSProperties = { fontSize:12, color:'var(--muted,#666)' }
-
+const WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
 const MAX_PREVIEW = 3
 
-export default function CalendarPage(){
-  const [me, setMe] = useState<Advisor|null>(null)
-  const [advisors, setAdvisors] = useState<Advisor[]>([])
-  const [scope, setScope] = useState<'me'|'team'|'all'>('me')
-  const [month, setMonth] = useState<string>(monthKey(new Date()))
-  const [activeDate, setActiveDate] = useState<Date>(new Date())
-  const [view, setView] = useState<'month'|'week'>('month')
+export default function CalendarPage({ onOpenLead }: { onOpenLead: (id: string) => void }) {
+  const { resolveScope, scopeOptions, defaultScope, byUserId } = useAdvisors()
+  const toast = useToast()
+  const confirm = useConfirm()
+
+  const [scope, setScope] = useState<Scope | null>(null)
+  const [month, setMonth] = useState(() => monthKeyOf(new Date()))
+  const [view, setView] = useState<'month' | 'week'>('month')
+  const [anchor, setAnchor] = useState(() => new Date())
   const [leads, setLeads] = useState<Lead[]>([])
-  const [appts, setAppts] = useState<Appointment[]>([])
+  const [appointments, setAppointments] = useState<Appointment[]>([])
   const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
-  const [selectedAdvisor, setSelectedAdvisor] = useState<string>('')
-  const [editingId, setEditingId] = useState<string|null>(null)
-  const emptyDraft: { id:string; lead_id:string; ts:string; mode:Mode; notes:string } = { id:'', lead_id:'', ts:'', mode:'inperson', notes:'' }
-  const [draft, setDraft] = useState<typeof emptyDraft>(emptyDraft)
-  const [openDayDate, setOpenDayDate] = useState<Date | null>(null)
+  const [error, setError] = useState('')
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [dayOpen, setDayOpen] = useState<Date | null>(null)
 
-  // bootstrap
-  useEffect(()=>{ (async()=>{
-    setLoading(true)
-    try{
-      const u = await supabase.auth.getUser()
-      const uid = u.data.user?.id
-      if (uid){
-        const { data: meRow } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id').eq('user_id', uid).maybeSingle()
-        if (meRow) setMe(meRow as any)
-      }
-      const { data: adv } = await supabase.from('advisors').select('user_id,email,full_name,role,team_lead_user_id')
-      setAdvisors((adv||[]) as any)
-    } catch(e:any){ setErr(e.message||'Errore init') } finally { setLoading(false) }
-  })() },[])
+  useEffect(() => {
+    if (!scope) setScope(defaultScope)
+  }, [defaultScope, scope])
 
-  const ownerIds = useMemo(()=>{
-    if (!me) return [] as string[]
-    if (me.role==='Junior') return [me.user_id]
-    if (scope==='me') return [me.user_id]
-    if (scope==='team') return advisors.filter(a=>a.team_lead_user_id===me.user_id || a.user_id===me.user_id).map(a=>a.user_id)
-    return advisors.map(a=>a.user_id)
-  }, [me, advisors, scope])
+  const ownerIds = useMemo(() => (scope ? resolveScope(scope) : []), [scope, resolveScope])
+  const ownerKey = ownerIds.join(',')
 
-  // ricarica dati quando cambiano ownerIds o mese
-  useEffect(()=>{ (async()=>{
-    if (!ownerIds.length) return
-    setLoading(true); setErr('')
-    try{
-      // range mese
-      const [y,m] = month.split('-').map(Number)
-      const start = new Date(y, m-1, 1).toISOString()
-      const end = new Date(y, m, 1).toISOString() // esclusivo
-
-      // leads nello scope
-      const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds)
-      setLeads((lds||[]) as any)
-
-      // appuntamenti del mese
-      const { data: rows } = await supabase
-        .from('appointments')
-        .select('id,lead_id,ts,mode,notes')
-        .in('lead_id', (lds||[]).map(x=>x.id))
-        .gte('ts', start).lt('ts', end)
-        .order('ts', { ascending:true })
-
-      const leadMap = new Map((lds||[]).map(x=>[x.id, x] as const))
-      const parsed = (rows||[]).map(r=> ({ ...r, lead: leadMap.get(r.lead_id) })) as Appointment[]
-      setAppts(parsed)
-    } catch(e:any){ setErr(e.message||'Errore caricamento') } finally { setLoading(false) }
-  })() }, [ownerIds.join(','), month])
-
-  function labelLead(l: Lead|undefined){
-    if (!l) return '(lead)'
-    const n = [l.first_name||'', l.last_name||''].join(' ').trim()
-    return n || l.company_name || '(lead)'
-  }
-
-  function labelAdvisor(ownerId?: string|null){
-    if (!ownerId) return '—'
-    const a = advisors.find(x=>x.user_id===ownerId)
-    return a?.full_name || a?.email || '—'
-  }
-
-  // griglia mese
-  const monthGrid = useMemo(()=>{
-    const [y,m] = month.split('-').map(Number)
-    const first = startOfMonth(new Date(y, m-1, 1))
-    const last = endOfMonth(first)
-    const startWeekDay = (first.getDay()+6)%7 // lun=0
-    const daysInMonth = last.getDate()
-    const cells: { date: Date, inMonth: boolean }[] = []
-
-    // giorni del mese precedente per riempire la prima settimana
-    for (let i=0;i<startWeekDay;i++){
-      const d = new Date(first); d.setDate(first.getDate() - (startWeekDay - i))
-      cells.push({ date:d, inMonth:false })
+  const load = useCallback(async () => {
+    if (!ownerIds.length) {
+      setLeads([])
+      setAppointments([])
+      setLoading(false)
+      return
     }
-    // giorni del mese corrente
-    for (let d=1; d<=daysInMonth; d++) cells.push({ date: new Date(y, m-1, d), inMonth:true })
-    // riempi fino a 42 celle
-    while (cells.length<42){ const d = new Date(cells[cells.length-1].date); d.setDate(d.getDate()+1); cells.push({ date:d, inMonth:false }) }
+    setLoading(true)
+    setError('')
+    try {
+      const { year, month: m } = parseMonthKey(month)
+      // La vista settimanale può sconfinare nel mese precedente o successivo:
+      // si carica un margine di una settimana per lato.
+      const start = addDays(new Date(year, m - 1, 1), -7).toISOString()
+      const end = addDays(new Date(year, m, 1), 7).toISOString()
+
+      const leadRows = await inChunks(ownerIds, slice =>
+        fetchAllPages<Lead>(
+          () =>
+            supabase
+              .from('leads')
+              .select('id,owner_id,first_name,last_name,company_name')
+              .in('owner_id', slice) as never,
+        ),
+      )
+      setLeads(leadRows)
+
+      const appts = await inChunks(leadRows.map(l => l.id), slice =>
+        fetchAllPages<Appointment>(
+          () =>
+            supabase
+              .from('appointments')
+              .select('id,lead_id,ts,mode,notes')
+              .in('lead_id', slice)
+              .gte('ts', start)
+              .lt('ts', end)
+              .order('ts', { ascending: true }) as never,
+        ),
+      )
+      setAppointments(appts)
+    } catch (e) {
+      setError(errorMessage(e, 'Impossibile caricare il calendario'))
+    } finally {
+      setLoading(false)
+    }
+  }, [ownerKey, month])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const leadById = useMemo(() => new Map(leads.map(l => [l.id, l])), [leads])
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, Appointment[]>()
+    for (const a of appointments) {
+      const k = dayKey(new Date(a.ts))
+      const arr = map.get(k)
+      if (arr) arr.push(a)
+      else map.set(k, [a])
+    }
+    for (const arr of map.values()) arr.sort((x, y) => x.ts.localeCompare(y.ts))
+    return map
+  }, [appointments])
+
+  const monthGrid = useMemo(() => {
+    const { year, month: m } = parseMonthKey(month)
+    const first = new Date(year, m - 1, 1)
+    const offset = (first.getDay() + 6) % 7
+    const cells: { date: Date; inMonth: boolean }[] = []
+    for (let i = 0; i < 42; i++) {
+      const date = addDays(first, i - offset)
+      cells.push({ date, inMonth: date.getMonth() === m - 1 })
+    }
     return cells
   }, [month])
 
-  // editor helpers
-  function openCreate(date: Date){
-    const iso = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 9, 0, 0).toISOString().slice(0,16)
-    setDraft({ id:'', lead_id: leads[0]?.id || '', ts: iso, mode:'inperson', notes:'' })
-    setEditingId('new')
+  function openCreate(date: Date) {
+    const at = new Date(date)
+    if (at.getHours() === 0) at.setHours(9, 0, 0, 0)
+    setDraft({ id: null, lead_id: '', ts: toLocalInput(at.toISOString()), mode: 'inperson', notes: '', notify: false })
   }
-  function openEdit(a: Appointment){
-    setDraft({ id:a.id, lead_id:a.lead_id, ts: (a.ts||'').slice(0,16), mode:a.mode, notes:a.notes||'' })
-    setEditingId(a.id)
-  }
-  function closeEditor(){ setEditingId(null); setDraft(emptyDraft) }
 
-  async function saveDraft(){
-    if (!draft.lead_id){ alert('Seleziona un lead'); return }
-    if (!draft.ts){ alert('Imposta data/ora'); return }
-    const payload = { lead_id:draft.lead_id, ts: new Date(draft.ts).toISOString(), mode:draft.mode, notes: draft.notes||null }
-    if (editingId==='new'){
-      const { error } = await supabase.from('appointments').insert(payload)
-      if (error) return alert(error.message)
-    } else if (editingId){
-      const { error } = await supabase.from('appointments').update(payload).eq('id', editingId)
-      if (error) return alert(error.message)
-    }
-    closeEditor()
-    // refresh mese corrente
-    const [y,m] = month.split('-').map(Number)
-    const start = new Date(y, m-1, 1).toISOString()
-    const end = new Date(y, m, 1).toISOString()
-    const { data: lds } = await supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds)
-    const { data: rows } = await supabase
-      .from('appointments').select('id,lead_id,ts,mode,notes')
-      .in('lead_id', (lds||[]).map(x=>x.id))
-      .gte('ts', start).lt('ts', end).order('ts',{ascending:true})
-    const leadMap = new Map((lds||[]).map(x=>[x.id, x] as const))
-    setAppts((rows||[]).map(r=> ({ ...r, lead: leadMap.get(r.lead_id) })) as Appointment[])
+  function openEdit(a: Appointment) {
+    setDraft({ id: a.id, lead_id: a.lead_id, ts: toLocalInput(a.ts), mode: a.mode, notes: a.notes || '', notify: false })
   }
-  async function deleteAppt(id: string){
-    const ok = confirm('Eliminare l\'appuntamento?')
+
+  async function save() {
+    if (!draft) return
+    if (!draft.lead_id) {
+      toast.error('Seleziona il lead a cui si riferisce l’appuntamento')
+      return
+    }
+    if (!isValidLocalInput(draft.ts)) {
+      toast.error('Imposta una data e un’ora valide')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = {
+        lead_id: draft.lead_id,
+        ts: fromLocalInput(draft.ts),
+        mode: draft.mode,
+        notes: draft.notes.trim() || null,
+      }
+      if (draft.id) {
+        const { error } = await supabase.from('appointments').update(payload).eq('id', draft.id)
+        if (error) throw error
+        toast.success('Appuntamento aggiornato')
+      } else {
+        const { error } = await supabase.from('appointments').insert(payload)
+        if (error) throw error
+        toast.success('Appuntamento creato')
+        if (draft.notify) await sendInvite(draft)
+      }
+      setDraft(null)
+      await load()
+    } catch (e) {
+      toast.error('Salvataggio non riuscito', errorMessage(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function sendInvite(d: Draft) {
+    const lead = leadById.get(d.lead_id)
+    if (!lead) return
+    // Il nome non basta: per l'invito serve l'email, che in questa vista non è
+    // caricata. Si legge solo al momento dell'invio.
+    const { data } = await supabase.from('leads').select('email,owner_id').eq('id', d.lead_id).maybeSingle()
+    const clientEmail = (data?.email || '').trim()
+    if (!clientEmail) {
+      toast.info('Invito non inviato', 'Il lead non ha un indirizzo email.')
+      return
+    }
+    const owner = data?.owner_id ? byUserId.get(data.owner_id) : null
+    try {
+      const { error } = await supabase.functions.invoke('sendAppointmentEmail', {
+        body: {
+          to_client_email: clientEmail,
+          cc_advisor_email: owner?.email || '',
+          cliente_nome: leadName(lead),
+          advisor_nome: displayName(owner, 'Advisory+'),
+          ts_iso: toIsoWithOffset(new Date(d.ts)),
+          durata_minuti: 60,
+          modalita: labelOf(MODES, d.mode),
+          note: d.notes,
+          location: '',
+        },
+      })
+      if (error) throw error
+      toast.success('Invito inviato al cliente')
+    } catch (e) {
+      toast.error("Appuntamento salvato, ma l'invito non è partito", errorMessage(e))
+    }
+  }
+
+  async function remove(id: string) {
+    const ok = await confirm({ title: 'Eliminare questo appuntamento?', confirmLabel: 'Elimina' })
     if (!ok) return
-    const { error } = await supabase.from('appointments').delete().eq('id', id)
-    if (error) return alert(error.message)
-    setAppts(a=> a.filter(x=>x.id!==id))
+    try {
+      const { error } = await supabase.from('appointments').delete().eq('id', id)
+      if (error) throw error
+      setAppointments(list => list.filter(a => a.id !== id))
+      toast.success('Appuntamento eliminato')
+    } catch (e) {
+      toast.error('Eliminazione non riuscita', errorMessage(e))
+    }
   }
 
-  // raggruppo appuntamenti per giorno (applico qui il filtro consulente)
-  const apptsByDay = useMemo(()=>{
-    const filtered = selectedAdvisor
-      ? appts.filter(a => a.lead?.owner_id === selectedAdvisor)
-      : appts
+  const shiftMonth = (delta: number) => {
+    const { year, month: m } = parseMonthKey(month)
+    const next = new Date(year, m - 1 + delta, 1)
+    setMonth(monthKeyOf(next))
+    setAnchor(next)
+  }
 
-    const map = new Map<string, Appointment[]>()
-    for (const a of filtered){
-      const d = new Date(a.ts); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
-      const arr = map.get(k) || []; arr.push(a); map.set(k, arr)
-    }
-    return map
-  }, [appts, selectedAdvisor])
+  const weekDays = useMemo(() => {
+    const start = startOfWeek(anchor)
+    return Array.from({ length: 7 }, (_, i) => addDays(start, i))
+  }, [anchor])
 
-  const ApptCard: React.FC<{ a: Appointment }> = ({ a }) => (
-    <div style={{ border:'1px solid #e5e7eb', borderRadius:8, padding:'8px 10px', background:'#f8fafc' }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
-        <div style={{ fontSize:12, fontWeight:700 }}>
-          {new Date(a.ts).toLocaleTimeString('it-IT', { hour:'2-digit', minute:'2-digit' })}
-          {' · '}{MODE_OPTIONS.find(m=>m.db===a.mode)?.label}
+  const renderCard = (a: Appointment, compact = false) => {
+    const lead = leadById.get(a.lead_id)
+    const owner = lead?.owner_id ? byUserId.get(lead.owner_id) : null
+    return (
+      <div
+        key={a.id}
+        style={{
+          border: '1px solid var(--gu-border)',
+          borderLeft: '3px solid var(--gu-chart-1)',
+          borderRadius: 'var(--gu-radius-sm)',
+          padding: '6px 8px',
+          background: 'var(--gu-n-25)',
+          display: 'grid',
+          gap: 2,
+        }}
+      >
+        <div className="gu-row" style={{ justifyContent: 'space-between', gap: 4, flexWrap: 'nowrap' }}>
+          <span style={{ fontSize: 'var(--gu-text-xs)', fontWeight: 700 }}>{formatTime(a.ts)}</span>
+          <span className="gu-row-tight" style={{ gap: 0 }}>
+            <IconButton icon="edit" label="Modifica appuntamento" size="sm" onClick={() => openEdit(a)} />
+            <IconButton icon="trash" label="Elimina appuntamento" size="sm" tone="danger" onClick={() => remove(a.id)} />
+          </span>
         </div>
-        <div style={{ display:'flex', gap:6 }}>
-          <button title="Modifica" onClick={()=>openEdit(a)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>✏️</button>
-          <button title="Elimina" onClick={()=>deleteAppt(a.id)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>🗑️</button>
-        </div>
+        <button
+          type="button"
+          onClick={() => onOpenLead(a.lead_id)}
+          className="gu-truncate"
+          style={{
+            border: 0,
+            background: 'none',
+            padding: 0,
+            textAlign: 'left',
+            fontSize: 'var(--gu-text-xs)',
+            fontWeight: 600,
+            color: 'var(--gu-primary)',
+          }}
+          title={`Apri la scheda di ${leadName(lead)}`}
+        >
+          {leadName(lead)}
+        </button>
+        {!compact && (
+          <div className="gu-row-tight" style={{ fontSize: 'var(--gu-text-2xs)', color: 'var(--gu-text-subtle)', gap: 4 }}>
+            <Icon name={MODES.find(m => m.value === a.mode)?.icon || 'mapPin'} size={11} />
+            {labelOf(MODES, a.mode)}
+            {owner && <span className="gu-truncate">· {displayName(owner)}</span>}
+          </div>
+        )}
       </div>
-      <div style={{ fontSize:12, color:'#1d4ed8', marginTop:2 }}>{labelLead(a.lead)}</div>
-      <div style={{ fontSize:11, color:'var(--muted,#666)', marginTop:2 }}>Assegnatario: {labelAdvisor(a.lead?.owner_id||null)}</div>
-    </div>
-  )
-
-  function dayKey(d: Date){ return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` }
+    )
+  }
 
   return (
-    <div style={{ display:'grid', gap:16 }}>
-      {/* Filtri */}
-      <div style={{ display:'flex', gap:12, alignItems:'end', flexWrap:'wrap' }}>
-        <div>
-          <div style={label}>Ambito</div>
-          <select value={scope} onChange={e=>setScope(e.target.value as any)} style={ipt}>
-            <option value="me">Solo me</option>
-            {(me?.role!=='Junior') && <option value="team">Il mio Team</option>}
-            {(me?.role==='Admin') && <option value="all">Tutti</option>}
-          </select>
-        </div>
-        <div>
-          <div style={label}>Mese</div>
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),-1)) })}>{'‹'}</button>
-            <input type="month" value={month} onChange={e=>{ const v=e.target.value; setMonth(v); const [y,m]=v.split('-').map(Number); setActiveDate(new Date(y,m-1,1)); }} style={ipt} />
-            <button className="brand-btn" onClick={()=>setMonth(prev=>{ const [y,m]=prev.split('-').map(Number); return monthKey(addMonths(new Date(y,m-1,1),+1)) })}>{'›'}</button>
+    <>
+      <PageHeader
+        title="Calendario"
+        description="Appuntamenti della rete, per mese o per settimana."
+        actions={
+          <Button variant="primary" icon="plus" onClick={() => openCreate(new Date())}>
+            Nuovo appuntamento
+          </Button>
+        }
+      />
+
+      <div className="gu-filters">
+        {scope && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
+
+        <div className="gu-field">
+          <span className="gu-field__label">Periodo</span>
+          <div className="gu-row-tight">
+            <IconButton icon="chevronLeft" label="Mese precedente" onClick={() => shiftMonth(-1)} />
+            <input
+              className="gu-input"
+              type="month"
+              value={month}
+              aria-label="Mese visualizzato"
+              onChange={e => {
+                if (!e.target.value) return
+                setMonth(e.target.value)
+                const { year, month: m } = parseMonthKey(e.target.value)
+                setAnchor(new Date(year, m - 1, 1))
+              }}
+              style={{ width: 168 }}
+            />
+            <IconButton icon="chevronRight" label="Mese successivo" onClick={() => shiftMonth(1)} />
           </div>
         </div>
-        <div>
-          <div style={label}>Vista</div>
-          <div style={{ display:'flex', gap:8 }}>
-            <button className="brand-btn" onClick={()=>setView('month')}>Mese</button>
-            <button className="brand-btn" onClick={()=>setView('week')}>Settimana</button>
-          </div>
+
+        <div className="gu-field">
+          <span className="gu-field__label">Vista</span>
+          <Segmented
+            value={view}
+            onChange={setView}
+            ariaLabel="Tipo di vista"
+            options={[
+              { value: 'month', label: 'Mese' },
+              { value: 'week', label: 'Settimana' },
+            ]}
+          />
         </div>
-        <div>
-          <div style={label}>Nuovo</div>
-          <button className="brand-btn" onClick={()=>openCreate(new Date())}>+ Appuntamento</button>
-        </div>
-        {/* Filtro consulente */}
-        <div>
-          <div style={label}>Consulente</div>
-          <select style={ipt} value={selectedAdvisor} onChange={e => setSelectedAdvisor(e.target.value)}>
-            <option value="">— Scegli —</option>
-            <optgroup label="Team Lead">
-              {advisors.filter(a => a.role === 'Team Lead').map(a => (
-                <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
-              ))}
-            </optgroup>
-            <optgroup label="Junior">
-              {advisors.filter(a => a.role === 'Junior').map(a => (
-                <option key={a.user_id} value={a.user_id}>{a.full_name || a.email}</option>
-              ))}
-            </optgroup>
-          </select>
-        </div>
+
+        <div className="gu-spacer" />
+        <Button
+          icon="clock"
+          onClick={() => {
+            const now = new Date()
+            setMonth(monthKeyOf(now))
+            setAnchor(now)
+          }}
+        >
+          Oggi
+        </Button>
       </div>
 
-      {/* Vista mensile */}
-      {view === 'month' && (
-        <div className="brand-card" style={{ ...box }}>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8, fontSize:12, color:'var(--muted,#666)', marginBottom:8 }}>
-            {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'].map(d=> <div key={d} style={{ textAlign:'center' }}>{d}</div>)}
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8 }}>
-            {monthGrid.map((cell, idx)=>{
-              const items = apptsByDay.get(dayKey(cell.date)) || []
-              const isToday = sameDay(cell.date, new Date())
-              const preview = items.slice(0, MAX_PREVIEW)
-              const hidden = Math.max(0, items.length - preview.length)
-              return (
-                <div key={idx} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:8, background: cell.inMonth? '#fff' : '#fafafa', display:'flex', flexDirection:'column', minHeight:120 }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                    <div style={{ fontSize:12, fontWeight:600, color:isToday? '#0b57d0':'#111' }}>{cell.date.getDate()}</div>
-                    <button title="Nuovo appuntamento" onClick={()=>openCreate(cell.date)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
+      {error && <Alert tone="danger" title="Errore">{error}</Alert>}
+
+      {loading ? (
+        <Card>
+          <CardBody>
+            <Skeleton height={480} radius={12} />
+          </CardBody>
+        </Card>
+      ) : view === 'month' ? (
+        <Card>
+          <CardBody>
+            <div className="gu-cal__head">
+              {WEEKDAYS.map(d => (
+                <div key={d}>{d}</div>
+              ))}
+            </div>
+            <div className="gu-cal__grid">
+              {monthGrid.map((cell, i) => {
+                const items = byDay.get(dayKey(cell.date)) || []
+                const today = sameDay(cell.date, new Date())
+                const preview = items.slice(0, MAX_PREVIEW)
+                const hidden = items.length - preview.length
+                return (
+                  <div key={i} className="gu-cal__cell" data-outside={!cell.inMonth} data-today={today}>
+                    <div className="gu-cal__cell-head">
+                      <span className="gu-cal__day">{cell.date.getDate()}</span>
+                      <IconButton
+                        icon="plus"
+                        label={`Nuovo appuntamento il ${cell.date.toLocaleDateString('it-IT')}`}
+                        size="sm"
+                        onClick={() => openCreate(cell.date)}
+                      />
+                    </div>
+                    <div className="gu-cal__items">{preview.map(a => renderCard(a, true))}</div>
+                    {hidden > 0 && (
+                      <button type="button" className="gu-cal__more" onClick={() => setDayOpen(cell.date)}>
+                        +{hidden} altri
+                      </button>
+                    )}
                   </div>
-                  <div style={{ display:'grid', gap:6, overflow:'hidden' }}>
-                    {preview.map(a => (<ApptCard key={a.id} a={a} />))}
+                )
+              })}
+            </div>
+          </CardBody>
+        </Card>
+      ) : (
+        <Card>
+          <CardBody>
+            <div className="gu-row" style={{ justifyContent: 'space-between', marginBottom: 'var(--gu-space-3)' }}>
+              <div className="gu-row-tight">
+                <IconButton icon="chevronLeft" label="Settimana precedente" onClick={() => setAnchor(d => addDays(d, -7))} />
+                <strong>
+                  {weekDays[0].toLocaleDateString('it-IT', { day: '2-digit', month: 'short' })} –{' '}
+                  {weekDays[6].toLocaleDateString('it-IT', { day: '2-digit', month: 'short' })}
+                </strong>
+                <IconButton icon="chevronRight" label="Settimana successiva" onClick={() => setAnchor(d => addDays(d, 7))} />
+              </div>
+            </div>
+            <div className="gu-cal__head">
+              {WEEKDAYS.map(d => (
+                <div key={d}>{d}</div>
+              ))}
+            </div>
+            <div className="gu-cal__grid gu-cal__grid--week">
+              {weekDays.map((d, i) => {
+                const items = byDay.get(dayKey(d)) || []
+                return (
+                  <div key={i} className="gu-cal__cell" data-today={sameDay(d, new Date())}>
+                    <div className="gu-cal__cell-head">
+                      <span className="gu-cal__day">
+                        {d.getDate()}/{d.getMonth() + 1}
+                      </span>
+                      <IconButton icon="plus" label="Nuovo appuntamento" size="sm" onClick={() => openCreate(d)} />
+                    </div>
+                    <div className="gu-cal__items">
+                      {items.length === 0 ? (
+                        <span style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>Libero</span>
+                      ) : (
+                        items.map(a => renderCard(a))
+                      )}
+                    </div>
                   </div>
-                  {hidden>0 && (
-                    <button onClick={()=>setOpenDayDate(cell.date)} style={{ marginTop:6, border:'none', background:'transparent', textAlign:'left', cursor:'pointer', fontSize:12, color:'#0b57d0' }}>
-                      +{hidden} altri
-                    </button>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
+                )
+              })}
+            </div>
+          </CardBody>
+        </Card>
       )}
 
-      {/* Vista settimanale */}
-      {view === 'week' && (
-        <div className="brand-card" style={{ ...box }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-              <button className="brand-btn" onClick={()=>setActiveDate(d => addDays(d, -7))}>{'‹'}</button>
-              <div style={{ fontWeight:600 }}>
-                {(() => { const s=startOfWeek(activeDate); const e=addDays(s,6); const fmt=(dt:Date)=>dt.toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit'}); return `${fmt(s)} – ${fmt(e)}` })()}
-              </div>
-              <button className="brand-btn" onClick={()=>setActiveDate(d => addDays(d, +7))}>{'›'}</button>
-            </div>
-            <div><button className="brand-btn" onClick={()=>setActiveDate(new Date())}>Oggi</button></div>
-          </div>
-
-          {(() => {
-            const start = startOfWeek(activeDate)
-            const days = Array.from({ length: 7 }, (_, i) => addDays(start, i))
-            return (
-              <>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8, fontSize:12, color:'var(--muted,#666)', marginBottom:8 }}>
-                  {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'].map(d=> <div key={d} style={{ textAlign:'center' }}>{d}</div>)}
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:8 }}>
-                  {days.map((d, i) => {
-                    const items = (apptsByDay.get(dayKey(d)) || []).slice().sort((a,b)=> +new Date(a.ts) - +new Date(b.ts))
-                    const isToday = sameDay(d, new Date())
-                    return (
-                      <div key={i} style={{ border:'1px solid var(--border,#eee)', borderRadius:12, padding:8, background:'#fff', minHeight:220, display:'flex', flexDirection:'column' }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                          <div style={{ fontSize:12, fontWeight:600, color: isToday ? '#0b57d0' : '#111' }}>{d.getDate()}/{d.getMonth()+1}</div>
-                          <button title="Nuovo appuntamento" onClick={()=>openCreate(d)} style={{ border:'none', background:'transparent', cursor:'pointer' }}>＋</button>
-                        </div>
-                        <div style={{ display:'grid', gap:8 }}>
-                          {items.length===0 && <div style={{ fontSize:12, color:'var(--muted,#666)' }}>Nessun appuntamento</div>}
-                          {items.map(a => (<ApptCard key={a.id} a={a} />))}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </>
-            )
-          })()}
-        </div>
+      {!loading && appointments.length === 0 && (
+        <EmptyState
+          icon="calendar"
+          title="Nessun appuntamento in questo periodo"
+          text="Fissa un appuntamento dal calendario o dalla scheda di un lead."
+          action={
+            <Button variant="primary" icon="plus" onClick={() => openCreate(new Date())}>
+              Nuovo appuntamento
+            </Button>
+          }
+        />
       )}
 
-      {/* Modal editor */}
-      {editingId && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:420 }}>
-            <div style={{ fontWeight:700, marginBottom:12 }}>{editingId==='new' ? 'Nuovo appuntamento' : 'Modifica appuntamento'}</div>
-            <div style={{ display:'grid', gap:12 }}>
-              <div>
-                <div style={label}>Lead</div>
-                <select value={draft.lead_id} onChange={e=>setDraft(d=>({ ...d, lead_id:e.target.value }))} style={ipt}>
-                  <option value="">— Seleziona —</option>
-                  {leads.map(l=> <option key={l.id} value={l.id}>{labelLead(l)}</option>)}
-                </select>
-              </div>
-              <div>
-                <div style={label}>Data/Ora</div>
-                <input type="datetime-local" value={draft.ts} onChange={e=>setDraft(d=>({ ...d, ts:e.target.value }))} style={ipt} />
-              </div>
-              <div>
-                <div style={label}>Modalità</div>
-                <select value={draft.mode} onChange={e=>{ const v = e.target.value as Mode; setDraft(d=>({ ...d, mode:v })) }} style={ipt}>
-                  {MODE_OPTIONS.map(o=> <option key={o.db} value={o.db}>{o.label}</option>)}
-                </select>
-              </div>
-              <div>
-                <div style={label}>Note</div>
-                <input value={draft.notes||''} onChange={e=>setDraft(d=>({ ...d, notes:e.target.value }))} style={ipt} />
-              </div>
-              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
-                <button className="brand-btn" onClick={closeEditor}>Annulla</button>
-                <button className="brand-btn" onClick={saveDraft}>Salva</button>
-              </div>
-            </div>
+      {/* Dettaglio giornata */}
+      <Modal
+        open={!!dayOpen}
+        onClose={() => setDayOpen(null)}
+        title={dayOpen ? formatFullDay(dayOpen) : ''}
+        description="Tutti gli appuntamenti della giornata"
+        width={560}
+      >
+        <div className="gu-stack-sm">{dayOpen && (byDay.get(dayKey(dayOpen)) || []).map(a => renderCard(a))}</div>
+      </Modal>
+
+      {/* Editor */}
+      <Modal
+        open={!!draft}
+        onClose={() => setDraft(null)}
+        title={draft?.id ? 'Modifica appuntamento' : 'Nuovo appuntamento'}
+        width={480}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDraft(null)}>
+              Annulla
+            </Button>
+            <Button variant="primary" icon="check" onClick={save} loading={saving}>
+              Salva
+            </Button>
+          </>
+        }
+      >
+        {draft && (
+          <div className="gu-stack">
+            <SelectField
+              label="Lead"
+              required
+              value={draft.lead_id}
+              onChange={e => setDraft({ ...draft, lead_id: e.target.value })}
+              hint={`${leads.length} lead nel perimetro selezionato`}
+            >
+              <option value="">— Seleziona —</option>
+              {[...leads]
+                .sort((a, b) => leadName(a).localeCompare(leadName(b), 'it'))
+                .map(l => (
+                  <option key={l.id} value={l.id}>
+                    {leadName(l)}
+                  </option>
+                ))}
+            </SelectField>
+
+            <TextField
+              label="Data e ora"
+              type="datetime-local"
+              required
+              value={draft.ts}
+              onChange={e => setDraft({ ...draft, ts: e.target.value })}
+              error={draft.ts && !isValidLocalInput(draft.ts) ? 'Data non valida' : null}
+            />
+
+            <SelectField label="Modalità" value={draft.mode} onChange={e => setDraft({ ...draft, mode: e.target.value })}>
+              {MODES.map(m => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </SelectField>
+
+            <TextareaField
+              label="Note"
+              rows={2}
+              maxLength={240}
+              value={draft.notes}
+              onChange={e => setDraft({ ...draft, notes: e.target.value })}
+            />
+
+            {!draft.id && (
+              <label className="gu-check">
+                <input type="checkbox" checked={draft.notify} onChange={e => setDraft({ ...draft, notify: e.target.checked })} />
+                <span>Invia al cliente l'invito con l'evento per il calendario</span>
+              </label>
+            )}
           </div>
+        )}
+      </Modal>
+
+      {appointments.length > 0 && (
+        <div className="gu-row" style={{ justifyContent: 'center' }}>
+          <Badge tone="neutral">
+            {appointments.length} appuntamenti nel periodo caricato
+          </Badge>
         </div>
       )}
-
-      {/* Overlay "tutti gli appuntamenti del giorno" */}
-      {openDayDate && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 }}>
-          <div style={{ background:'#fff', borderRadius:12, padding:16, width:520, maxHeight:'80vh', display:'flex', flexDirection:'column' }}>
-            <div style={{ fontWeight:700, marginBottom:12 }}>
-              Appuntamenti · {openDayDate.toLocaleDateString('it-IT', { weekday:'long', day:'2-digit', month:'2-digit', year:'numeric' })}
-            </div>
-            <div style={{ display:'grid', gap:8, overflow:'auto' }}>
-              {(apptsByDay.get(dayKey(openDayDate)) || []).map(a => (<ApptCard key={a.id} a={a} />))}
-            </div>
-            <div style={{ display:'flex', justifyContent:'flex-end', marginTop:12 }}>
-              <button className="brand-btn" onClick={()=>setOpenDayDate(null)}>Chiudi</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {err && <div style={{ padding:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#7f1d1d', borderRadius:8 }}>{err}</div>}
-      {loading && <div>Caricamento…</div>}
-    </div>
+    </>
   )
 }
