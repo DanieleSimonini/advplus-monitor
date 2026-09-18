@@ -428,15 +428,19 @@ function rowToTargets(row: Record<string, unknown> | null): Targets {
 /**
  * Salvataggio di una riga di obiettivi.
  *
- * Due accortezze:
- * - le tabelle `goals` e `goals_monthly` hanno sia le colonne `target_*` sia
- *   una serie di colonne omonime senza prefisso, rimaste da una migrazione
- *   precedente e dichiarate NOT NULL. Vengono scritte entrambe con lo stesso
- *   valore: altrimenti l'inserimento fallisce o le viste che leggono le
- *   colonne vecchie restano a zero.
- * - `upsert` richiede un vincolo di unicità sulle colonne di conflitto. Se non
- *   c'è, Postgres risponde 42P10: in quel caso si ripiega su un normale
- *   aggiorna-oppure-inserisci.
+ * Si scrivono SOLO le colonne `target_*`.
+ *
+ * Accanto a quelle esistono colonne residue di una migrazione precedente, e
+ * non hanno gli stessi nomi nelle due tabelle: in `goals` si chiamano
+ * `prod_danni`, `prod_vprot`… mentre in `goals_monthly` `danni_non_auto`,
+ * `vita_protection`… Scriverle entrambe faceva fallire il salvataggio mensile
+ * con "column prod_danni does not exist". Hanno un default a zero, quindi
+ * lasciarle stare è corretto: nessuna riga viene rifiutata.
+ *
+ * `upsert` richiede un vincolo di unicità sulle colonne di conflitto. Gli
+ * indici esistono (`idx_goals_unique`, `idx_goals_monthly_unique`), ma se un
+ * giorno sparissero Postgres risponderebbe 42P10: il ripiego qui sotto
+ * gestisce anche quel caso.
  */
 async function upsertGoals(
   table: 'goals' | 'goals_monthly',
@@ -447,7 +451,6 @@ async function upsertGoals(
   const payload: Record<string, unknown> = { ...keys }
   for (const m of METRICS) {
     payload[m.targetColumn] = targets[m.key] || 0
-    payload[m.key] = targets[m.key] || 0
   }
 
   const { error } = await supabase.from(table).upsert(payload, { onConflict: conflictColumns.join(',') })
