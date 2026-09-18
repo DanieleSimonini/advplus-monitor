@@ -18,6 +18,51 @@
 -- diventato irraggiungibile: Admin e Team Lead vedono tutti i 16 promemoria,
 -- ogni Junior vede quelli dei propri lead.
 --
+-- ============================================================================
+-- GIÀ APPLICATO IN PRODUZIONE — 18/09/2026
+-- migrazione: handle_user_created_non_si_fida_del_ruolo_dal_client
+--
+-- Escalation di privilegi, la cosa più grave trovata. Tre pezzi in fila:
+--   1. disable_signup = false: la registrazione pubblica era aperta a chiunque
+--      avesse la chiave anon, cioè a chiunque aprisse il sito.
+--   2. il trigger on_auth_user_created chiamava handle_user_created(), che è
+--      SECURITY DEFINER e quindi scavalca le RLS:
+--         v_role := coalesce(new.raw_user_meta_data->>'role', 'Junior')
+--         insert into public.advisors (user_id, email, role) values (...)
+--      Il ruolo arrivava dai metadati forniti dal CLIENT alla registrazione.
+--   3. advisors.role = 'Admin' apre p_advisors_all, leads_select_admin_all e
+--      sorelle, p_leads_update_owner e p_leads_delete_owner.
+--   Risultato: chiunque, da internet, poteva registrarsi dichiarandosi Admin e
+--   ottenere il controllo completo dell'applicazione.
+--
+-- Fatto: il trigger ora si limita a collegare l'utente auth al profilo advisor
+-- che l'amministratore ha già creato (UPDATE su user_id, confronto email in
+-- minuscolo). Non crea profili e non legge mai il ruolo dal client. Revocato
+-- EXECUTE ad anon, authenticated e PUBLIC: è una funzione di trigger, non una
+-- RPC. Verificato che i 7 advisor restino collegati e i ruoli invariati.
+--
+-- Chi si registra senza invito ottiene un utente auth senza profilo e vede
+-- "Account non ancora abilitato".
+--
+-- DA FARE, NON AUTOMATIZZABILE DA QUI:
+--   Supabase → Authentication → Sign In / Providers → Email
+--   → disattivare "Allow new users to sign up".
+--   Il trigger è a prova di ruolo, ma senza questo chiunque può continuare a
+--   creare utenti auth nel vostro progetto.
+--
+-- ALTRO DALL'ADVISOR DI SICUREZZA DI SUPABASE:
+--   - "Leaked password protection" è disattivata: un interruttore in
+--     Authentication → Policies, controlla le password contro HaveIBeenPwned.
+--   - 7 funzioni hanno search_path mutabile (is_admin, can_access_lead,
+--     current_user_role, lead_visible, is_team_lead, current_advisor_id,
+--     set_updated_at). Vanno chiuse con SET search_path TO 'public':
+--     conviene farlo nella Fase 1, mentre si riscrivono comunque.
+--   - Esistono anche lead_visible(), is_team_lead() e current_advisor_id(),
+--     non citate da nessuna policy: probabile logica parallela abbandonata,
+--     da verificare ed eliminare.
+-- ============================================================================
+
+
 -- RESTA APERTO: le viste girano ancora come `postgres` senza security_invoker,
 -- quindi un utente autenticato qualsiasi che le interroghi direttamente vede i
 -- numeri di tutta la rete, non solo i propri. Si chiude con

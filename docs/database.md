@@ -13,6 +13,42 @@ Ordine di priorità: dalla più grave alla meno urgente.
 
 ---
 
+## 00. Chiunque poteva crearsi un account Admin — RISOLTO il 18/09/2026
+
+La cosa più grave emersa in tutta l'analisi. Tre pezzi che presi singolarmente
+sembrano innocui:
+
+1. `disable_signup: false` — la registrazione pubblica era **aperta**. Bastava
+   la chiave `anon`, che sta nel JavaScript del sito.
+2. Il trigger `on_auth_user_created` chiamava `handle_user_created()`, che è
+   `SECURITY DEFINER` e quindi scavalca le RLS:
+
+   ```sql
+   v_role := coalesce(new.raw_user_meta_data->>'role', 'Junior');
+   insert into public.advisors (user_id, email, role) values (new.id, new.email, v_role);
+   ```
+
+   Il ruolo arrivava dai **metadati forniti dal client** al momento della
+   registrazione.
+3. Un `advisors.role = 'Admin'` apre `p_advisors_all` (lettura e scrittura su
+   tutti gli advisor), `leads_select_admin_all` e sorelle, `p_leads_update_owner`
+   e `p_leads_delete_owner`.
+
+In fila: una persona qualsiasi, da internet, si registrava dichiarandosi Admin e
+otteneva il controllo completo dell'applicazione. Non è stato dimostrato sul
+campo perché avrebbe significato creare un account amministratore reale.
+
+**Risolto** con la migrazione `handle_user_created_non_si_fida_del_ruolo_dal_client`:
+il trigger ora collega soltanto l'utente auth al profilo advisor già creato
+dall'amministratore, non ne crea di nuovi e non legge mai il ruolo dal client.
+Revocato `EXECUTE` ad `anon`, `authenticated` e `PUBLIC`.
+
+**Resta da fare, a mano:** Supabase → Authentication → Sign In / Providers →
+Email → disattivare *"Allow new users to sign up"*. Il trigger è ormai a prova
+di ruolo, ma senza questo chiunque può continuare a creare utenti auth.
+
+---
+
 ## 0. Dati leggibili senza autenticarsi — RISOLTO il 18/09/2026
 
 Interrogando le API con la chiave `anon` — quella che sta dentro il bundle
@@ -172,14 +208,18 @@ Il ruolo memorizzato è `'Team Lead'`, con lo spazio. La policy non scatta mai.
 dell'intera rete. L'interfaccia non li mostra, ma i dati viaggiano lo stesso.
 Se è una scelta voluta va bene; se non lo è, va ristretta al proprio team.
 
-## 7. Nessuna policy di inserimento per l'auto-registrazione
+## 7. Auto-provisioning: era nel database, non nel frontend — CORRETTO
 
-Su `advisors` esistono solo `p_advisors_all` (Admin) e la policy rotta del punto
-5. Il vecchio frontend, non trovando un profilo, tentava di crearne uno con
-ruolo Junior: quell'INSERT **falliva sempre**, in silenzio, e l'utente restava
-bloccato sulla schermata di accesso. Ora il caso viene riconosciuto e spiegato
-("Account non ancora abilitato"), ma resta da decidere se l'auto-provisioning
-debba esistere o no.
+Nota rettificata. Il frontend, non trovando un profilo, tentava di crearne uno
+con ruolo Junior, e quell'INSERT falliva sempre per assenza di policy. Ma il
+profilo veniva creato comunque, dal trigger `on_auth_user_created` lato
+database, che essendo `SECURITY DEFINER` scavalca le RLS — con il ruolo preso
+dai metadati del client (vedi punto 00).
+
+Dopo la correzione del trigger l'auto-provisioning non esiste più: i profili si
+creano solo dalla sezione **Utenti**, e chi arriva senza invito vede "Account
+non ancora abilitato". C'è **già oggi un utente auth senza profilo** (8 utenti
+auth, 7 advisor), quindi quella schermata non è un caso teorico.
 
 ## 8. Colonne duplicate e incoerenti
 
