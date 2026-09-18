@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { Icon, Modal, Spinner } from '../ui'
 import { useDebounced } from '../lib/filters'
+import { applyTextSearch, isSearchable } from '../lib/search'
 import { LEAD_FIELDS, leadName, type Lead } from '../lib/domain'
 import { displayName } from '../lib/format'
 import { useAdvisors } from '../lib/useAdvisors'
@@ -46,19 +47,19 @@ export function GlobalSearch({ onOpenLead }: { onOpenLead: (id: string) => void 
   }, [open])
 
   useEffect(() => {
-    const q = debounced.trim()
-    if (q.length < 2) {
+    if (!isSearchable(debounced)) {
       setRows([])
       return
     }
     let alive = true
     setLoading(true)
-    const safe = q.replace(/[,()]/g, ' ').trim()
-    const like = `%${safe}%`
-    void supabase
-      .from('leads')
-      .select(LEAD_FIELDS)
-      .or(['last_name', 'first_name', 'company_name', 'email', 'phone'].map(c => `${c}.ilike.${like}`).join(','))
+    void applyTextSearch(supabase.from('leads').select(LEAD_FIELDS), debounced, [
+      'last_name',
+      'first_name',
+      'company_name',
+      'email',
+      'phone',
+    ])
       .limit(8)
       .then(({ data }) => {
         if (!alive) return
@@ -117,7 +118,7 @@ export function GlobalSearch({ onOpenLead }: { onOpenLead: (id: string) => void 
 
           {loading && <Spinner label="Ricerca in corso" />}
 
-          {!loading && term.trim().length >= 2 && rows.length === 0 && (
+          {!loading && isSearchable(term) && rows.length === 0 && (
             <p style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>
               Nessun lead trovato. La ricerca guarda cognome, nome, ragione sociale, email e telefono.
             </p>

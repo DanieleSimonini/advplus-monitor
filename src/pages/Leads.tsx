@@ -28,6 +28,7 @@ import { useAdvisors } from '../lib/useAdvisors'
 import { useDebounced, useFilters } from '../lib/filters'
 import type { NavigateFn, Route } from '../lib/router'
 import { fetchAllPages } from '../lib/db'
+import { applyTextSearch } from '../lib/search'
 import { daysSinceContact, loadAggregates, type Aggregate, type Aggregates } from '../lib/leadAggregates'
 import {
   CLIENT_OPTIONS,
@@ -56,6 +57,9 @@ import {
 } from './leads/LeadDetail'
 
 const PAGE_SIZE = 25
+
+/** Il segnaposto della ricerca deve nominare esattamente queste colonne. */
+const SEARCH_COLUMNS = ['last_name', 'first_name', 'company_name', 'email', 'phone', 'city']
 
 const FILTER_DEFAULTS = {
   q: '',
@@ -170,15 +174,15 @@ export default function LeadsPage({
       let q = query as unknown as {
         in: (c: string, v: string[]) => typeof q
         eq: (c: string, v: unknown) => typeof q
-        or: (v: string) => typeof q
       }
       if (ownerIds.length) q = q.in('owner_id', ownerIds)
       if (f.lavorazione === 'attivi') q = q.eq('is_working', true)
       else if (f.lavorazione === 'sospesi') q = q.eq('is_working', false)
       if (f.fonte !== 'tutte') q = q.eq('source', f.fonte)
       if (f.cliente !== 'tutti') q = q.eq('is_agency_client', f.cliente === 'si')
-      if (f.q) q = q.or(searchFilter(f.q))
-      return q as unknown as Q
+      let out = q as unknown as Q
+      if (f.q) out = applyTextSearch(out, f.q, SEARCH_COLUMNS)
+      return out
     },
     [ownerKey, f.lavorazione, f.fonte, f.cliente, f.q],
   )
@@ -512,7 +516,7 @@ export default function LeadsPage({
             label="Cerca"
             value={searchDraft}
             onValueChange={setSearchDraft}
-            placeholder="Cognome, azienda, email, telefono…"
+            placeholder="Cognome, nome, azienda, email, telefono, città"
           />
         </div>
 
@@ -1009,13 +1013,6 @@ function BulkBar({
 
 function labelOfOutcome(value: string) {
   return OUTCOMES.find(o => o.value === value)?.label || value
-}
-
-/** Ricerca su più colonne. Le virgole vanno rimosse: spezzerebbero il filtro or(). */
-function searchFilter(term: string) {
-  const safe = term.replace(/[,()]/g, ' ').trim()
-  const like = `%${safe}%`
-  return ['last_name', 'first_name', 'company_name', 'email', 'phone', 'city'].map(c => `${c}.ilike.${like}`).join(',')
 }
 
 function applySort<T>(q: T, sort: SortKey): T {

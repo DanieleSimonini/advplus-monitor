@@ -23,6 +23,7 @@ import { ScopeSelect } from '../app/ScopeSelect'
 import { useScopeParam } from '../app/ScopeProvider'
 import { useAdvisors } from '../lib/useAdvisors'
 import { useDebounced } from '../lib/filters'
+import { applyTextSearch, isSearchable } from '../lib/search'
 import { fetchAllPages, inChunks, uniq } from '../lib/db'
 import { MODES, labelOf, leadName, type Lead } from '../lib/domain'
 import {
@@ -631,20 +632,17 @@ function LeadPicker({
   const debounced = useDebounced(term, 250)
 
   useEffect(() => {
-    const q = debounced.trim()
-    if (q.length < 2) {
+    if (!isSearchable(debounced)) {
       setRows([])
       return
     }
     let alive = true
     setLoading(true)
-    const safe = q.replace(/[,()]/g, ' ')
-    const like = `%${safe}%`
-    void supabase
-      .from('leads')
-      .select('id,owner_id,first_name,last_name,company_name')
-      .in('owner_id', ownerIds)
-      .or(['last_name', 'first_name', 'company_name'].map(c => `${c}.ilike.${like}`).join(','))
+    void applyTextSearch(
+      supabase.from('leads').select('id,owner_id,first_name,last_name,company_name').in('owner_id', ownerIds),
+      debounced,
+      ['last_name', 'first_name', 'company_name'],
+    )
       .limit(8)
       .then(({ data }) => {
         if (!alive) return
@@ -684,7 +682,7 @@ function LeadPicker({
         onChange={e => setTerm(e.target.value)}
       />
       {loading && <span className="gu-field__hint">Ricerca in corso…</span>}
-      {!loading && debounced.trim().length >= 2 && rows.length === 0 && (
+      {!loading && isSearchable(debounced) && rows.length === 0 && (
         <span className="gu-field__hint">Nessun lead trovato nel perimetro selezionato.</span>
       )}
       {rows.length > 0 && (

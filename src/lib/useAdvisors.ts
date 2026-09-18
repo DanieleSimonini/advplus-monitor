@@ -51,6 +51,13 @@ export function useAdvisors() {
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async (force = false) => {
+    // Senza profilo non c'è niente da chiedere: il provider dello scope è
+    // montato sopra il controllo di sessione, quindi senza questa guardia la
+    // schermata di login sparava comunque una query che il database rifiuta.
+    if (!me) {
+      setLoading(false)
+      return
+    }
     if (!force && cache && Date.now() - cache.at < TTL_MS) {
       setRows(cache.rows)
       setLoading(false)
@@ -69,7 +76,7 @@ export function useAdvisors() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [me])
 
   useEffect(() => {
     void load()

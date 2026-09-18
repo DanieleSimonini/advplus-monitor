@@ -671,7 +671,9 @@ function RemindersTab({
   return (
     <div className="gu-stack">
       <Alert tone="info">
-        I promemoria sono privati: arrivano via email all'advisor che ha il lead in carico, non al cliente.
+        I promemoria sono privati: l'email arriva all'advisor che ha il lead in carico, non al cliente. Parte subito
+        come invito per il calendario, non alla scadenza — per ritrovarli quando è ora, la pagina <strong>Oggi</strong>{' '}
+        elenca quelli scaduti e quelli di giornata.
       </Alert>
 
       <TimelineForm
