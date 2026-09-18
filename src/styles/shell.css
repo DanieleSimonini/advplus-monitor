@@ -300,7 +300,6 @@
    -------------------------------------------------------------------------- */
 .gu-filterbar { display: grid; gap: var(--gu-space-2); }
 .gu-filterbar__toggle { display: none; align-items: center; gap: var(--gu-space-3); }
-.gu-filterbar__summary { display: flex; align-items: center; gap: var(--gu-space-2); align-self: center; }
 
 .gu-filterbar__chips { display: flex; flex-wrap: wrap; gap: var(--gu-space-2); }
 .gu-filterbar__reset { display: flex; }
@@ -397,7 +396,6 @@
    -------------------------------------------------------------------------- */
 @media (max-width: 760px) {
   .gu-filterbar__toggle { display: flex; }
-  .gu-filterbar__summary { display: none; }
   .gu-filterbar__controls { display: none; }
   .gu-filterbar__controls[data-open='true'] { display: flex; }
   .gu-filters > .gu-field,

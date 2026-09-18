@@ -188,17 +188,15 @@
 --       attivare "Leaked password protection"
 
 -- --------------------------------------------------------------------------
--- E. Canali di contatto
+-- E. Colonne nuove per l'interfaccia — vedi docs/migrazioni.sql
 --
--- Il vincolo su activities.channel ammette phone, email, inperson, video.
--- Nei dati: 297 phone e 45 email. Le vecchie voci WhatsApp, SMS e "Altro"
--- finivano tutte in phone e non sono più distinguibili. Per tracciarle davvero:
+-- Tre migrazioni già scritte e pronte, con il relativo ripristino:
+--   1. appointments.outcome  (fatto / non presentato / annullato)
+--   2. proposals.outcome     (in attesa / accettata / rifiutata)
+--   3. activities.channel    estensione a whatsapp e sms
 --
---   ALTER TABLE public.activities DROP CONSTRAINT activities_channel_check;
---   ALTER TABLE public.activities ADD CONSTRAINT activities_channel_check
---     CHECK (channel = ANY (ARRAY['phone','email','inperson','video','whatsapp','sms']));
---
--- e poi aggiungere le due voci in src/lib/domain.ts.
+-- L'interfaccia funziona anche prima che vengano applicate: i campi che
+-- dipendono da una colonna assente si disattivano da soli.
 
 -- --------------------------------------------------------------------------
 -- F. Flag contraddittori su advisors

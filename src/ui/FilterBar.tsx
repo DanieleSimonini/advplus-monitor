@@ -18,15 +18,12 @@ import { Badge, Button, cx } from './primitives'
 export function FilterBar({
   activeCount,
   onReset,
-  summary,
   chips,
   children,
 }: {
   /** Quanti filtri si discostano dal valore predefinito. */
   activeCount: number
   onReset?: () => void
-  /** Riga di destra: conteggio dei risultati, badge informativi. */
-  summary?: React.ReactNode
   /** Chip dei filtri attivi, mostrati sotto ai controlli. */
   chips?: React.ReactNode
   children: React.ReactNode
@@ -40,14 +37,9 @@ export function FilterBar({
           Filtri
           {activeCount > 0 && <Badge tone="primary">{activeCount}</Badge>}
         </Button>
-        {summary}
       </div>
 
-      <div className={cx('gu-filters', 'gu-filterbar__controls')} data-open={open}>
-        {children}
-        <div className="gu-spacer" />
-        <div className="gu-filterbar__summary">{summary}</div>
-      </div>
+      <div className={cx('gu-filters', 'gu-filterbar__controls')} data-open={open}>{children}</div>
 
       {chips && <div className="gu-filterbar__chips">{chips}</div>}
 

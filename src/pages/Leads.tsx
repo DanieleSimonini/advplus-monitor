@@ -489,7 +489,6 @@ export default function LeadsPage({
           setSearchDraft('')
           filters.reset()
         }}
-        summary={<ResultCount shown={total} total={totalUnfiltered} loading={loading} />}
         chips={
           chips.length > 0 ? (
             <>

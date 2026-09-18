@@ -302,6 +302,25 @@
 }
 .gu-check--disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Riquadro statistico cliccabile (pagina Utenti) */
+.gu-statfilter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gu-space-3);
+  width: 100%;
+  padding: var(--gu-space-4);
+  border: 1px solid var(--gu-border);
+  border-radius: var(--gu-radius-lg);
+  background: var(--gu-surface);
+  box-shadow: var(--gu-shadow-xs);
+  cursor: pointer;
+  transition: border-color var(--gu-duration) var(--gu-ease), background-color var(--gu-duration) var(--gu-ease);
+}
+.gu-statfilter:hover { border-color: var(--gu-primary); }
+.gu-statfilter:focus-visible { outline: none; box-shadow: var(--gu-shadow-focus); }
+.gu-statfilter[data-active='true'] { border-color: var(--gu-primary); background: var(--gu-primary-soft); }
+
 /* Griglia degli obiettivi: dodici mesi per sei metriche, input in cella */
 .gu-goals-grid__input {
   height: 32px;

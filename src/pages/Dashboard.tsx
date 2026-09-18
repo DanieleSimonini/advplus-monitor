@@ -91,8 +91,19 @@ export default function DashboardPage({ route, go }: { route: Route; go: Navigat
 
       // La coorte: i lead CARICATI nel periodo. È l'unico insieme su cui le
       // percentuali dell'imbuto sono davvero conversioni (vedi sotto).
+      //
+      // Il confronto passa da Date.parse e non dalle stringhe: PostgREST
+      // restituisce '…T10:00:00+00:00' mentre toISOString() produce
+      // '…T10:00:00.000Z', e confrontate come testo le due forme si ordinano
+      // in modo diverso pur essendo lo stesso istante.
+      const start = Date.parse(tsRange.start)
+      const end = Date.parse(tsRange.end)
       const cohortIds = ownedLeads
-        .filter(l => l.created_at && l.created_at >= tsRange.start && l.created_at < tsRange.end)
+        .filter(l => {
+          if (!l.created_at) return false
+          const t = Date.parse(l.created_at)
+          return !Number.isNaN(t) && t >= start && t < end
+        })
         .map(l => l.id)
 
       const [contacts, appointments, proposals, contractRows, notContacted, cohortAggs] = await Promise.all([

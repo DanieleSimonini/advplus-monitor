@@ -44,6 +44,10 @@ export default function AdminUsersPage() {
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<Role | ''>('')
+  // Prima le tre statistiche in cima segnalavano un problema (utenti
+  // disattivati, utenti mai entrati) senza dare il modo di guardarlo: non
+  // c'era nessun filtro di stato e i disattivati restavano mescolati agli altri.
+  const [statusFilter, setStatusFilter] = useState<'tutti' | 'attivi' | 'disattivati' | 'attesa'>('tutti')
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saving, setSaving] = useState(false)
   const [inviting, setInviting] = useState<string | null>(null)
@@ -73,10 +77,13 @@ export default function AdminUsersPage() {
     const term = search.trim().toLowerCase()
     return rows.filter(r => {
       if (roleFilter && r.role !== roleFilter) return false
+      if (statusFilter === 'attivi' && !isActiveAdvisor(r)) return false
+      if (statusFilter === 'disattivati' && isActiveAdvisor(r)) return false
+      if (statusFilter === 'attesa' && r.user_id) return false
       if (!term) return true
       return `${r.full_name || ''} ${r.email}`.toLowerCase().includes(term)
     })
-  }, [rows, search, roleFilter])
+  }, [rows, search, roleFilter, statusFilter])
 
   const stats = useMemo(
     () => ({
@@ -272,33 +279,26 @@ export default function AdminUsersPage() {
         }
       />
 
+      {/* Le statistiche sono anche i filtri: si clicca il numero e si vede chi c'è dietro. */}
       <div className="gu-grid gu-grid--3">
-        <Card>
-          <CardBody>
-            <div className="gu-row" style={{ justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>Utenti totali</span>
-              <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{stats.total}</strong>
-            </div>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <div className="gu-row" style={{ justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>Attivi</span>
-              <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{stats.active}</strong>
-            </div>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <div className="gu-row" style={{ justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)' }}>
-                In attesa del primo accesso
-              </span>
-              <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{stats.pending}</strong>
-            </div>
-          </CardBody>
-        </Card>
+        <StatFilter
+          label="Utenti totali"
+          value={stats.total}
+          active={statusFilter === 'tutti'}
+          onClick={() => setStatusFilter('tutti')}
+        />
+        <StatFilter
+          label="Attivi"
+          value={stats.active}
+          active={statusFilter === 'attivi'}
+          onClick={() => setStatusFilter(s => (s === 'attivi' ? 'tutti' : 'attivi'))}
+        />
+        <StatFilter
+          label="In attesa del primo accesso"
+          value={stats.pending}
+          active={statusFilter === 'attesa'}
+          onClick={() => setStatusFilter(s => (s === 'attesa' ? 'tutti' : 'attesa'))}
+        />
       </div>
 
       {error && <Alert tone="danger" title="Errore">{error}</Alert>}
@@ -327,6 +327,16 @@ export default function AdminUsersPage() {
                     {r}
                   </option>
                 ))}
+              </SelectField>
+              <SelectField
+                label="Stato"
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+              >
+                <option value="tutti">Tutti</option>
+                <option value="attivi">Solo attivi</option>
+                <option value="disattivati">Solo disattivati</option>
+                <option value="attesa">Mai entrati</option>
               </SelectField>
             </div>
           }
@@ -561,5 +571,31 @@ export default function AdminUsersPage() {
         </span>
       </Alert>
     </>
+  )
+}
+
+/** Riquadro statistico che è anche un filtro: il numero si clicca. */
+function StatFilter({
+  label,
+  value,
+  active,
+  onClick,
+}: {
+  label: string
+  value: number
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className="gu-statfilter"
+      data-active={active}
+      aria-pressed={active}
+      onClick={onClick}
+    >
+      <span style={{ color: 'var(--gu-text-subtle)', fontSize: 'var(--gu-text-sm)', textAlign: 'left' }}>{label}</span>
+      <strong style={{ fontSize: 'var(--gu-text-xl)' }}>{value}</strong>
+    </button>
   )
 }

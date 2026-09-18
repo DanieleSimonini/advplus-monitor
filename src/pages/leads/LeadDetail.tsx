@@ -20,10 +20,12 @@ import {
 import { Timeline, TimelineForm, type TimelineItem } from './Timeline'
 import { useChildTable } from './useChildTable'
 import {
+  APPOINTMENT_OUTCOMES,
   CHANNELS,
   CONTRACT_TYPES,
   MODES,
   OUTCOMES,
+  PROPOSAL_OUTCOMES,
   SOURCE_LABEL,
   labelOf,
   leadName,
@@ -132,10 +134,12 @@ export function LeadDetail({
   const leadId = lead?.id || null
 
   const activities = useChildTable<any>('activities', 'id,ts,channel,outcome,notes', leadId)
-  const appointments = useChildTable<any>('appointments', 'id,ts,mode,notes', leadId)
+  // `outcome` su appuntamenti e proposte arriva con docs/migrazioni.sql: finché
+  // non è applicata la colonna viene ignorata, in lettura e in scrittura.
+  const appointments = useChildTable<any>('appointments', 'id,ts,mode,notes,outcome', leadId, ['outcome'])
   const reminders = useChildTable<any>('reminders', 'id,ts,mode,notes', leadId)
-  const proposals = useChildTable<any>('proposals', 'id,ts,line,premium,notes', leadId)
-  const contracts = useChildTable<any>('contracts', 'id,ts,contract_type,amount,premium_annual,notes', leadId)
+  const proposals = useChildTable<any>('proposals', 'id,ts,line,premium,notes,outcome', leadId, ['outcome'])
+  const contracts = useChildTable<any>('contracts', 'id,ts,contract_type,amount,premium_annual,line,notes', leadId)
 
   const tabs: TabItem<TabKey>[] = [
     { value: 'anagrafica', label: 'Anagrafica', icon: 'user' },
@@ -469,17 +473,23 @@ function AppointmentsTab({
   owner: Advisor | null | undefined
   form: LeadFormState
 }) {
-  const empty = { ts: '', mode: 'inperson', notes: '', notify: true }
+  const empty = { ts: '', mode: 'inperson', outcome: 'scheduled', notes: '', notify: true }
   const tab = useTimelineTab(table, empty, 'Appuntamento')
   const d = tab.draft
+  const outcomesAvailable = !table.missing.includes('outcome')
 
-  const items: TimelineItem[] = table.rows.map(r => ({
-    id: r.id,
-    ts: r.ts,
-    title: labelOf(MODES, r.mode),
-    notes: r.notes,
-    icon: MODES.find(m => m.value === r.mode)?.icon || 'calendar',
-  }))
+  const items: TimelineItem[] = table.rows.map(r => {
+    const outcome = APPOINTMENT_OUTCOMES.find(o => o.value === (r.outcome || 'scheduled'))
+    return {
+      id: r.id,
+      ts: r.ts,
+      title: labelOf(MODES, r.mode),
+      notes: r.notes,
+      badge: outcomesAvailable ? outcome?.label : undefined,
+      tone: outcomesAvailable ? outcome?.tone : undefined,
+      icon: MODES.find(m => m.value === r.mode)?.icon || 'calendar',
+    }
+  })
 
   const clientEmail = form.email.trim()
 
@@ -521,12 +531,12 @@ function AppointmentsTab({
         onCancel={tab.reset}
         onSubmit={() =>
           tab.submit(
-            { ts: fromLocalInput(d.ts), mode: d.mode, notes: d.notes.trim() || null },
+            { ts: fromLocalInput(d.ts), mode: d.mode, outcome: d.outcome, notes: d.notes.trim() || null },
             sendInvite,
           )
         }
       >
-        <div className="gu-grid gu-grid--2">
+        <div className="gu-grid gu-grid--3">
           <TextField
             label="Data e ora"
             type="datetime-local"
@@ -539,6 +549,24 @@ function AppointmentsTab({
             {MODES.map(m => (
               <option key={m.value} value={m.value}>
                 {m.label}
+              </option>
+            ))}
+          </SelectField>
+          {/*
+            L'esito è il campo che mancava: senza, l'imbuto contava gli
+            appuntamenti FISSATI e li chiamava appuntamenti fatti, così al
+            denominatore del tasso di chiusura finivano anche i buchi a vuoto.
+          */}
+          <SelectField
+            label="Esito"
+            value={d.outcome}
+            onChange={e => tab.setDraft({ ...d, outcome: e.target.value })}
+            hint={outcomesAvailable ? undefined : 'Disponibile dopo la migrazione del database'}
+            disabled={!outcomesAvailable}
+          >
+            {APPOINTMENT_OUTCOMES.map(o => (
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </SelectField>
@@ -578,7 +606,13 @@ function AppointmentsTab({
           const r = table.rows.find(x => x.id === id)
           if (!r) return
           tab.setEditingId(id)
-          tab.setDraft({ ts: toLocalInput(r.ts), mode: r.mode, notes: r.notes || '', notify: false })
+          tab.setDraft({
+            ts: toLocalInput(r.ts),
+            mode: r.mode,
+            outcome: r.outcome || 'scheduled',
+            notes: r.notes || '',
+            notify: false,
+          })
         }}
         onDelete={tab.remove}
       />
@@ -708,18 +742,24 @@ function RemindersTab({
 /* ========================================================================== */
 
 function ProposalsTab({ table }: { table: ReturnType<typeof useChildTable<any>> }) {
-  const empty = { ts: toDateInput(new Date().toISOString()), line: '', premium: '', notes: '' }
+  const empty = { ts: toDateInput(new Date().toISOString()), line: '', premium: '', outcome: 'pending', notes: '' }
   const tab = useTimelineTab(table, empty, 'Proposta')
   const d = tab.draft
+  const outcomesAvailable = !table.missing.includes('outcome')
 
-  const items: TimelineItem[] = table.rows.map(r => ({
-    id: r.id,
-    ts: r.ts,
-    title: r.line || 'Proposta',
-    meta: formatCurrency(Number(r.premium || 0)),
-    notes: r.notes,
-    icon: 'fileText',
-  }))
+  const items: TimelineItem[] = table.rows.map(r => {
+    const outcome = PROPOSAL_OUTCOMES.find(o => o.value === (r.outcome || 'pending'))
+    return {
+      id: r.id,
+      ts: r.ts,
+      title: r.line || 'Proposta',
+      meta: formatCurrency(Number(r.premium || 0)),
+      notes: r.notes,
+      badge: outcomesAvailable ? outcome?.label : undefined,
+      tone: outcomesAvailable ? outcome?.tone : undefined,
+      icon: 'fileText',
+    }
+  })
 
   return (
     <div className="gu-stack">
@@ -735,11 +775,12 @@ function ProposalsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
             ts: d.ts,
             line: d.line.trim(),
             premium: Number(d.premium || 0),
+            outcome: d.outcome,
             notes: d.notes.trim() || null,
           })
         }
       >
-        <div className="gu-grid gu-grid--3">
+        <div className="gu-grid gu-grid--2">
           <TextField
             label="Data"
             type="date"
@@ -763,6 +804,24 @@ function ProposalsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
             value={d.premium}
             onChange={e => tab.setDraft({ ...d, premium: e.target.value })}
           />
+          {/*
+            È il salto dell'imbuto dove si perdono i soldi ed era l'unico di cui
+            non si potesse sapere il perché: la proposta si registrava e poi
+            spariva, accettata o rifiutata che fosse.
+          */}
+          <SelectField
+            label="Esito"
+            value={d.outcome}
+            onChange={e => tab.setDraft({ ...d, outcome: e.target.value })}
+            hint={outcomesAvailable ? undefined : 'Disponibile dopo la migrazione del database'}
+            disabled={!outcomesAvailable}
+          >
+            {PROPOSAL_OUTCOMES.map(o => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </SelectField>
         </div>
         <TextareaField
           label="Note"
@@ -783,7 +842,13 @@ function ProposalsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
           const r = table.rows.find(x => x.id === id)
           if (!r) return
           tab.setEditingId(id)
-          tab.setDraft({ ts: toDateInput(r.ts), line: r.line || '', premium: String(r.premium ?? ''), notes: r.notes || '' })
+          tab.setDraft({
+            ts: toDateInput(r.ts),
+            line: r.line || '',
+            premium: String(r.premium ?? ''),
+            outcome: r.outcome || 'pending',
+            notes: r.notes || '',
+          })
         }}
         onDelete={tab.remove}
       />
@@ -796,9 +861,10 @@ function ProposalsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
 /* ========================================================================== */
 
 function ContractsTab({ table }: { table: ReturnType<typeof useChildTable<any>> }) {
-  const empty: { ts: string; contract_type: ContractType; amount: string; notes: string } = {
+  const empty: { ts: string; contract_type: ContractType; line: string; amount: string; notes: string } = {
     ts: toDateInput(new Date().toISOString()),
     contract_type: CONTRACT_TYPES[0],
+    line: '',
     amount: '',
     notes: '',
   }
@@ -830,17 +896,18 @@ function ContractsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
           return tab.submit({
             ts: d.ts,
             contract_type: d.contract_type,
-            // `line` e `premium_annual` sono obbligatorie a schema: se non le
-            // si valorizza l'inserimento fallisce (o resta a zero e i report
-            // non tornano). Vengono tenute allineate ad `amount`.
-            line: d.contract_type,
+            // `line` e `premium_annual` sono obbligatorie a schema. `line`
+            // veniva forzata uguale al tipo di contratto, quindi era una
+            // colonna che ripeteva quella accanto: ora accetta la descrizione
+            // vera della polizza e ricade sul tipo solo se lasciata vuota.
+            line: d.line.trim() || d.contract_type,
             amount,
             premium_annual: amount,
             notes: d.notes.trim() || null,
           })
         }}
       >
-        <div className="gu-grid gu-grid--3">
+        <div className="gu-grid gu-grid--2">
           <TextField
             label="Data"
             type="date"
@@ -852,6 +919,7 @@ function ContractsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
             label="Tipo di contratto"
             value={d.contract_type}
             onChange={e => tab.setDraft({ ...d, contract_type: e.target.value as ContractType })}
+            hint="Determina la linea di produzione nei report."
           >
             {CONTRACT_TYPES.map(t => (
               <option key={t} value={t}>
@@ -859,6 +927,13 @@ function ContractsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
               </option>
             ))}
           </SelectField>
+          <TextField
+            label="Descrizione della polizza"
+            value={d.line}
+            onChange={e => tab.setDraft({ ...d, line: e.target.value })}
+            placeholder={d.contract_type}
+            hint="Facoltativa: se vuota si usa il tipo di contratto."
+          />
           <TextField
             label="Premio annuo (€)"
             type="number"
@@ -911,6 +986,7 @@ function ContractsTab({ table }: { table: ReturnType<typeof useChildTable<any>> 
           tab.setDraft({
             ts: toDateInput(r.ts),
             contract_type: r.contract_type || CONTRACT_TYPES[0],
+            line: r.line && r.line !== r.contract_type ? r.line : '',
             amount: String(r.amount ?? r.premium_annual ?? ''),
             notes: r.notes || '',
           })
