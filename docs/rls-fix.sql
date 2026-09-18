@@ -1,251 +1,254 @@
 -- ============================================================================
--- GuideUp — correzione delle policy RLS
+-- GuideUp — stato delle policy e delle funzioni del database
 --
--- LEGGI PRIMA DI ESEGUIRE.
+-- Questo file era una proposta. Dal 18/09/2026 è un registro: le correzioni
+-- sono state applicate al progetto `advplus-monitor-prod` e verificate
+-- impersonando i tre ruoli sui dati reali. In fondo resta l'elenco di ciò che
+-- non è ancora stato fatto.
 --
--- Non ho accesso al vostro database: questo script è scritto leggendo l'export
--- delle policy, non l'ho provato su dati reali. Va eseguito con attenzione,
--- seguendo l'ordine, e va verificato prima di confermarlo.
+-- Migrazioni, nell'ordine in cui sono state applicate:
+--   1. chiude_accesso_anonimo_reminders_e_viste
+--   2. handle_user_created_non_si_fida_del_ruolo_dal_client
+--   3. fase1_funzioni_riparate_e_una_policy_per_comando
+--   4. can_access_lead_non_nasconde_lo_storico_dei_disattivati
+--   5. pulizia_colonne_e_funzioni_inutilizzate
+-- ============================================================================
+
+
+-- ============================================================================
+-- 1. ACCESSO ANONIMO — chiuso
 --
--- Come si esegue: Supabase → SQL Editor → nuova query. Ogni FASE è separata:
--- esegui una fase per volta e leggi il risultato prima di passare alla
--- successiva. Le fasi 1 e 2 sono dentro una transazione: finché non digiti
--- COMMIT non è cambiato niente, e con ROLLBACK torni indietro.
+-- Con la chiave anon, quella pubblica dentro il bundle JavaScript, e senza
+-- alcun login uscivano 16 promemoria e tutte le viste v_* con appuntamenti,
+-- contratti e produzione per advisor. Su `reminders` anon aveva anche INSERT,
+-- UPDATE, DELETE e TRUNCATE.
 --
--- Perché queste modifiche sono meno rischiose di quanto sembri: in Postgres le
--- policy PERMISSIVE si sommano in OR. Le policy sbagliate che togliamo qui
--- hanno una gemella corretta che concede già l'accesso legittimo. Rimuovendole
--- sparisce il permesso in eccesso, non quello che serve a lavorare — tranne in
--- un caso, la cancellazione dei lead da parte del Team Lead, che infatti qui
--- viene ricreata correttamente.
--- ============================================================================
-
-
--- ============================================================================
--- FASE 0 — ISPEZIONE (sola lettura, non modifica niente)
--- Esegui questi tre blocchi e guarda i risultati prima di andare avanti.
--- ============================================================================
-
--- 0.1 Che cosa fanno davvero le funzioni usate dalle policy?
---     can_access_lead() è il perno di tutti i permessi su attività,
---     appuntamenti, proposte e contratti: se è scritta bene, i punti 1.2–1.5
---     sono sicuri. Se non lo è, fermati e sistemala prima.
-SELECT p.proname,
-       pg_get_functiondef(p.oid) AS definizione
-FROM pg_proc p
-JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE p.proname IN ('can_access_lead', 'is_admin', 'current_user_role')
-  AND n.nspname = 'public';
-
--- 0.2 Quante righe userebbero ancora la vecchia convenzione?
---     Se team_lead_id o reports_to sono valorizzati da qualche parte, prima di
---     eliminarli va capito chi li scrive.
-SELECT count(*) FILTER (WHERE team_lead_id IS NOT NULL)      AS con_team_lead_id,
-       count(*) FILTER (WHERE reports_to IS NOT NULL)        AS con_reports_to,
-       count(*) FILTER (WHERE team_lead_user_id IS NOT NULL) AS con_team_lead_user_id,
-       count(*)                                              AS totale
-FROM public.advisors;
-
--- 0.3 I lead sono davvero collegati con user_id (e non con advisors.id)?
---     Atteso: coincidenti = totale, e per_advisor_id = 0.
-SELECT count(*) AS totale,
-       count(*) FILTER (WHERE owner_id IN (SELECT user_id FROM public.advisors WHERE user_id IS NOT NULL)) AS coincidenti,
-       count(*) FILTER (WHERE owner_id IN (SELECT id      FROM public.advisors))                            AS per_advisor_id
-FROM public.leads;
-
-
--- ============================================================================
--- FASE 1 — PERMESSI IN ECCESSO (il problema più grave)
+-- Cause: reminders aveva le RLS mai accese e zero policy; le dieci viste
+-- appartengono a postgres, non hanno security_invoker e avevano SELECT
+-- concesso ad anon.
 --
--- Oggi un Team Lead può modificare e cancellare lead, contatti, appuntamenti,
--- proposte e contratti di QUALSIASI team, perché le policy p_*_owner
--- verificano solo il ruolo e non l'appartenenza al team.
+-- Fatto: RLS accese su reminders con quattro policy, REVOKE ALL per anon su
+-- reminders, REVOKE SELECT per anon sulle dieci viste.
+-- Verificato: ogni chiamata anonima risponde 401, cancellazione compresa.
 -- ============================================================================
-
-BEGIN;
-
--- 1.1 Lead -----------------------------------------------------------------
--- Rimuove il permesso globale per ruolo.
-DROP POLICY IF EXISTS p_leads_update_owner ON public.leads;
-DROP POLICY IF EXISTS p_leads_delete_owner ON public.leads;
-
--- Restano attive per la modifica: "tl can UPDATE own juniors leads"
--- (proprietario o Junior del proprio team) e leads_update (Admin o
--- proprietario). Nessun accesso legittimo viene perso.
-
--- Per la cancellazione invece mancava una policy con lo scope di team:
--- senza questa, un Team Lead non potrebbe più cancellare i lead dei propri
--- Junior. Qui viene ricreata con il vincolo corretto.
-DROP POLICY IF EXISTS tl_delete_own_team_leads ON public.leads;
-CREATE POLICY tl_delete_own_team_leads
-  ON public.leads FOR DELETE TO authenticated
-  USING (
-    owner_id = auth.uid()
-    OR owner_id IN (
-      SELECT a.user_id FROM public.advisors a
-      WHERE a.team_lead_user_id = auth.uid() AND a.user_id IS NOT NULL
-    )
-  );
-
--- 1.2 Attività --------------------------------------------------------------
--- p_act_update_owner aveva anche WITH CHECK (true): permetteva di spostare
--- un'attività su un lead qualsiasi, anche di un altro team.
-DROP POLICY IF EXISTS p_act_update_owner ON public.activities;
-DROP POLICY IF EXISTS p_act_delete_owner ON public.activities;
--- Restano activities_update / activities_delete su can_access_lead(lead_id).
-
--- 1.3 Appuntamenti ----------------------------------------------------------
-DROP POLICY IF EXISTS p_app_update_owner ON public.appointments;
-DROP POLICY IF EXISTS p_app_delete_owner ON public.appointments;
-
--- 1.4 Proposte --------------------------------------------------------------
-DROP POLICY IF EXISTS p_prop_update_owner ON public.proposals;
-DROP POLICY IF EXISTS p_prop_delete_owner ON public.proposals;
-
--- 1.5 Contratti -------------------------------------------------------------
-DROP POLICY IF EXISTS p_contr_update_owner ON public.contracts;
-DROP POLICY IF EXISTS p_contr_delete_owner ON public.contracts;
-
--- 1.6 Policy che non ha mai funzionato --------------------------------------
--- Confronta il ruolo con 'TeamLead', ma il valore memorizzato è 'Team Lead'
--- con lo spazio: non ha mai concesso niente a nessuno.
-DROP POLICY IF EXISTS p_advisors_teamlead_over_juniors ON public.advisors;
-
--- --- VERIFICA prima di confermare ------------------------------------------
--- Elenca le policy rimaste sulle tabelle toccate. Controlla che per ogni
--- tabella esista ancora almeno una policy di UPDATE e una di DELETE.
-SELECT tablename, policyname, cmd
-FROM pg_policies
-WHERE schemaname = 'public'
-  AND tablename IN ('leads', 'activities', 'appointments', 'proposals', 'contracts', 'advisors')
-ORDER BY tablename, cmd, policyname;
-
--- Se il risultato ti convince:
---   COMMIT;
--- altrimenti:
---   ROLLBACK;
 
 
 -- ============================================================================
--- FASE 2 — LOG DI IMPORTAZIONE
+-- 2. ESCALATION DI PRIVILEGI — chiusa
 --
--- Oggi p_import_logs_rw è ALL / USING true / WITH CHECK true: ogni utente
--- autenticato legge, modifica e cancella i log di importazione di tutti.
--- ============================================================================
-
-BEGIN;
-
-DROP POLICY IF EXISTS p_import_logs_rw ON public.import_logs;
-
--- Ognuno scrive i propri log.
-CREATE POLICY import_logs_insert_own
-  ON public.import_logs FOR INSERT TO authenticated
-  WITH CHECK (actor_user_id = auth.uid());
-
--- Ognuno rilegge i propri; l'Admin li vede tutti.
-CREATE POLICY import_logs_select_own_or_admin
-  ON public.import_logs FOR SELECT TO authenticated
-  USING (
-    actor_user_id = auth.uid()
-    OR EXISTS (
-      SELECT 1 FROM public.advisors a
-      WHERE a.user_id = auth.uid()
-        AND a.role = 'Admin'
-        AND COALESCE(a.disabled, false) = false
-    )
-  );
-
--- Nessuna policy di UPDATE o DELETE: un registro non si riscrive.
-
-SELECT policyname, cmd, roles FROM pg_policies
-WHERE schemaname = 'public' AND tablename = 'import_logs';
-
---   COMMIT;  oppure  ROLLBACK;
-
-
--- ============================================================================
--- FASE 3 — VINCOLI DI UNICITÀ PER GLI OBIETTIVI
+-- disable_signup era false e il trigger on_auth_user_created chiamava
+-- handle_user_created(), SECURITY DEFINER, che creava il profilo advisor
+-- leggendo il ruolo da raw_user_meta_data, cioè dai metadati forniti dal
+-- client alla registrazione. Chiunque poteva iscriversi dichiarandosi 'Admin'
+-- e prendere il controllo dell'applicazione.
 --
--- Il salvataggio degli obiettivi usa ON CONFLICT su queste colonne. Se gli
--- indici non esistono, l'applicazione ripiega su un aggiorna-oppure-inserisci
--- (funziona, ma niente impedisce righe duplicate per lo stesso mese).
+-- Fatto: il trigger ora collega soltanto l'utente auth al profilo già creato
+-- dall'amministratore (UPDATE su user_id, email confrontata in minuscolo).
+-- Non crea profili e non legge il ruolo dal client. Revocato EXECUTE ad anon,
+-- authenticated e PUBLIC.
 --
--- Attenzione: se ci sono GIÀ duplicati, la creazione dell'indice fallisce.
--- Il primo blocco li cerca: se restituisce righe, vanno ripuliti prima.
+-- ANCORA DA FARE A MANO — non automatizzabile dal connettore:
+--   Supabase → Authentication → Sign In / Providers → Email
+--   → disattivare "Allow new users to sign up".
 -- ============================================================================
-
--- 3.1 Ci sono duplicati?
-SELECT advisor_user_id, year, count(*)
-FROM public.goals
-GROUP BY advisor_user_id, year HAVING count(*) > 1;
-
-SELECT advisor_user_id, year, month, count(*)
-FROM public.goals_monthly
-GROUP BY advisor_user_id, year, month HAVING count(*) > 1;
-
--- 3.2 Se i due blocchi sopra non restituiscono niente, crea gli indici.
-CREATE UNIQUE INDEX IF NOT EXISTS goals_advisor_year_uidx
-  ON public.goals (advisor_user_id, year);
-
-CREATE UNIQUE INDEX IF NOT EXISTS goals_monthly_advisor_year_month_uidx
-  ON public.goals_monthly (advisor_user_id, year, month);
 
 
 -- ============================================================================
--- FASE 4 — SOLO QUANDO LE PRIME TRE SONO IN PRODUZIONE DA QUALCHE GIORNO
+-- 3. FUNZIONI — riparate
 --
--- Pulizia delle policy morte e delle colonne duplicate. Non è urgente e non
--- risolve nessun problema di sicurezza: serve a non lasciare in giro controlli
--- che sembrano attivi e non lo sono. Da fare con calma, una alla volta.
+-- Stato precedente:
+--   is_admin()          leggeva da public.users, che è VUOTA: restituiva
+--                       sempre false, per chiunque. Conseguenza concreta: un
+--                       Admin non riusciva a salvare gli obiettivi di nessuno.
+--   can_access_lead()   cercava il team con j.id = leads.owner_id e
+--                       j.team_lead_id, due colonne mai valorizzate (0 righe
+--                       su 7): il ramo Team Lead era cieco.
+--   current_user_role() confrontava le email senza normalizzarle.
+--
+-- Ora tutte e tre hanno SET search_path TO 'public' e una sola convenzione: il
+-- ruolo sta in advisors, il team in team_lead_user_id, leads.owner_id contiene
+-- advisors.user_id (verificato: 457 lead su 457).
+--
+-- Nota su can_access_lead(): il ramo del Team Lead NON filtra sugli advisor
+-- attivi. Disattivare un utente toglie l'accesso a lui, non deve nascondere il
+-- suo lavoro a chi lo coordina — è quello che promette l'interfaccia quando si
+-- disattiva un profilo. Una prima versione filtrava, e con un Junior
+-- disattivato il suo Team Lead vedeva i lead ma non i contatti collegati.
 -- ============================================================================
 
--- 4.1 La famiglia leads_select/insert/update/delete confronta
---     j.id = leads.owner_id, ma owner_id contiene lo user_id: quella parte
---     non corrisponde mai. Prima di toccarla, riscrivi la condizione di team
---     usando team_lead_user_id (come fa "tl can UPDATE own juniors leads"),
---     poi elimina la versione vecchia. Verifica con la query 0.3.
 
--- 4.2 Colonne duplicate da eliminare, una migrazione per volta, dopo esserti
---     assicurato che nessuna vista le usi:
---       activities.note, appointments.note, proposals.note, contracts.note
---         (l'applicazione scrive notes)
---       appointments.method, appointments.place, contracts.kind
---       leads.status, leads.stop_working  (si usa is_working)
---       advisors.reports_to, advisors.team_lead_id  (si usa team_lead_user_id)
---       goals/goals_monthly: le colonne senza prefisso target_
---       goals_monthly.ym, goals_monthly.appuntamenti
---     Query utile per sapere quali viste dipendono da una colonna:
---       SELECT DISTINCT dependent_ns.nspname, dependent_view.relname
---       FROM pg_depend
---       JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid
---       JOIN pg_class AS dependent_view ON pg_rewrite.ev_class = dependent_view.oid
---       JOIN pg_class AS source_table ON pg_depend.refobjid = source_table.oid
---       JOIN pg_namespace dependent_ns ON dependent_ns.oid = dependent_view.relnamespace
---       WHERE source_table.relname = 'contracts';
+-- ============================================================================
+-- 4. POLICY — una per tabella e per comando
+--
+-- Erano una settantina, con duplicati che si sommavano in OR annullandosi a
+-- vicenda: le p_*_owner concedevano a QUALSIASI Team Lead di modificare e
+-- cancellare i dati di QUALSIASI team. Ora sono 39.
+--
+--   leads                        is_admin() OR proprietario OR team
+--   activities, appointments,    can_access_lead(lead_id)
+--   proposals, contracts
+--   reminders                    can_access_lead(lead_id) OR created_by
+--   advisors                     lettura a tutti gli autenticati (serve
+--                                all'interfaccia per gli assegnatari),
+--                                scrittura solo Admin, più
+--                                advisors_set_user_id_once per il primo accesso
+--   goals, goals_monthly         lettura: Admin, sé stessi, il proprio team
+--                                scrittura: Admin o Team Lead sul proprio Junior
+--   import_logs                  scrive solo l'autore, legge l'autore o
+--                                l'Admin, nessuna UPDATE né DELETE
+--
+-- VERIFICATO impersonando i ruoli sui dati veri (457 lead, 342 contatti,
+-- 123 appuntamenti, 9 proposte, 27 contratti, 16 promemoria, 54 obiettivi):
+--   Admin       vede tutto, is_admin() = true
+--   Team Lead   vede tutto il proprio team, is_admin() = false
+--   Junior      vede i propri 90 lead e ZERO altrui, i propri 12 obiettivi e
+--               zero altrui
+-- ============================================================================
 
--- 4.3 goals_annual ha solo policy di SELECT e usa advisor_id invece di
---     advisor_user_id: l'applicazione non la scrive. Verifica che sia
---     abbandonata e falla sparire.
 
--- 4.4 users e team_presences non c'entrano con GuideUp. Se il database è
---     condiviso con la gestione presenze va scritto da qualche parte,
---     altrimenti sono residui.
+-- ============================================================================
+-- 5. PULIZIA — fatta
+--
+-- Funzioni eliminate, non citate da nessuna policy, vista o altra funzione:
+--   lead_visible(), current_advisor_id(), is_team_lead()
+--
+-- Colonne eliminate, verificate riga per riga come vuote o costanti e nessuna
+-- referenziata da viste:
+--   activities.note, proposals.note      (si è sempre scritto `notes`)
+--   appointments.method                  (la modalità sta in `mode`)
+--   contracts.kind                       (il tipo sta in `contract_type`)
+--   leads.status                         (valeva 'New' su tutte e 457 le righe)
+--   leads.stop_working                   (false ovunque, contrario di is_working)
+--   advisors.reports_to, team_lead_id    (0 righe valorizzate)
+--   advisors.region                      (sempre nulla)
+--
+-- contracts.premium_annual allineata ad `amount` sui 27 contratti storici: la
+-- colonna è NOT NULL con default a zero e non era mai stata usata, mentre il
+-- valore vero sta in `amount`, che è quello letto da v_progress_monthly. Ora le
+-- due somme coincidono (6.959,24 €).
+-- ============================================================================
+
+
+-- ============================================================================
+-- QUELLO CHE RESTA DA FARE
+-- ============================================================================
+
+-- --------------------------------------------------------------------------
+-- A. Viste SECURITY DEFINER   (l'advisor di Supabase lo segnala come ERROR)
+--
+-- Le dieci viste v_* girano come `postgres` e scavalcano le RLS delle tabelle
+-- sottostanti. Ad anon non sono più esposte, ma un utente autenticato che le
+-- interroghi direttamente vede i numeri di tutta la rete.
+--
+-- Ora che is_admin() funziona si può chiudere. Una per volta, controllando
+-- dopo ognuna che Report, Dashboard e Obiettivi mostrino i dati giusti per un
+-- Admin, un Team Lead e un Junior:
+--
+--   ALTER VIEW public.v_progress_monthly SET (security_invoker = on);
+--   ALTER VIEW public.v_progress_annual  SET (security_invoker = on);
+--   ALTER VIEW public.v_goals_monthly    SET (security_invoker = on);
+--   ...
+--
+-- v_progress_monthly è quella che conta: la usano Dashboard, Report e
+-- Obiettivi. Le altre non sono referenziate dall'applicazione attuale.
+
+-- --------------------------------------------------------------------------
+-- B. Colonne residue trattenute da viste
+--
+--   appointments.note, appointments.place      → v_month_key_appointments
+--   contracts.company, contracts.policy_number → v_month_key_contracts
+--   goals.month, consulenze, contratti,
+--     prod_danni, prod_vprot, prod_vpr, prod_vpu → v_goals_monthly
+--   goals_monthly.appuntamenti                 → v_goals_unificata
+--   goals_monthly.consulenze, contratti, danni_non_auto, vita_protection,
+--     vita_ricorrenti, vita_unici, ym          → sei viste
+--
+-- Nessuna di queste viste è usata dall'applicazione. Prima di eliminare le
+-- colonne va deciso se servano a qualcuno per interrogazioni manuali.
+
+-- --------------------------------------------------------------------------
+-- C. Tabelle di altri prodotti
+--
+--   public.users            0 righe, RLS attiva senza policy
+--   public.team_presences   0 righe, due policy di UPDATE sovrapposte
+--   public.goals_annual     0 righe, solo policy di SELECT, usa advisor_id
+--                           invece di advisor_user_id. Referenziata da
+--                           v_team_goals_annual_sum e dalla variante _app:
+--                           vanno eliminate insieme.
+--
+-- Nessuna è usata da GuideUp. Non le ho toccate: eliminare tabelle è
+-- irreversibile e non è chiaro se appartengano a un altro applicativo.
+
+-- --------------------------------------------------------------------------
+-- D. Impostazioni di Auth (dashboard, non SQL)
+--
+--   [ ] Authentication → Sign In / Providers → Email:
+--       disattivare "Allow new users to sign up"
+--   [ ] Authentication → Policies:
+--       attivare "Leaked password protection"
+
+-- --------------------------------------------------------------------------
+-- E. Canali di contatto
+--
+-- Il vincolo su activities.channel ammette phone, email, inperson, video.
+-- Nei dati: 297 phone e 45 email. Le vecchie voci WhatsApp, SMS e "Altro"
+-- finivano tutte in phone e non sono più distinguibili. Per tracciarle davvero:
+--
+--   ALTER TABLE public.activities DROP CONSTRAINT activities_channel_check;
+--   ALTER TABLE public.activities ADD CONSTRAINT activities_channel_check
+--     CHECK (channel = ANY (ARRAY['phone','email','inperson','video','whatsapp','sms']));
+--
+-- e poi aggiungere le due voci in src/lib/domain.ts.
+
+-- --------------------------------------------------------------------------
+-- F. Flag contraddittori su advisors
+--
+-- `is_active` e `disabled` dicono la stessa cosa al contrario e sono già in
+-- contraddizione: un Junior ha is_active = true e disabled = true insieme.
+-- L'applicazione considera attivo solo chi ha is_active diverso da false E
+-- disabled diverso da true. Andrebbe tenuto un flag solo.
 
 
 -- ============================================================================
 -- COME TORNARE INDIETRO
 --
--- Se dopo il COMMIT qualcosa non va, le policy eliminate si ricreano così
--- (sono quelle di partenza, permessi larghi compresi: usale solo per sbloccare
--- una situazione, non come stato definitivo).
+-- Le funzioni nella versione di partenza:
 --
---   CREATE POLICY p_leads_update_owner ON public.leads FOR UPDATE TO authenticated
---     USING      ((owner_id = auth.uid()) OR (current_user_role() = ANY (ARRAY['Admin','Team Lead'])))
---     WITH CHECK ((owner_id = auth.uid()) OR (current_user_role() = ANY (ARRAY['Admin','Team Lead'])));
+--   CREATE OR REPLACE FUNCTION public.is_admin()
+--   RETURNS boolean LANGUAGE sql STABLE AS $function$
+--     select exists (select 1 from public.users u
+--                    where u.id = auth.uid() and lower(u.role) = 'admin');
+--   $function$;
 --
---   CREATE POLICY p_leads_delete_owner ON public.leads FOR DELETE TO authenticated
---     USING ((owner_id = auth.uid()) OR (current_user_role() = ANY (ARRAY['Admin','Team Lead'])));
+--   CREATE OR REPLACE FUNCTION public.current_user_role()
+--   RETURNS text LANGUAGE sql STABLE AS $function$
+--     select role from public.advisors where email = auth.jwt() ->> 'email' limit 1
+--   $function$;
 --
--- Le altre p_*_owner seguono lo stesso schema, con EXISTS sulla tabella leads.
--- Prima di tutto questo, in ogni caso: Supabase → Database → Backups.
+--   CREATE OR REPLACE FUNCTION public.can_access_lead(p_lead_id uuid)
+--   RETURNS boolean LANGUAGE sql STABLE AS $function$
+--     WITH l AS (SELECT owner_id FROM public.leads WHERE id = p_lead_id)
+--     SELECT public.is_admin()
+--       OR EXISTS (SELECT 1 FROM l WHERE owner_id = auth.uid())
+--       OR EXISTS (SELECT 1 FROM l JOIN public.advisors j ON j.id = l.owner_id
+--                  WHERE j.team_lead_id = auth.uid());
+--   $function$;
+--
+-- Il trigger:
+--
+--   CREATE OR REPLACE FUNCTION public.handle_user_created()
+--   RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
+--   AS $function$
+--   declare v_role text := coalesce(new.raw_user_meta_data->>'role', 'Junior');
+--   begin
+--     insert into public.advisors (user_id, email, role) values (new.id, new.email, v_role)
+--     on conflict (email) do update
+--       set user_id = excluded.user_id, role = coalesce(excluded.role, public.advisors.role);
+--     return new;
+--   end; $function$;
+--
+-- L'allineamento di premium_annual:  UPDATE public.contracts SET premium_annual = 0;
+--
+-- Colonne e policy eliminate sono ricostruibili dalla cronologia delle
+-- migrazioni in Supabase. Prima di qualunque ripristino: Database → Backups.
 -- ============================================================================
