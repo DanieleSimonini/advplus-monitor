@@ -1,29 +1,24 @@
 -- ============================================================================
--- GuideUp — migrazioni da applicare
+-- GuideUp — migrazioni
 --
--- Supabase → SQL Editor → New query → incolla → Run.
+-- Le sezioni 1 e 2 sono state APPLICATE il 18/09/2026 al progetto
+-- `advplus-monitor-prod`, con la migrazione `esito_appuntamenti_e_proposte`,
+-- e verificate sui dati reali (vedi "Verifica eseguita" in fondo).
+-- Restano qui come registro e per il ripristino.
+--
+-- La sezione 3 non è stata applicata: va eseguita insieme alla modifica di
+-- src/lib/domain.ts, altrimenti non produce nessun effetto visibile.
+--
+-- Per eseguire quel che resta: Supabase → SQL Editor → New query.
 -- Prima di cominciare: Database → Backups.
---
--- Le sezioni 0, 1 e 2 si possono eseguire tutte insieme: la 0 non modifica
--- niente, serve solo a vedere com'è messo il database prima. La 3 è separata
--- apposta, va eseguita solo dopo aver aggiornato anche src/lib/domain.ts.
---
--- L'interfaccia funziona già adesso, prima della migrazione: i campi che
--- dipendono da una colonna non ancora esistente restano disattivati e vengono
--- ignorati in scrittura. Applicandola si accendono da soli, senza ridistribuire
--- l'applicazione.
 -- ============================================================================
 
 
 -- ============================================================================
 -- 0. CONTROLLO PRELIMINARE — non modifica niente
 --
--- Se le due colonne esistono già, potrebbero contenere valori diversi da quelli
--- previsti e i vincoli delle sezioni 1 e 2 verrebbero rifiutati.
---
--- Attesa: NESSUNA RIGA. In quel caso prosegui pure con le sezioni 1 e 2.
--- Se invece esce qualcosa, fermati e guardiamo insieme cosa c'è dentro prima
--- di imporre un vincolo.
+-- Eseguito prima della migrazione: nessuna riga, cioè nessuna delle due
+-- colonne esisteva già con valori che avrebbero fatto rifiutare il vincolo.
 -- ============================================================================
 
 SELECT table_name, column_name, data_type, column_default
@@ -34,7 +29,7 @@ SELECT table_name, column_name, data_type, column_default
 
 
 -- ============================================================================
--- 1. ESITO DELL'APPUNTAMENTO
+-- 1. ESITO DELL'APPUNTAMENTO — applicata
 --
 -- Perché serve: la tabella `appointments` dice quando un incontro è stato
 -- FISSATO, non se è stato fatto. L'imbuto della Dashboard e il "tasso di
@@ -58,7 +53,7 @@ ALTER TABLE public.appointments
 
 
 -- ============================================================================
--- 2. ESITO DELLA PROPOSTA
+-- 2. ESITO DELLA PROPOSTA — applicata
 --
 -- Perché serve: fra proposta e contratto c'è il salto dell'imbuto dove si
 -- perdono i soldi, ed era l'unico di cui non si potesse sapere il perché. La
@@ -77,11 +72,27 @@ ALTER TABLE public.proposals
 
 
 -- ============================================================================
--- VERIFICA — da eseguire subito dopo
+-- VERIFICA ESEGUITA — 18/09/2026, sui dati di produzione
 --
--- Attesa: due righe, appointments/outcome/text/NO e proposals/outcome/text/NO,
--- e i conteggi che coincidono con il totale delle righe delle due tabelle
--- (tutto 'scheduled' e tutto 'pending', perché lo storico prende il default).
+--   Stato dopo la migrazione   123 appuntamenti tutti 'scheduled'
+--                              9 proposte tutte 'pending'
+--                              conteggi delle tabelle invariati
+--                              (457 lead, 342 contatti, 27 contratti)
+--
+--   Privilegi                  `authenticated` ha SELECT/INSERT/UPDATE sulla
+--                              colonna nuova: l'applicazione può scriverla
+--
+--   Scrittura sotto RLS        impersonando un Junior, dentro una transazione
+--                              poi annullata: inserisce appuntamento con
+--                              outcome='done' e proposta con outcome='accepted'
+--                              sui propri lead, e li rilegge
+--
+--   Vincolo                    un valore inventato viene rifiutato da
+--                              appointments_outcome_check e da
+--                              proposals_outcome_check; zero righe fuori
+--                              dai valori ammessi
+--
+-- Le query qui sotto rieseguono l'ultimo controllo.
 -- ============================================================================
 
 SELECT table_name, column_name, data_type, is_nullable, column_default
