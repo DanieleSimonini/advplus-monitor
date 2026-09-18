@@ -8,16 +8,21 @@ import {
   CardBody,
   CardHeader,
   EmptyState,
+  Progress,
+  Segmented,
+  SelectField,
   Skeleton,
   toneForRatio,
 } from '../ui'
 import { PageHeader } from '../app/AppShell'
-import { MonthRange, ScopeSelect } from '../app/ScopeSelect'
-import { useAdvisors, type Scope } from '../lib/useAdvisors'
+import { PeriodSelect, ScopeSelect, parsePeriod, periodFromPreset, serializePeriod, type Period } from '../app/ScopeSelect'
+import { useScopeParam } from '../app/ScopeProvider'
+import { useAdvisors } from '../lib/useAdvisors'
 import { chunk } from '../lib/db'
-import { METRICS, emptyMetrics, type MetricDef, type MetricValues } from '../lib/domain'
-import { addMonths, listMonths, monthKeyOf } from '../lib/datetime'
-import { downloadCsv, errorMessage, formatCurrency, formatNumber, formatPercent, monthLabel } from '../lib/format'
+import { METRICS, emptyMetrics, type MetricDef, type MetricKey, type MetricValues } from '../lib/domain'
+import { listMonths } from '../lib/datetime'
+import { displayName, downloadCsv, errorMessage, formatCurrency, formatNumber, formatPercent, monthLabel } from '../lib/format'
+import type { NavigateFn, Route } from '../lib/router'
 
 type MonthRow = {
   key: string
@@ -28,20 +33,27 @@ type MonthRow = {
   actual: MetricValues
 }
 
-export default function ReportPage() {
-  const { resolveScope, scopeOptions, defaultScope } = useAdvisors()
-  const [scope, setScope] = useState<Scope | null>(null)
-  const [period, setPeriod] = useState(() => {
-    const now = monthKeyOf(new Date())
-    return { from: addMonths(now, -5), to: now }
-  })
+type AdvisorRow = { userId: string; name: string; target: MetricValues; actual: MetricValues }
+
+export default function ReportPage({ route, go }: { route: Route; go: NavigateFn }) {
+  const { resolveScope, scopeOptions, byUserId } = useAdvisors()
+  const { scope, setScope } = useScopeParam(route, go)
+
+  const period = useMemo(
+    () => parsePeriod(route.query.periodo, periodFromPreset('dodici')),
+    [route.query.periodo],
+  )
+  const setPeriod = useCallback(
+    (next: Period) => go(route.id, { query: { ...route.query, periodo: serializePeriod(next) } }),
+    [go, route.id, route.query],
+  )
+
   const [rows, setRows] = useState<MonthRow[]>([])
+  const [perAdvisor, setPerAdvisor] = useState<AdvisorRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!scope) setScope(defaultScope)
-  }, [defaultScope, scope])
+  const [rankMetric, setRankMetric] = useState<MetricKey>('contratti')
+  const [rankOrder, setRankOrder] = useState<'indietro' | 'avanti'>('indietro')
 
   const advisorIds = useMemo(() => (scope ? resolveScope(scope) : []), [scope, resolveScope])
   const advisorKey = advisorIds.join(',')
@@ -49,6 +61,7 @@ export default function ReportPage() {
   const load = useCallback(async () => {
     if (!advisorIds.length) {
       setRows([])
+      setPerAdvisor([])
       setLoading(false)
       return
     }
@@ -56,6 +69,7 @@ export default function ReportPage() {
     setError('')
     try {
       const months = listMonths(period.from, period.to)
+      const monthKeys = new Set(months.map(m => m.key))
       const years = Array.from(new Set(months.map(m => m.year)))
 
       const [progress, goals] = await Promise.all([
@@ -63,8 +77,16 @@ export default function ReportPage() {
         loadRows('goals_monthly', advisorIds, years, METRICS.map(m => m.targetColumn)),
       ])
 
-      const targetByMonth = aggregate(goals, METRICS.map(m => [m.key, m.targetColumn] as const))
-      const actualByMonth = aggregate(progress, METRICS.map(m => [m.key, m.key] as const))
+      // Il periodo può iniziare e finire a metà anno: si tengono solo i mesi
+      // effettivamente richiesti, non tutti quelli degli anni coinvolti.
+      const inPeriod = <T extends { year: number; month: number }>(r: T) =>
+        monthKeys.has(`${r.year}-${String(r.month).padStart(2, '0')}`)
+
+      const progressRows = progress.filter(inPeriod)
+      const goalRows = goals.filter(inPeriod)
+
+      const targetByMonth = groupByMonth(goalRows, METRICS.map(m => [m.key, m.targetColumn] as const))
+      const actualByMonth = groupByMonth(progressRows, METRICS.map(m => [m.key, m.key] as const))
 
       setRows(
         months.map(m => ({
@@ -74,6 +96,17 @@ export default function ReportPage() {
           label: monthLabel(m.year, m.month),
           target: targetByMonth.get(m.key) || emptyMetrics(),
           actual: actualByMonth.get(m.key) || emptyMetrics(),
+        })),
+      )
+
+      const targetByAdvisor = groupByAdvisor(goalRows, METRICS.map(m => [m.key, m.targetColumn] as const))
+      const actualByAdvisor = groupByAdvisor(progressRows, METRICS.map(m => [m.key, m.key] as const))
+      setPerAdvisor(
+        advisorIds.map(id => ({
+          userId: id,
+          name: displayName(byUserId.get(id), 'Advisor'),
+          target: targetByAdvisor.get(id) || emptyMetrics(),
+          actual: actualByAdvisor.get(id) || emptyMetrics(),
         })),
       )
     } catch (e) {
@@ -102,6 +135,22 @@ export default function ReportPage() {
   const hasTargets = METRICS.some(m => totals.target[m.key] > 0)
   const hasData = rows.length > 0 && (hasTargets || METRICS.some(m => totals.actual[m.key] > 0))
 
+  const ranking = useMemo(() => {
+    const metric = METRICS.find(m => m.key === rankMetric)!
+    const withRatio = perAdvisor.map(a => ({
+      ...a,
+      ratio: a.target[metric.key] > 0 ? a.actual[metric.key] / a.target[metric.key] : null,
+    }))
+    return withRatio.sort((x, y) => {
+      // Chi non ha obiettivo finisce in fondo comunque: non è "indietro",
+      // semplicemente non è misurabile.
+      if (x.ratio === null && y.ratio === null) return y.actual[metric.key] - x.actual[metric.key]
+      if (x.ratio === null) return 1
+      if (y.ratio === null) return -1
+      return rankOrder === 'indietro' ? x.ratio - y.ratio : y.ratio - x.ratio
+    })
+  }, [perAdvisor, rankMetric, rankOrder])
+
   function exportReport() {
     downloadCsv(
       `guideup_report_${period.from}_${period.to}.csv`,
@@ -117,11 +166,26 @@ export default function ReportPage() {
     )
   }
 
+  function exportPerAdvisor() {
+    downloadCsv(
+      `guideup_report_advisor_${period.from}_${period.to}.csv`,
+      perAdvisor.map(a => {
+        const out: Record<string, unknown> = { Advisor: a.name }
+        for (const m of METRICS) {
+          out[`${m.label} — obiettivo`] = a.target[m.key]
+          out[`${m.label} — risultato`] = a.actual[m.key]
+          out[`${m.label} — %`] = a.target[m.key] ? Math.round((a.actual[m.key] / a.target[m.key]) * 100) : ''
+        }
+        return out
+      }),
+    )
+  }
+
   return (
     <>
       <PageHeader
         title="Report"
-        description="Risultati a confronto con gli obiettivi, mese per mese."
+        description="Risultati a confronto con gli obiettivi, mese per mese e advisor per advisor."
         actions={
           <Button icon="download" onClick={exportReport} disabled={!rows.length}>
             Esporta
@@ -130,8 +194,8 @@ export default function ReportPage() {
       />
 
       <div className="gu-filters">
-        {scope && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
-        <MonthRange from={period.from} to={period.to} onChange={setPeriod} />
+        {scope && scopeOptions.length > 1 && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
+        <PeriodSelect value={period} onChange={setPeriod} />
         <div className="gu-spacer" />
         {advisorIds.length > 1 && <Badge tone="primary">Dati aggregati su {advisorIds.length} advisor</Badge>}
       </div>
@@ -169,6 +233,91 @@ export default function ReportPage() {
         </CardBody>
       </Card>
 
+      {/*
+        Chi del team è indietro.
+        Prima Dashboard e Report sommavano tutto il perimetro in un totale
+        unico: un Team Lead non poteva sapere su chi intervenire, che è l'unica
+        cosa che un Team Lead deve sapere.
+      */}
+      {perAdvisor.length > 1 && (
+        <Card>
+          <CardHeader
+            title="Per advisor"
+            subtitle="Chi è avanti e chi è indietro, sulla metrica scelta"
+            icon="users"
+            actions={
+              <Button size="sm" icon="download" onClick={exportPerAdvisor} disabled={loading}>
+                Esporta
+              </Button>
+            }
+          />
+          <CardBody className="gu-stack">
+            <div className="gu-filters" style={{ padding: 0, border: 0, background: 'none', boxShadow: 'none' }}>
+              <SelectField
+                label="Metrica"
+                value={rankMetric}
+                onChange={e => setRankMetric(e.target.value as MetricKey)}
+                style={{ minWidth: 200 }}
+              >
+                {METRICS.map(m => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </SelectField>
+              <div className="gu-field">
+                <span className="gu-field__label">Ordine</span>
+                <Segmented
+                  value={rankOrder}
+                  onChange={setRankOrder}
+                  ariaLabel="Ordine della classifica"
+                  options={[
+                    { value: 'indietro', label: 'Più indietro' },
+                    { value: 'avanti', label: 'Più avanti' },
+                  ]}
+                />
+              </div>
+            </div>
+
+            {loading ? (
+              <Skeleton height={200} radius={12} />
+            ) : (
+              <div className="gu-table-wrap">
+                <table className="gu-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Advisor</th>
+                      <th scope="col" style={{ textAlign: 'right' }}>Obiettivo</th>
+                      <th scope="col" style={{ textAlign: 'right' }}>Risultato</th>
+                      <th scope="col" style={{ minWidth: 140 }}>Avanzamento</th>
+                      <th scope="col" style={{ textAlign: 'right' }}>%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ranking.map(a => {
+                      const metric = METRICS.find(m => m.key === rankMetric)!
+                      const t = a.target[rankMetric]
+                      const v = a.actual[rankMetric]
+                      return (
+                        <tr key={a.userId}>
+                          <td>{a.name}</td>
+                          <td className="gu-table__num">{t > 0 ? formatValue(t, metric) : '—'}</td>
+                          <td className="gu-table__num">{formatValue(v, metric)}</td>
+                          <td>{a.ratio === null ? <span style={{ color: 'var(--gu-text-subtle)' }}>Nessun obiettivo</span> : <Progress ratio={a.ratio} label={`${a.name}: ${formatPercent(a.ratio * 100, 0)}`} />}</td>
+                          <td className="gu-table__num">
+                            {a.ratio === null ? '—' : <Badge tone={toneForRatio(a.ratio)}>{formatPercent(a.ratio * 100, 0)}</Badge>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      )}
+
       {/* Dettaglio mensile */}
       {!loading && hasData && (
         <div className="gu-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))' }}>
@@ -184,7 +333,7 @@ export default function ReportPage() {
                 }
                 actions={
                   totals.target[m.key] > 0 ? (
-                    <Badge tone={badgeTone(totals.actual[m.key] / totals.target[m.key])}>
+                    <Badge tone={toneForRatio(totals.actual[m.key] / totals.target[m.key])}>
                       {formatPercent((totals.actual[m.key] / totals.target[m.key]) * 100, 0)}
                     </Badge>
                   ) : null
@@ -376,9 +525,7 @@ function formatValue(v: number, metric: MetricDef) {
   return metric.format === 'currency' ? formatCurrency(v) : formatNumber(v)
 }
 
-function badgeTone(ratio: number): 'success' | 'warning' | 'danger' {
-  return toneForRatio(ratio)
-}
+type RawRow = Record<string, number> & { advisor_user_id: string; year: number; month: number }
 
 async function loadRows(
   table: 'v_progress_monthly' | 'goals_monthly',
@@ -392,10 +539,18 @@ async function loadRows(
     blocks.map(async slice => {
       const { data, error } = await supabase.from(table).select(select).in('advisor_user_id', slice).in('year', years)
       if (error) throw error
-      return (data || []) as unknown as Record<string, number>[]
+      return (data || []) as unknown as RawRow[]
     }),
   )
   return results.flat()
+}
+
+type Mapping = readonly (readonly [string, string])[]
+
+function accumulate(acc: MetricValues, row: RawRow, mapping: Mapping) {
+  for (const [metricKey, column] of mapping) {
+    acc[metricKey as keyof MetricValues] += Number(row[column] || 0)
+  }
 }
 
 /**
@@ -403,15 +558,24 @@ async function loadRows(
  * `mapping` associa la chiave della metrica alla colonna da leggere: le viste
  * usano i nomi senza prefisso, la tabella obiettivi quelli con `target_`.
  */
-function aggregate(rows: Record<string, number>[], mapping: readonly (readonly [string, string])[]) {
+function groupByMonth(rows: RawRow[], mapping: Mapping) {
   const out = new Map<string, MetricValues>()
   for (const r of rows) {
     const key = `${r.year}-${String(r.month).padStart(2, '0')}`
     const acc = out.get(key) || emptyMetrics()
-    for (const [metricKey, column] of mapping) {
-      acc[metricKey as keyof MetricValues] += Number(r[column] || 0)
-    }
+    accumulate(acc, r, mapping)
     out.set(key, acc)
+  }
+  return out
+}
+
+/** Somma i mesi del periodo advisor per advisor. */
+function groupByAdvisor(rows: RawRow[], mapping: Mapping) {
+  const out = new Map<string, MetricValues>()
+  for (const r of rows) {
+    const acc = out.get(r.advisor_user_id) || emptyMetrics()
+    accumulate(acc, r, mapping)
+    out.set(r.advisor_user_id, acc)
   }
   return out
 }

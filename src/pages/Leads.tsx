@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import {
+  ActiveFilter,
   Alert,
   Badge,
   Button,
   Card,
   CardBody,
   EmptyState,
+  FilterBar,
   Icon,
+  IconButton,
+  Modal,
   Pagination,
+  ResultCount,
   SearchInput,
   SelectField,
   SkeletonRows,
@@ -16,10 +21,31 @@ import {
   useToast,
 } from '../ui'
 import { PageHeader } from '../app/AppShell'
+import { ScopeSelect } from '../app/ScopeSelect'
+import { useScopeParam } from '../app/ScopeProvider'
 import { useAuth } from '../auth/AuthProvider'
 import { useAdvisors } from '../lib/useAdvisors'
-import { fetchAllPages, inChunks, uniq } from '../lib/db'
-import { LEAD_FIELDS, leadName, type Lead } from '../lib/domain'
+import { useDebounced, useFilters } from '../lib/filters'
+import type { NavigateFn, Route } from '../lib/router'
+import { fetchAllPages } from '../lib/db'
+import { applyTextSearch } from '../lib/search'
+import { daysSinceContact, loadAggregates, type Aggregate, type Aggregates } from '../lib/leadAggregates'
+import {
+  CLIENT_OPTIONS,
+  CONTACT_AGE_OPTIONS,
+  LEAD_FIELDS,
+  OUTCOMES,
+  PROGRESS_BY_VALUE,
+  PROGRESS_STEPS,
+  SORT_OPTIONS,
+  SOURCE_OPTIONS,
+  WORKING_OPTIONS,
+  leadName,
+  progressOf,
+  type Lead,
+  type Progress,
+  type SortKey,
+} from '../lib/domain'
 import { displayName, downloadCsv, errorMessage, formatCurrency, relativeTime } from '../lib/format'
 import {
   LeadDetail,
@@ -32,74 +58,99 @@ import {
 
 const PAGE_SIZE = 25
 
-type Stage = 'all' | 'none' | 'contacted' | 'appointment' | 'proposal' | 'contract'
+/** Il segnaposto della ricerca deve nominare esattamente queste colonne. */
+const SEARCH_COLUMNS = ['last_name', 'first_name', 'company_name', 'email', 'phone', 'city']
 
-const STAGE_OPTIONS: { value: Stage; label: string }[] = [
-  { value: 'all', label: 'Tutti gli stadi' },
-  { value: 'none', label: 'Mai contattati' },
-  { value: 'contacted', label: 'Contattati' },
-  { value: 'appointment', label: 'Con appuntamento' },
-  { value: 'proposal', label: 'Con proposta' },
-  { value: 'contract', label: 'Con contratto' },
-]
-
-const STAGE_TABLE: Record<Exclude<Stage, 'all' | 'none'>, 'activities' | 'appointments' | 'proposals' | 'contracts'> = {
-  contacted: 'activities',
-  appointment: 'appointments',
-  proposal: 'proposals',
-  contract: 'contracts',
+const FILTER_DEFAULTS = {
+  q: '',
+  chi: '',
+  avanzamento: 'tutti',
+  lavorazione: 'attivi',
+  contatto: 'sempre',
+  fonte: 'tutte',
+  cliente: 'tutti',
+  ordina: 'cognome',
+  pagina: '1',
 }
 
-type SortKey = 'last_name' | 'first_name' | 'created_desc' | 'last_activity'
+type FilterKey = keyof typeof FILTER_DEFAULTS
 
-const SORT_OPTIONS: { value: SortKey; label: string; aggregate?: boolean }[] = [
-  { value: 'last_name', label: 'Cognome (A → Z)' },
-  { value: 'first_name', label: 'Nome (A → Z)' },
-  { value: 'created_desc', label: 'Caricati di recente' },
-  { value: 'last_activity', label: 'Contattati di recente', aggregate: true },
-]
+/** Etichette dei chip: dicono cosa sta escludendo un filtro, non il suo codice. */
+const CHIP_LABEL: Partial<Record<FilterKey, string>> = {
+  q: 'Ricerca',
+  avanzamento: 'Avanzamento',
+  lavorazione: 'Lavorazione',
+  contatto: 'Ultimo contatto',
+  fonte: 'Fonte',
+  cliente: 'Cliente',
+}
 
-type Aggregate = {
-  contacts: number
-  appointments: number
-  proposals: number
-  contracts: number
-  production: number
-  lastContact?: string
+function chipValue(key: FilterKey, value: string): string {
+  switch (key) {
+    case 'avanzamento':
+      return PROGRESS_BY_VALUE.get(value as Progress)?.label || value
+    case 'lavorazione':
+      return WORKING_OPTIONS.find(o => o.value === value)?.label || value
+    case 'contatto':
+      return CONTACT_AGE_OPTIONS.find(o => o.value === value)?.label || value
+    case 'fonte':
+      return SOURCE_OPTIONS.find(o => o.value === value)?.label || value
+    case 'cliente':
+      return CLIENT_OPTIONS.find(o => o.value === value)?.label || value
+    default:
+      return value
+  }
 }
 
 export default function LeadsPage({
+  route,
+  go,
   selectedId,
   onSelect,
 }: {
+  route: Route
+  go: NavigateFn
   selectedId: string | null
   onSelect: (id: string | null) => void
 }) {
   const { me, isAdmin, isTeamLead } = useAuth()
-  const { visible: advisors, byUserId } = useAdvisors()
+  const { visible: advisors, byUserId, resolveScope, scopeOptions } = useAdvisors()
+  const { scope, setScope } = useScopeParam(route, go)
   const toast = useToast()
   const confirm = useConfirm()
 
   const canAssign = isAdmin || isTeamLead
 
-  // --- filtri ---
-  const [ownerFilter, setOwnerFilter] = useState('')
-  const [stage, setStage] = useState<Stage>('all')
-  const [onlyWorking, setOnlyWorking] = useState(true)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [sort, setSort] = useState<SortKey>('last_name')
-  const [page, setPage] = useState(1)
+  const filters = useFilters<FilterKey>(route, go, FILTER_DEFAULTS)
+  const f = filters.values
 
-  // --- dati ---
+  // La ricerca è l'unico filtro con uno stato locale: scrive nell'indirizzo
+  // solo quando l'utente smette di digitare, altrimenti ogni tasto premuto
+  // lascerebbe una voce in cronologia.
+  const [searchDraft, setSearchDraft] = useState(f.q)
+  const debouncedSearch = useDebounced(searchDraft, 350)
+  useEffect(() => {
+    if (debouncedSearch !== f.q) filters.patch({ q: debouncedSearch, pagina: '1' })
+  }, [debouncedSearch])
+  useEffect(() => {
+    // Ritorno indietro col browser: il campo deve seguire l'indirizzo.
+    setSearchDraft(current => (current === f.q ? current : f.q))
+  }, [f.q])
+
+  const page = Math.max(1, Number(f.pagina) || 1)
+  const sort = (SORT_OPTIONS.find(o => o.value === f.ordina)?.value || 'cognome') as SortKey
+  const ownerIds = useMemo(() => (scope ? resolveScope(scope) : []), [scope, resolveScope])
+  const ownerKey = ownerIds.join(',')
+
   const [rows, setRows] = useState<Lead[]>([])
   const [total, setTotal] = useState(0)
-  const [aggregates, setAggregates] = useState<Record<string, Aggregate>>({})
+  const [totalUnfiltered, setTotalUnfiltered] = useState(0)
+  const [aggregates, setAggregates] = useState<Aggregates>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [selection, setSelection] = useState<Set<string>>(new Set())
 
-  // --- scheda ---
   const [selected, setSelected] = useState<Lead | null>(null)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<LeadFormState>(() => emptyLeadForm(me?.user_id || null))
@@ -108,99 +159,112 @@ export default function LeadsPage({
 
   const requestId = useRef(0)
 
-  // La ricerca aspetta che l'utente smetta di scrivere: prima ogni tasto
-  // scatenava un ricalcolo completo della lista.
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(t)
-  }, [search])
+  /**
+   * I filtri "avanzamento" e "ultimo contatto", e gli ordinamenti che leggono
+   * l'attività, non si possono risolvere con una sola query: servono i conteggi
+   * di tutti i candidati prima di poter impaginare.
+   */
+  const needsAggregates =
+    f.avanzamento !== 'tutti' ||
+    f.contatto !== 'sempre' ||
+    SORT_OPTIONS.find(o => o.value === sort)?.needsAggregates === true
 
-  useEffect(() => {
-    setPage(1)
-  }, [ownerFilter, stage, onlyWorking, debouncedSearch, sort])
-
-  const needsFullScan = stage !== 'all' || SORT_OPTIONS.find(s => s.value === sort)?.aggregate === true
+  const applyBaseFilters = useCallback(
+    <Q,>(query: Q): Q => {
+      let q = query as unknown as {
+        in: (c: string, v: string[]) => typeof q
+        eq: (c: string, v: unknown) => typeof q
+      }
+      if (ownerIds.length) q = q.in('owner_id', ownerIds)
+      if (f.lavorazione === 'attivi') q = q.eq('is_working', true)
+      else if (f.lavorazione === 'sospesi') q = q.eq('is_working', false)
+      if (f.fonte !== 'tutte') q = q.eq('source', f.fonte)
+      if (f.cliente !== 'tutti') q = q.eq('is_agency_client', f.cliente === 'si')
+      let out = q as unknown as Q
+      if (f.q) out = applyTextSearch(out, f.q, SEARCH_COLUMNS)
+      return out
+    },
+    [ownerKey, f.lavorazione, f.fonte, f.cliente, f.q],
+  )
 
   const load = useCallback(async () => {
     const rid = ++requestId.current
+    if (!ownerIds.length) {
+      setRows([])
+      setTotal(0)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError('')
     try {
       let pageRows: Lead[] = []
       let count = 0
+      let pageAggregates: Aggregates = {}
 
-      if (!needsFullScan) {
-        const base = () => {
-          let q = supabase.from('leads').select(LEAD_FIELDS, { count: 'exact' })
-          if (ownerFilter) q = q.eq('owner_id', ownerFilter)
-          if (onlyWorking) q = q.eq('is_working', true)
-          if (debouncedSearch) q = q.or(searchFilter(debouncedSearch))
-          return applySort(q, sort)
-        }
+      if (!needsAggregates) {
         const from = (page - 1) * PAGE_SIZE
-        const { data, count: c, error } = await base().range(from, from + PAGE_SIZE - 1)
+        const { data, count: c, error } = await applySort(
+          applyBaseFilters(supabase.from('leads').select(LEAD_FIELDS, { count: 'exact' })),
+          sort,
+        ).range(from, from + PAGE_SIZE - 1)
         if (error) throw error
         pageRows = (data || []) as Lead[]
         count = c || 0
+        pageAggregates = await loadAggregates(pageRows.map(r => r.id))
       } else {
-        // Filtro per stadio o ordinamento per ultima attività: serve l'insieme
-        // completo degli id prima di poter impaginare. Si scaricano solo gli id,
-        // non le righe intere.
-        const candidates = await fetchAllPages<{ id: string }>(() => {
-          let q = supabase.from('leads').select('id')
-          if (ownerFilter) q = q.eq('owner_id', ownerFilter)
-          if (onlyWorking) q = q.eq('is_working', true)
-          if (debouncedSearch) q = q.or(searchFilter(debouncedSearch))
-          return q as never
-        })
+        // Si scaricano i soli id, ma ORDINATI lato server: prima venivano letti
+        // senza `order` e poi ordinati solo i 25 della pagina, quindi con un
+        // filtro attivo la pagina 2 poteva contenere cognomi che vengono prima
+        // di quelli della pagina 1. L'ordinamento sembrava funzionare perché
+        // ogni schermata era ordinata al proprio interno.
+        const candidates = await fetchAllPages<{ id: string }>(() =>
+          applySort(applyBaseFilters(supabase.from('leads').select('id')), sort) as never,
+        )
         const candidateIds = candidates.map(c => c.id)
+        const aggs = await loadAggregates(candidateIds)
 
-        let keep = candidateIds
-        let lastActivity = new Map<string, string>()
+        const now = Date.now()
+        const minDays = CONTACT_AGE_OPTIONS.find(o => o.value === f.contatto)?.days || 0
 
-        if (stage === 'none' || stage === 'contacted' || sort === 'last_activity') {
-          const acts = await inChunks(candidateIds, slice =>
-            fetchAllPages<{ lead_id: string; ts: string }>(
-              () => supabase.from('activities').select('lead_id,ts').in('lead_id', slice) as never,
-            ),
+        let keep = candidateIds.filter(id => {
+          const a = aggs[id]
+          if (f.avanzamento !== 'tutti' && progressOf(a) !== f.avanzamento) return false
+          if (minDays > 0) {
+            const days = daysSinceContact(a, now)
+            // Mai contattato = fermo da sempre: deve comparire fra i trascurati.
+            if (days !== null && days < minDays) return false
+          }
+          return true
+        })
+
+        if (sort === 'contatto' || sort === 'trascurati') {
+          const key = (id: string) => aggs[id]?.lastContact || ''
+          keep = [...keep].sort((a, b) =>
+            sort === 'contatto'
+              ? key(b).localeCompare(key(a))
+              : // "Da ricontattare": i più fermi in cima, e chi non è mai stato
+                // contattato è il più fermo di tutti.
+                key(a).localeCompare(key(b)),
           )
-          lastActivity = latestByLead(acts)
-          if (stage === 'none') keep = candidateIds.filter(id => !lastActivity.has(id))
-          if (stage === 'contacted') keep = candidateIds.filter(id => lastActivity.has(id))
-        }
-
-        if (stage === 'appointment' || stage === 'proposal' || stage === 'contract') {
-          const table = STAGE_TABLE[stage]
-          const child = await inChunks(candidateIds, slice =>
-            fetchAllPages<{ lead_id: string }>(
-              () => supabase.from(table).select('lead_id').in('lead_id', slice) as never,
-            ),
-          )
-          const withStage = new Set(uniq(child.map(c => c.lead_id)))
-          keep = candidateIds.filter(id => withStage.has(id))
         }
 
         count = keep.length
-
-        if (sort === 'last_activity') {
-          keep = [...keep].sort((a, b) => (lastActivity.get(b) || '').localeCompare(lastActivity.get(a) || ''))
-        }
-
         const from = (page - 1) * PAGE_SIZE
         const pageIds = keep.slice(from, from + PAGE_SIZE)
         if (pageIds.length) {
           const { data, error } = await supabase.from('leads').select(LEAD_FIELDS).in('id', pageIds)
           if (error) throw error
           const byId = new Map((data || []).map(r => [(r as Lead).id, r as Lead]))
-          const ordered = pageIds.map(id => byId.get(id)).filter((x): x is Lead => !!x)
-          pageRows = sort === 'last_activity' ? ordered : sortClient(ordered, sort)
+          pageRows = pageIds.map(id => byId.get(id)).filter((x): x is Lead => !!x)
         }
+        pageAggregates = aggs
       }
 
       if (rid !== requestId.current) return // risposta sorpassata da una più recente
       setRows(pageRows)
       setTotal(count)
-      setAggregates(await loadAggregates(pageRows.map(r => r.id)))
+      setAggregates(pageAggregates)
     } catch (e) {
       if (rid !== requestId.current) return
       setError(errorMessage(e, 'Impossibile caricare i lead'))
@@ -209,13 +273,39 @@ export default function LeadsPage({
     } finally {
       if (rid === requestId.current) setLoading(false)
     }
-  }, [ownerFilter, stage, onlyWorking, debouncedSearch, sort, page, needsFullScan])
+  }, [applyBaseFilters, needsAggregates, f.avanzamento, f.contatto, sort, page, ownerKey])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  // Un lead richiamato dall'URL (#/leads/<id>) viene caricato anche se non è
+  // Totale senza filtri, per poter dire "38 lead su 457": senza questo numero
+  // non si distingue un portafoglio vuoto da un filtro troppo stretto.
+  useEffect(() => {
+    if (!ownerIds.length) {
+      setTotalUnfiltered(0)
+      return
+    }
+    let alive = true
+    void supabase
+      .from('leads')
+      .select('id', { count: 'exact', head: true })
+      .in('owner_id', ownerIds)
+      .then(({ count }) => {
+        if (alive) setTotalUnfiltered(count || 0)
+      })
+    return () => {
+      alive = false
+    }
+  }, [ownerKey])
+
+  // La selezione multipla non sopravvive a un cambio di filtro: conserverebbe
+  // lead che non sono più sotto gli occhi di chi poi agisce.
+  useEffect(() => {
+    setSelection(new Set())
+  }, [ownerKey, f.avanzamento, f.lavorazione, f.contatto, f.fonte, f.cliente, f.q, page])
+
+  // Un lead richiamato dall'URL (#/lead/<id>) viene caricato anche se non è
   // nella pagina corrente della lista.
   useEffect(() => {
     if (!selectedId) {
@@ -316,17 +406,31 @@ export default function LeadsPage({
     }
   }
 
-  async function exportCsv() {
+  /** Azione rapida: registra un contatto senza aprire la scheda. */
+  async function quickContact(lead: Lead, outcome: string) {
+    try {
+      const { error } = await supabase.from('activities').insert({
+        lead_id: lead.id,
+        ts: new Date().toISOString(),
+        channel: 'phone',
+        outcome,
+        notes: null,
+      })
+      if (error) throw error
+      toast.success('Contatto registrato', `${leadName(lead)} — ${labelOfOutcome(outcome)}`)
+      await load()
+    } catch (e) {
+      toast.error('Registrazione non riuscita', errorMessage(e))
+    }
+  }
+
+  async function exportCsv(onlySelection = false) {
     setExporting(true)
     try {
-      const all = await fetchAllPages<Lead>(() => {
-        let q = supabase.from('leads').select(LEAD_FIELDS)
-        if (ownerFilter) q = q.eq('owner_id', ownerFilter)
-        if (onlyWorking) q = q.eq('is_working', true)
-        if (debouncedSearch) q = q.or(searchFilter(debouncedSearch))
-        return q as never
-      })
-      const aggs = await loadAggregates(all.map(l => l.id))
+      const all = onlySelection
+        ? rows.filter(r => selection.has(r.id))
+        : await fetchAllPages<Lead>(() => applyBaseFilters(supabase.from('leads').select(LEAD_FIELDS)) as never)
+      const aggs = onlySelection ? aggregates : await loadAggregates(all.map(l => l.id))
       downloadCsv(
         `guideup_lead_${new Date().toISOString().slice(0, 10)}.csv`,
         all.map(l => {
@@ -343,10 +447,12 @@ export default function LeadsPage({
             'Già cliente': l.is_agency_client ? 'Sì' : 'No',
             Fonte: l.source || '',
             'In lavorazione': (l.is_working ?? true) ? 'Sì' : 'No',
+            Avanzamento: PROGRESS_BY_VALUE.get(progressOf(a))?.label || '',
             'Caricato il': l.created_at || '',
             Contatti: a?.contacts || 0,
             'Ultimo contatto': a?.lastContact || '',
             Appuntamenti: a?.appointments || 0,
+            'Prossimo appuntamento': a?.nextAppointment || '',
             Proposte: a?.proposals || 0,
             Contratti: a?.contracts || 0,
             'Produzione €': a?.production || 0,
@@ -361,8 +467,8 @@ export default function LeadsPage({
     }
   }
 
-  const activeFilters = [ownerFilter && 'assegnatario', stage !== 'all' && 'stadio', !onlyWorking && 'sospesi', debouncedSearch && 'ricerca'].filter(Boolean)
   const showDetail = !!selected || creating
+  const chips = filters.active.filter(a => CHIP_LABEL[a.key])
 
   return (
     <>
@@ -371,7 +477,7 @@ export default function LeadsPage({
         description="Anagrafiche, attività e stato di avanzamento del portafoglio."
         actions={
           <>
-            <Button icon="download" onClick={exportCsv} loading={exporting}>
+            <Button icon="download" onClick={() => void exportCsv()} loading={exporting}>
               Esporta
             </Button>
             <Button variant="primary" icon="plus" onClick={startCreate}>
@@ -381,113 +487,245 @@ export default function LeadsPage({
         }
       />
 
-      <div className="gu-filters">
+      <FilterBar
+        activeCount={chips.length}
+        onReset={() => {
+          setSearchDraft('')
+          filters.reset()
+        }}
+        chips={
+          chips.length > 0 ? (
+            <>
+              {chips.map(a => (
+                <ActiveFilter
+                  key={a.key}
+                  label={CHIP_LABEL[a.key] || a.key}
+                  value={chipValue(a.key, a.value)}
+                  onRemove={() => {
+                    if (a.key === 'q') setSearchDraft('')
+                    filters.patch({ [a.key]: FILTER_DEFAULTS[a.key], pagina: '1' } as never)
+                  }}
+                />
+              ))}
+            </>
+          ) : null
+        }
+      >
         <div className="gu-filters__group gu-filters__group--grow" style={{ maxWidth: 320 }}>
           <SearchInput
             label="Cerca"
-            value={search}
-            onValueChange={setSearch}
-            placeholder="Cognome, nome, azienda, email…"
+            value={searchDraft}
+            onValueChange={setSearchDraft}
+            placeholder="Cognome, nome, azienda, email, telefono, città"
           />
         </div>
 
-        {canAssign && (
-          <SelectField
-            label="Assegnatario"
-            value={ownerFilter}
-            onChange={e => setOwnerFilter(e.target.value)}
-            style={{ minWidth: 170 }}
-          >
-            <option value="">Tutti</option>
-            {advisors
-              .filter(a => a.user_id)
-              .map(a => (
-                <option key={a.user_id!} value={a.user_id!}>
-                  {displayName(a)}
-                </option>
-              ))}
-          </SelectField>
+        {scope && scopeOptions.length > 1 && (
+          <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />
         )}
 
-        <SelectField label="Stadio" value={stage} onChange={e => setStage(e.target.value as Stage)} style={{ minWidth: 165 }}>
-          {STAGE_OPTIONS.map(o => (
+        <SelectField
+          label="Avanzamento"
+          value={f.avanzamento}
+          onChange={e => filters.patch({ avanzamento: e.target.value, pagina: '1' })}
+          style={{ minWidth: 215 }}
+        >
+          <option value="tutti">Tutti</option>
+          {PROGRESS_STEPS.map(s => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </SelectField>
+
+        <SelectField
+          label="Ultimo contatto"
+          value={f.contatto}
+          onChange={e => filters.patch({ contatto: e.target.value, pagina: '1' })}
+          style={{ minWidth: 175 }}
+        >
+          {CONTACT_AGE_OPTIONS.map(o => (
             <option key={o.value} value={o.value}>
               {o.label}
             </option>
           ))}
         </SelectField>
 
-        <SelectField label="Stato" value={onlyWorking ? 'working' : 'all'} onChange={e => setOnlyWorking(e.target.value === 'working')} style={{ minWidth: 155 }}>
-          <option value="working">Solo in lavorazione</option>
-          <option value="all">Inclusi i sospesi</option>
-        </SelectField>
-
-        <SelectField label="Ordina per" value={sort} onChange={e => setSort(e.target.value as SortKey)} style={{ minWidth: 185 }}>
-          {SORT_OPTIONS.map(o => (
+        <SelectField
+          label="Lavorazione"
+          value={f.lavorazione}
+          onChange={e => filters.patch({ lavorazione: e.target.value, pagina: '1' })}
+          style={{ minWidth: 155 }}
+        >
+          {WORKING_OPTIONS.map(o => (
             <option key={o.value} value={o.value}>
               {o.label}
             </option>
           ))}
         </SelectField>
 
-        {activeFilters.length > 0 && (
-          <Button
-            variant="ghost"
-            icon="x"
-            onClick={() => {
-              setOwnerFilter('')
-              setStage('all')
-              setOnlyWorking(true)
-              setSearch('')
-              setSort('last_name')
-            }}
-          >
-            Azzera filtri
-          </Button>
-        )}
-      </div>
+        <SelectField
+          label="Fonte"
+          value={f.fonte}
+          onChange={e => filters.patch({ fonte: e.target.value, pagina: '1' })}
+          style={{ minWidth: 135 }}
+        >
+          {SOURCE_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </SelectField>
+
+        <SelectField
+          label="Cliente"
+          value={f.cliente}
+          onChange={e => filters.patch({ cliente: e.target.value, pagina: '1' })}
+          style={{ minWidth: 175 }}
+        >
+          {CLIENT_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </SelectField>
+      </FilterBar>
 
       {error && <Alert tone="danger" title="Errore">{error}</Alert>}
 
       <div className="gu-leads">
         <div className={`gu-leads__list${showDetail ? ' gu-leads__list--hidden-mobile' : ''}`}>
+          {/* L'ordinamento non è un filtro: sta accanto ai risultati, non nella barra. */}
+          <div className="gu-listbar">
+            <ResultCount shown={total} total={totalUnfiltered} loading={loading} />
+            <div className="gu-spacer" />
+            <div className="gu-listbar__sort">
+              <label htmlFor="gu-lead-sort">Ordina per</label>
+              <select
+                id="gu-lead-sort"
+                className="gu-select"
+                value={sort}
+                onChange={e => filters.patch({ ordina: e.target.value, pagina: '1' })}
+              >
+                {SORT_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {selection.size > 0 && (
+            <BulkBar
+              count={selection.size}
+              canAssign={canAssign}
+              exporting={exporting}
+              onClear={() => setSelection(new Set())}
+              onExport={() => void exportCsv(true)}
+              onReassign={async to => {
+                const ids = [...selection]
+                const { error } = await supabase.from('leads').update({ owner_id: to }).in('id', ids)
+                if (error) throw error
+                toast.success(
+                  `${ids.length} lead riassegnati`,
+                  displayName(byUserId.get(to)),
+                )
+                setSelection(new Set())
+                await load()
+              }}
+              onToggleWorking={async working => {
+                const ids = [...selection]
+                const { error } = await supabase.from('leads').update({ is_working: working }).in('id', ids)
+                if (error) throw error
+                toast.success(working ? `${ids.length} lead ripresi` : `${ids.length} lead sospesi`)
+                setSelection(new Set())
+                await load()
+              }}
+              advisors={advisors}
+            />
+          )}
+
           <Card className="gu-leads__card">
             {loading ? (
               <SkeletonRows rows={6} height={64} />
             ) : rows.length === 0 ? (
               <EmptyState
                 icon="leads"
-                title={activeFilters.length ? 'Nessun lead con questi filtri' : 'Nessun lead in portafoglio'}
+                title={chips.length ? 'Nessun lead con questi filtri' : 'Nessun lead in portafoglio'}
                 text={
-                  activeFilters.length
-                    ? 'Prova ad allargare la ricerca o ad azzerare i filtri.'
+                  chips.length
+                    ? `Ci sono ${totalUnfiltered} lead in totale: prova ad allargare la ricerca o ad azzerare i filtri.`
                     : 'Crea il primo lead oppure importa un elenco da file CSV.'
                 }
                 action={
-                  <Button variant="primary" icon="plus" onClick={startCreate}>
-                    Nuovo lead
-                  </Button>
+                  chips.length ? (
+                    <Button icon="x" onClick={() => { setSearchDraft(''); filters.reset() }}>
+                      Azzera i filtri
+                    </Button>
+                  ) : (
+                    <Button variant="primary" icon="plus" onClick={startCreate}>
+                      Nuovo lead
+                    </Button>
+                  )
                 }
               />
             ) : (
-              <ul style={{ listStyle: 'none', margin: 0, padding: 'var(--gu-space-2)', display: 'grid', gap: 4 }}>
-                {rows.map(lead => (
-                  <LeadRow
-                    key={lead.id}
-                    lead={lead}
-                    aggregate={aggregates[lead.id]}
-                    owner={displayName(byUserId.get(lead.owner_id || ''), '')}
-                    selected={selected?.id === lead.id}
-                    onClick={() => {
-                      setCreating(false)
-                      setFormErrors({})
-                      onSelect(lead.id)
-                    }}
-                  />
-                ))}
-              </ul>
+              <>
+                <div className="gu-row" style={{ padding: 'var(--gu-space-2) var(--gu-space-3) 0', gap: 8 }}>
+                  <label className="gu-check" style={{ fontSize: 'var(--gu-text-xs)' }}>
+                    <input
+                      type="checkbox"
+                      checked={rows.every(r => selection.has(r.id))}
+                      ref={el => {
+                        if (el) el.indeterminate = selection.size > 0 && !rows.every(r => selection.has(r.id))
+                      }}
+                      onChange={e =>
+                        setSelection(prev => {
+                          const next = new Set(prev)
+                          for (const r of rows) (e.target.checked ? next.add(r.id) : next.delete(r.id))
+                          return next
+                        })
+                      }
+                    />
+                    <span>Seleziona la pagina</span>
+                  </label>
+                </div>
+                <ul style={{ listStyle: 'none', margin: 0, padding: 'var(--gu-space-2)', display: 'grid', gap: 2 }}>
+                  {rows.map(lead => (
+                    <LeadRow
+                      key={lead.id}
+                      lead={lead}
+                      aggregate={aggregates[lead.id]}
+                      owner={displayName(byUserId.get(lead.owner_id || ''), '')}
+                      selected={selected?.id === lead.id}
+                      checked={selection.has(lead.id)}
+                      onCheck={checked =>
+                        setSelection(prev => {
+                          const next = new Set(prev)
+                          if (checked) next.add(lead.id)
+                          else next.delete(lead.id)
+                          return next
+                        })
+                      }
+                      onOpen={() => {
+                        setCreating(false)
+                        setFormErrors({})
+                        onSelect(lead.id)
+                      }}
+                      onQuickContact={outcome => void quickContact(lead, outcome)}
+                    />
+                  ))}
+                </ul>
+              </>
             )}
-            <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} loading={loading} />
+            <Pagination
+              page={page}
+              pageSize={PAGE_SIZE}
+              total={total}
+              onPageChange={p => filters.set('pagina', String(p))}
+              loading={loading}
+            />
           </Card>
         </div>
 
@@ -509,7 +747,7 @@ export default function LeadsPage({
               <LeadDetail
                 lead={selected}
                 form={form}
-                onFormChange={patch => setForm(f => ({ ...f, ...patch }))}
+                onFormChange={patch => setForm(f2 => ({ ...f2, ...patch }))}
                 errors={formErrors}
                 onSave={saveLead}
                 onCancel={() => {
@@ -549,49 +787,58 @@ function LeadRow({
   aggregate,
   owner,
   selected,
-  onClick,
+  checked,
+  onCheck,
+  onOpen,
+  onQuickContact,
 }: {
   lead: Lead
   aggregate?: Aggregate
   owner: string
   selected: boolean
-  onClick: () => void
+  checked: boolean
+  onCheck: (checked: boolean) => void
+  onOpen: () => void
+  onQuickContact: (outcome: string) => void
 }) {
-  const stale = !aggregate?.contacts
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const step = PROGRESS_BY_VALUE.get(progressOf(aggregate))
+  const days = daysSinceContact(aggregate)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenuOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+
   return (
-    <li>
-      <button
-        type="button"
-        onClick={onClick}
-        aria-current={selected ? 'true' : undefined}
-        style={{
-          display: 'grid',
-          gap: 4,
-          width: '100%',
-          textAlign: 'left',
-          padding: 'var(--gu-space-3)',
-          border: '1px solid',
-          borderColor: selected ? 'var(--gu-primary)' : 'transparent',
-          background: selected ? 'var(--gu-primary-soft)' : 'transparent',
-          borderRadius: 'var(--gu-radius-md)',
-          transition: 'background-color var(--gu-duration) var(--gu-ease)',
-        }}
-        onMouseEnter={e => {
-          if (!selected) e.currentTarget.style.background = 'var(--gu-n-50)'
-        }}
-        onMouseLeave={e => {
-          if (!selected) e.currentTarget.style.background = 'transparent'
-        }}
-      >
-        <div className="gu-row" style={{ justifyContent: 'space-between', gap: 8 }}>
+    <li className="gu-lead-row" data-selected={selected}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onCheck(e.target.checked)}
+        aria-label={`Seleziona ${leadName(lead)}`}
+      />
+
+      <button type="button" className="gu-lead-row__open" onClick={onOpen} aria-current={selected ? 'true' : undefined}>
+        <span className="gu-row" style={{ justifyContent: 'flex-start', gap: 8 }}>
           <span style={{ fontWeight: 600 }} className="gu-truncate">
             {leadName(lead)}
           </span>
+          {step && <Badge tone={step.tone}>{step.short}</Badge>}
           {lead.is_working === false && <Badge tone="neutral">Sospeso</Badge>}
-          {lead.is_agency_client && <Badge tone="accent">Cliente</Badge>}
-        </div>
+        </span>
 
-        <div className="gu-row-tight" style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', gap: 6 }}>
+        <span className="gu-row-tight" style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', gap: 6 }}>
           <Icon name={lead.email ? 'mail' : 'phone'} size={12} />
           <span className="gu-truncate">{lead.email || lead.phone || 'Nessun recapito'}</span>
           {owner && (
@@ -600,24 +847,163 @@ function LeadRow({
               <span className="gu-truncate">{owner}</span>
             </>
           )}
-        </div>
+        </span>
 
-        <div className="gu-row-tight" style={{ gap: 6, fontSize: 'var(--gu-text-xs)' }}>
-          {stale ? (
-            <Badge tone="warning" dot>
-              Mai contattato
-            </Badge>
+        <span className="gu-row-tight" style={{ gap: 6, fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>
+          {days === null ? (
+            <span>Mai contattato</span>
           ) : (
-            <span style={{ color: 'var(--gu-text-subtle)' }}>
-              Ultimo contatto {relativeTime(aggregate?.lastContact)}
-            </span>
+            <span>Ultimo contatto {relativeTime(aggregate?.lastContact)}</span>
           )}
-          {!!aggregate?.appointments && <Badge tone="primary">{aggregate.appointments} app.</Badge>}
-          {!!aggregate?.proposals && <Badge tone="neutral">{aggregate.proposals} prop.</Badge>}
+          {aggregate?.nextAppointment && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>Appuntamento {relativeTime(aggregate.nextAppointment)}</span>
+            </>
+          )}
           {!!aggregate?.contracts && <Badge tone="success">{formatCurrency(aggregate.production)}</Badge>}
-        </div>
+        </span>
       </button>
+
+      <div className="gu-lead-row__actions" ref={menuRef} style={{ position: 'relative' }}>
+        <IconButton
+          icon="phone"
+          label={`Registra un contatto con ${leadName(lead)}`}
+          size="sm"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(v => !v)}
+        />
+        {menuOpen && (
+          <div className="gu-menu" role="menu" style={{ minWidth: 190 }}>
+            <div className="gu-menu__header" style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)' }}>
+              Telefonata di adesso
+            </div>
+            {OUTCOMES.map(o => (
+              <button
+                key={o.value}
+                type="button"
+                role="menuitem"
+                className="gu-menu__item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onQuickContact(o.value)
+                }}
+              >
+                <Icon name={o.tone === 'success' ? 'checkCircle' : o.tone === 'danger' ? 'xCircle' : 'alert'} size={15} />
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </li>
+  )
+}
+
+/* ========================================================================== */
+/* Azioni su più lead                                                          */
+/* ========================================================================== */
+
+function BulkBar({
+  count,
+  canAssign,
+  exporting,
+  advisors,
+  onClear,
+  onExport,
+  onReassign,
+  onToggleWorking,
+}: {
+  count: number
+  canAssign: boolean
+  exporting: boolean
+  advisors: { user_id: string | null; full_name: string | null; email: string; role: string }[]
+  onClear: () => void
+  onExport: () => void
+  onReassign: (to: string) => Promise<void>
+  onToggleWorking: (working: boolean) => Promise<void>
+}) {
+  const toast = useToast()
+  const [assignOpen, setAssignOpen] = useState(false)
+  const [target, setTarget] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true)
+    try {
+      await fn()
+    } catch (e) {
+      toast.error('Operazione non riuscita', errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="gu-bulkbar">
+      <strong>{count} selezionati</strong>
+      <div className="gu-spacer" />
+      {canAssign && (
+        <Button size="sm" icon="users" onClick={() => setAssignOpen(true)} disabled={busy}>
+          Riassegna
+        </Button>
+      )}
+      <Button size="sm" icon="pause" onClick={() => void run(() => onToggleWorking(false))} disabled={busy}>
+        Sospendi
+      </Button>
+      <Button size="sm" icon="play" onClick={() => void run(() => onToggleWorking(true))} disabled={busy}>
+        Riprendi
+      </Button>
+      <Button size="sm" icon="download" onClick={onExport} loading={exporting}>
+        Esporta
+      </Button>
+      <Button size="sm" variant="ghost" icon="x" onClick={onClear}>
+        Annulla
+      </Button>
+
+      <Modal
+        open={assignOpen}
+        onClose={() => setAssignOpen(false)}
+        title={`Riassegna ${count} lead`}
+        description="I lead passeranno all'advisor scelto, che li vedrà nella propria lista."
+        width={420}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setAssignOpen(false)}>
+              Annulla
+            </Button>
+            <Button
+              variant="primary"
+              icon="check"
+              disabled={!target}
+              loading={busy}
+              onClick={() =>
+                void run(async () => {
+                  await onReassign(target)
+                  setAssignOpen(false)
+                  setTarget('')
+                })
+              }
+            >
+              Riassegna
+            </Button>
+          </>
+        }
+      >
+        <SelectField label="Nuovo assegnatario" value={target} onChange={e => setTarget(e.target.value)}>
+          <option value="">— Seleziona un advisor —</option>
+          {advisors
+            .filter(a => a.user_id)
+            .map(a => (
+              <option key={a.user_id!} value={a.user_id!}>
+                {displayName(a)}
+                {a.role !== 'Junior' ? ` (${a.role})` : ''}
+              </option>
+            ))}
+        </SelectField>
+      </Modal>
+    </div>
   )
 }
 
@@ -625,11 +1011,8 @@ function LeadRow({
 /* Query di supporto                                                           */
 /* ========================================================================== */
 
-/** Ricerca su più colonne. Le virgole vanno rimosse: spezzerebbero il filtro or(). */
-function searchFilter(term: string) {
-  const safe = term.replace(/[,()]/g, ' ').trim()
-  const like = `%${safe}%`
-  return ['last_name', 'first_name', 'company_name', 'email', 'phone'].map(c => `${c}.ilike.${like}`).join(',')
+function labelOfOutcome(value: string) {
+  return OUTCOMES.find(o => o.value === value)?.label || value
 }
 
 function applySort<T>(q: T, sort: SortKey): T {
@@ -637,61 +1020,14 @@ function applySort<T>(q: T, sort: SortKey): T {
     order: (col: string, opts: { ascending: boolean; nullsFirst?: boolean }) => T
   }
   switch (sort) {
-    case 'first_name':
-      return query.order('first_name', { ascending: true, nullsFirst: false })
-    case 'created_desc':
+    case 'recenti':
       return query.order('created_at', { ascending: false })
-    case 'last_name':
+    // Gli ordinamenti che dipendono dall'attività vengono risolti dopo, sui
+    // conteggi; qui si dà comunque un ordine stabile per la paginazione.
+    case 'contatto':
+    case 'trascurati':
+    case 'cognome':
     default:
       return query.order('last_name', { ascending: true, nullsFirst: false })
   }
-}
-
-function sortClient(rows: Lead[], sort: SortKey) {
-  const collator = new Intl.Collator('it')
-  return [...rows].sort((a, b) => {
-    if (sort === 'created_desc') return (b.created_at || '').localeCompare(a.created_at || '')
-    if (sort === 'first_name') return collator.compare(a.first_name || '', b.first_name || '')
-    return collator.compare(a.last_name || '', b.last_name || '')
-  })
-}
-
-function latestByLead(rows: { lead_id: string; ts: string }[]) {
-  const map = new Map<string, string>()
-  for (const r of rows) {
-    const cur = map.get(r.lead_id)
-    if (!cur || r.ts > cur) map.set(r.lead_id, r.ts)
-  }
-  return map
-}
-
-/** Aggregati dei soli lead mostrati: poche decine di id, una manciata di query. */
-async function loadAggregates(leadIds: string[]): Promise<Record<string, Aggregate>> {
-  if (!leadIds.length) return {}
-  const [acts, apps, props, ctrs] = await Promise.all([
-    inChunks(leadIds, s => fetchAllPages<any>(() => supabase.from('activities').select('lead_id,ts').in('lead_id', s) as never)),
-    inChunks(leadIds, s => fetchAllPages<any>(() => supabase.from('appointments').select('lead_id').in('lead_id', s) as never)),
-    inChunks(leadIds, s => fetchAllPages<any>(() => supabase.from('proposals').select('lead_id').in('lead_id', s) as never)),
-    inChunks(leadIds, s =>
-      fetchAllPages<any>(() => supabase.from('contracts').select('lead_id,amount,premium_annual').in('lead_id', s) as never),
-    ),
-  ])
-
-  const out: Record<string, Aggregate> = {}
-  const ensure = (id: string) =>
-    (out[id] ||= { contacts: 0, appointments: 0, proposals: 0, contracts: 0, production: 0 })
-
-  for (const r of acts) {
-    const a = ensure(r.lead_id)
-    a.contacts++
-    if (!a.lastContact || r.ts > a.lastContact) a.lastContact = r.ts
-  }
-  for (const r of apps) ensure(r.lead_id).appointments++
-  for (const r of props) ensure(r.lead_id).proposals++
-  for (const r of ctrs) {
-    const a = ensure(r.lead_id)
-    a.contracts++
-    a.production += Number(r.amount ?? r.premium_annual ?? 0)
-  }
-  return out
 }

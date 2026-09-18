@@ -13,15 +13,17 @@ import {
   Stat,
 } from '../ui'
 import { PageHeader } from '../app/AppShell'
-import { MonthRange, ScopeSelect } from '../app/ScopeSelect'
-import { useAdvisors, type Scope } from '../lib/useAdvisors'
+import { PeriodSelect, ScopeSelect, parsePeriod, periodFromPreset, serializePeriod, type Period } from '../app/ScopeSelect'
+import { useScopeParam } from '../app/ScopeProvider'
+import { useAdvisors } from '../lib/useAdvisors'
 import { chunk, fetchAllPages, inChunks, uniq } from '../lib/db'
-import { addMonths, monthKeyOf, monthRangeDate, monthRangeIso } from '../lib/datetime'
+import { loadAggregates } from '../lib/leadAggregates'
+import { monthRangeDate, monthRangeIso } from '../lib/datetime'
 import { errorMessage, formatCurrency, formatNumber, formatPercent } from '../lib/format'
-import { CONTRACT_TYPES, FUNNEL_STAGES, METRICS } from '../lib/domain'
+import { CONTRACT_TYPES, METRICS } from '../lib/domain'
+import { hrefFor, type NavigateFn, type Route } from '../lib/router'
 
 type Totals = {
-  leads: number
   contacts: number
   appointments: number
   proposals: number
@@ -31,7 +33,6 @@ type Totals = {
 }
 
 const EMPTY: Totals = {
-  leads: 0,
   contacts: 0,
   appointments: 0,
   proposals: 0,
@@ -40,20 +41,28 @@ const EMPTY: Totals = {
   notContacted: 0,
 }
 
-export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void }) {
-  const { resolveScope, scopeOptions, defaultScope, loading: advisorsLoading } = useAdvisors()
-  const [scope, setScope] = useState<Scope | null>(null)
-  const [period, setPeriod] = useState(() => {
-    const now = monthKeyOf(new Date())
-    return { from: addMonths(now, -5), to: now }
-  })
+/** Quanti lead della coorte hanno raggiunto ciascuno stadio. */
+type Cohort = { size: number; contacted: number; appointment: number; proposal: number; client: number }
+
+const EMPTY_COHORT: Cohort = { size: 0, contacted: 0, appointment: 0, proposal: 0, client: 0 }
+
+export default function DashboardPage({ route, go }: { route: Route; go: NavigateFn }) {
+  const { resolveScope, scopeOptions, loading: advisorsLoading } = useAdvisors()
+  const { scope, setScope } = useScopeParam(route, go)
+
+  const period = useMemo(
+    () => parsePeriod(route.query.periodo, periodFromPreset('dodici')),
+    [route.query.periodo],
+  )
+  const setPeriod = useCallback(
+    (next: Period) => go(route.id, { query: { ...route.query, periodo: serializePeriod(next) } }),
+    [go, route.id, route.query],
+  )
+
   const [totals, setTotals] = useState<Totals>(EMPTY)
+  const [cohort, setCohort] = useState<Cohort>(EMPTY_COHORT)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!scope) setScope(defaultScope)
-  }, [defaultScope, scope])
 
   const ownerIds = useMemo(() => (scope ? resolveScope(scope) : []), [scope, resolveScope])
   const ownerKey = ownerIds.join(',')
@@ -61,6 +70,7 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
   const load = useCallback(async () => {
     if (!ownerIds.length) {
       setTotals(EMPTY)
+      setCohort(EMPTY_COHORT)
       setLoading(false)
       return
     }
@@ -73,19 +83,38 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
       // Lead nel perimetro: solo gli id, paginati (PostgREST si ferma a 1000
       // righe per richiesta e prima nessuno lo gestiva).
       const ownedLeads = await inChunks(ownerIds, slice =>
-        fetchAllPages<{ id: string }>(() => supabase.from('leads').select('id').in('owner_id', slice) as never),
+        fetchAllPages<{ id: string; created_at: string | null }>(
+          () => supabase.from('leads').select('id,created_at').in('owner_id', slice) as never,
+        ),
       )
       const leadIds = ownedLeads.map(l => l.id)
 
-      const [leadsCreated, contacts, appointments, proposals, contractRows, notContacted] = await Promise.all([
-        countLeadsCreated(ownerIds, tsRange),
+      // La coorte: i lead CARICATI nel periodo. È l'unico insieme su cui le
+      // percentuali dell'imbuto sono davvero conversioni (vedi sotto).
+      //
+      // Il confronto passa da Date.parse e non dalle stringhe: PostgREST
+      // restituisce '…T10:00:00+00:00' mentre toISOString() produce
+      // '…T10:00:00.000Z', e confrontate come testo le due forme si ordinano
+      // in modo diverso pur essendo lo stesso istante.
+      const start = Date.parse(tsRange.start)
+      const end = Date.parse(tsRange.end)
+      const cohortIds = ownedLeads
+        .filter(l => {
+          if (!l.created_at) return false
+          const t = Date.parse(l.created_at)
+          return !Number.isNaN(t) && t >= start && t < end
+        })
+        .map(l => l.id)
+
+      const [contacts, appointments, proposals, contractRows, notContacted, cohortAggs] = await Promise.all([
         countByLead('activities', leadIds, tsRange, 'ts'),
         countByLead('appointments', leadIds, tsRange, 'ts'),
         // proposals.ts e contracts.ts sono colonne `date`: il confronto va
         // fatto con 'YYYY-MM-DD', non con un timestamp completo.
         countByLead('proposals', leadIds, dateRange, 'ts'),
         loadContracts(leadIds, dateRange),
-        countNeverContacted(ownerIds, leadIds),
+        countNeverContacted(leadIds),
+        loadAggregates(cohortIds),
       ])
 
       const production: Record<string, number> = {}
@@ -99,15 +128,17 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
         production[type] += Number(row.amount ?? row.premium_annual ?? 0)
       }
 
-      setTotals({
-        leads: leadsCreated,
-        contacts,
-        appointments,
-        proposals,
-        contracts: contractRows.length,
-        production,
-        notContacted,
-      })
+      const next: Cohort = { ...EMPTY_COHORT, size: cohortIds.length }
+      for (const id of cohortIds) {
+        const a = cohortAggs[id]
+        if (a?.contacts || a?.appointments) next.contacted++
+        if (a?.appointments) next.appointment++
+        if (a?.proposals) next.proposal++
+        if (a?.contracts) next.client++
+      }
+      setCohort(next)
+
+      setTotals({ contacts, appointments, proposals, contracts: contractRows.length, production, notContacted })
     } catch (e) {
       setError(errorMessage(e, 'Impossibile caricare i dati della dashboard'))
     } finally {
@@ -119,36 +150,46 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
     void load()
   }, [load])
 
+  /**
+   * L'imbuto guarda una COORTE, non il periodo.
+   *
+   * Prima la prima riga contava i lead caricati nel periodo e le righe sotto
+   * contavano le attività del periodo su TUTTO il portafoglio, compresi i lead
+   * caricati anni prima. Il rapporto fra le due veniva presentato come tasso di
+   * conversione ma poteva tranquillamente superare il 100%, perché numeratore e
+   * denominatore descrivevano insiemi diversi. Adesso ogni riga conta gli
+   * stessi lead — quelli caricati nel periodo — e le percentuali sono vere.
+   */
   const funnel = useMemo(
     () => [
-      { ...FUNNEL_STAGES[0], value: totals.leads },
-      { ...FUNNEL_STAGES[1], value: totals.contacts },
-      { ...FUNNEL_STAGES[2], value: totals.appointments },
-      { ...FUNNEL_STAGES[3], value: totals.proposals },
-      { ...FUNNEL_STAGES[4], value: totals.contracts },
+      { key: 'leads', label: 'Lead caricati', help: 'Anagrafiche entrate nel periodo', value: cohort.size },
+      { key: 'contacted', label: 'Contattati', help: 'Almeno un contatto registrato', value: cohort.contacted },
+      { key: 'appointment', label: 'Con appuntamento', help: 'Almeno un appuntamento fissato', value: cohort.appointment },
+      { key: 'proposal', label: 'Con proposta', help: 'Almeno un preventivo presentato', value: cohort.proposal },
+      { key: 'client', label: 'Clienti', help: 'Almeno una polizza firmata', value: cohort.client },
     ],
-    [totals],
+    [cohort],
   )
 
   const rates = useMemo(
     () => [
       {
-        label: 'Tasso di attivazione',
-        formula: 'Contratti su lead caricati',
-        value: totals.leads ? (totals.contracts / totals.leads) * 100 : null,
+        label: 'Contattati',
+        formula: 'Quanti dei lead caricati sono stati almeno chiamati',
+        value: cohort.size ? (cohort.contacted / cohort.size) * 100 : null,
       },
       {
-        label: 'Tasso di chiusura',
-        formula: 'Contratti su appuntamenti',
-        value: totals.appointments ? (totals.contracts / totals.appointments) * 100 : null,
+        label: 'Da contatto ad appuntamento',
+        formula: 'Quanti dei contattati hanno accettato di incontrarti',
+        value: cohort.contacted ? (cohort.appointment / cohort.contacted) * 100 : null,
       },
       {
-        label: 'Tasso di conversione',
-        formula: 'Contratti su contatti',
-        value: totals.contacts ? (totals.contracts / totals.contacts) * 100 : null,
+        label: 'Da appuntamento a contratto',
+        formula: 'Quanti degli incontrati hanno firmato',
+        value: cohort.appointment ? (cohort.client / cohort.appointment) * 100 : null,
       },
     ],
-    [totals],
+    [cohort],
   )
 
   const totalProduction = useMemo(
@@ -169,8 +210,8 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
       />
 
       <div className="gu-filters">
-        {scope && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
-        <MonthRange from={period.from} to={period.to} onChange={setPeriod} />
+        {scope && scopeOptions.length > 1 && <ScopeSelect value={scope} onChange={setScope} options={scopeOptions} />}
+        <PeriodSelect value={period} onChange={setPeriod} />
         <div className="gu-spacer" />
         <div style={{ fontSize: 'var(--gu-text-xs)', color: 'var(--gu-text-subtle)', alignSelf: 'center' }}>
           {ownerIds.length === 1 ? '1 advisor' : `${ownerIds.length} advisor`} nel perimetro
@@ -187,13 +228,13 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
         />
       )}
 
-      {/* KPI principali */}
+      {/* Volumi di attività del periodo — non è la coorte, ed è giusto che si veda */}
       <div className="gu-grid gu-grid--4">
-        <Stat label="Contatti" value={formatNumber(totals.contacts)} icon="phone" loading={loading} />
-        <Stat label="Appuntamenti" value={formatNumber(totals.appointments)} icon="calendar" loading={loading} />
-        <Stat label="Proposte" value={formatNumber(totals.proposals)} icon="fileText" loading={loading} />
+        <Stat label="Contatti nel periodo" value={formatNumber(totals.contacts)} icon="phone" loading={loading} />
+        <Stat label="Appuntamenti nel periodo" value={formatNumber(totals.appointments)} icon="calendar" loading={loading} />
+        <Stat label="Proposte nel periodo" value={formatNumber(totals.proposals)} icon="fileText" loading={loading} />
         <Stat
-          label="Contratti"
+          label="Contratti nel periodo"
           value={formatNumber(totals.contracts)}
           icon="checkCircle"
           tone="accent"
@@ -235,9 +276,10 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
               </div>
             </div>
             {totals.notContacted > 0 && (
-              <Button variant="primary" iconRight="arrowUpRight" onClick={onOpenLeads}>
+              <a className="gu-btn gu-btn--primary" href={hrefFor('leads', null, { avanzamento: 'never', ordina: 'recenti' })}>
                 Lavorali adesso
-              </Button>
+                <Icon name="arrowUpRight" size={16} />
+              </a>
             )}
           </div>
         </CardBody>
@@ -247,7 +289,11 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
         <Card>
           <CardHeader
             title="Imbuto di conversione"
-            subtitle="Ogni riga mostra quanti passano allo stadio successivo"
+            subtitle={
+              loading
+                ? 'Caricamento…'
+                : `I ${formatNumber(cohort.size)} lead caricati nel periodo, seguiti fino a oggi`
+            }
             icon="filter"
           />
           <CardBody>{loading ? <Skeleton height={280} radius={12} /> : <Funnel steps={funnel} />}</CardBody>
@@ -255,7 +301,7 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
 
         <div className="gu-stack">
           <Card>
-            <CardHeader title="Indicatori" icon="trendUp" />
+            <CardHeader title="Indicatori" subtitle="Sempre sulla stessa coorte" icon="trendUp" />
             <CardBody className="gu-stack">
               {rates.map(r => (
                 <div key={r.label}>
@@ -272,7 +318,7 @@ export default function DashboardPage({ onOpenLeads }: { onOpenLeads: () => void
           </Card>
 
           <Card>
-            <CardHeader title="Produzione per linea" icon="shield" />
+            <CardHeader title="Produzione per linea" subtitle="Contratti del periodo" icon="shield" />
             <CardBody className="gu-stack-sm">
               {METRICS.filter(m => m.contractType).map(m => {
                 const value = totals.production[m.contractType!] || 0
@@ -321,8 +367,8 @@ function Funnel({ steps }: { steps: { key: string; label: string; help: string; 
     return (
       <EmptyState
         icon="filter"
-        title="Nessun dato nel periodo"
-        text="Non ci sono lead né attività registrate nell'intervallo selezionato. Prova ad allargare il periodo."
+        title="Nessun lead caricato nel periodo"
+        text="L'imbuto segue i lead entrati nell'intervallo scelto. Prova ad allargare il periodo."
       />
     )
   }
@@ -403,23 +449,6 @@ function Funnel({ steps }: { steps: { key: string; label: string; help: string; 
 /* Query                                                                       */
 /* ========================================================================== */
 
-async function countLeadsCreated(ownerIds: string[], range: { start: string; end: string }) {
-  const blocks = chunk(ownerIds)
-  const counts = await Promise.all(
-    blocks.map(async slice => {
-      const { count, error } = await supabase
-        .from('leads')
-        .select('id', { count: 'exact', head: true })
-        .in('owner_id', slice)
-        .gte('created_at', range.start)
-        .lt('created_at', range.end)
-      if (error) throw error
-      return count || 0
-    }),
-  )
-  return counts.reduce((a, b) => a + b, 0)
-}
-
 async function countByLead(
   table: 'activities' | 'appointments' | 'proposals',
   leadIds: string[],
@@ -460,31 +489,21 @@ async function loadContracts(leadIds: string[], range: { start: string; end: str
 
 /**
  * Lead senza nessuna attività registrata.
- * Prima veniva calcolato scaricando tutti i lead e tutte le activities e
- * facendo la differenza nel browser. Qui si prova prima con una join lato
- * server (conteggio puro, nessuna riga trasferita); se la relazione non è
- * esposta si ricade sul metodo precedente, ma con paginazione corretta.
+ *
+ * La versione precedente provava prima una join `activities!inner` con
+ * `count: 'exact'`: quel conteggio però conta le COPPIE lead-attività, non i
+ * lead distinti, quindi un lead con cinque telefonate ne valeva cinque e il
+ * risultato era sistematicamente sbagliato per difetto — fino a mostrare zero
+ * lead mai contattati con il portafoglio pieno di lead mai contattati.
+ *
+ * Qui si leggono i soli `lead_id` delle attività e si contano quelli distinti:
+ * una colonna sola, paginata, ed è esatto per costruzione.
  */
-async function countNeverContacted(ownerIds: string[], leadIds: string[]) {
-  try {
-    const blocks = chunk(ownerIds)
-    const withActivity = await Promise.all(
-      blocks.map(async slice => {
-        const { count, error } = await supabase
-          .from('leads')
-          .select('id, activities!inner(lead_id)', { count: 'exact', head: true })
-          .in('owner_id', slice)
-        if (error) throw error
-        return count || 0
-      }),
-    )
-    return Math.max(0, leadIds.length - withActivity.reduce((a, b) => a + b, 0))
-  } catch {
-    if (!leadIds.length) return 0
-    const acts = await inChunks(leadIds, slice =>
-      fetchAllPages<{ lead_id: string }>(() => supabase.from('activities').select('lead_id').in('lead_id', slice) as never),
-    )
-    const contacted = new Set(uniq(acts.map(a => a.lead_id)))
-    return leadIds.filter(id => !contacted.has(id)).length
-  }
+async function countNeverContacted(leadIds: string[]) {
+  if (!leadIds.length) return 0
+  const acts = await inChunks(leadIds, slice =>
+    fetchAllPages<{ lead_id: string }>(() => supabase.from('activities').select('lead_id').in('lead_id', slice) as never),
+  )
+  const contacted = new Set(uniq(acts.map(a => a.lead_id)))
+  return leadIds.filter(id => !contacted.has(id)).length
 }

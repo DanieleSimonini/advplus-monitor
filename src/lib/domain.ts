@@ -83,7 +83,10 @@ export function leadName(l: Partial<Lead> | null | undefined): string {
 export const CHANNELS = [
   { value: 'phone', label: 'Telefono', icon: 'phone' as IconName },
   { value: 'email', label: 'Email', icon: 'mail' as IconName },
-  { value: 'inperson', label: 'Di persona', icon: 'user' as IconName },
+  // "In presenza" e non "Di persona": è lo stesso valore `inperson` usato da
+  // MODES per gli appuntamenti, e due etichette diverse per lo stesso dato
+  // fanno sembrare che siano due cose.
+  { value: 'inperson', label: 'In presenza', icon: 'user' as IconName },
   { value: 'video', label: 'Video', icon: 'video' as IconName },
 ] as const
 export type Channel = (typeof CHANNELS)[number]['value']
@@ -109,6 +112,132 @@ export const CONTRACT_TYPES = [
   'Vita Premi Unici',
 ] as const
 export type ContractType = (typeof CONTRACT_TYPES)[number]
+
+/**
+ * Esito dell'appuntamento.
+ *
+ * Senza questo campo l'imbuto misurava gli appuntamenti FISSATI e li chiamava
+ * appuntamenti fatti: il "tasso di chiusura" risultava quindi più basso del
+ * vero, perché al denominatore finivano anche i buchi a vuoto.
+ *
+ * Richiede la colonna `appointments.outcome` (vedi docs/migrazioni.sql).
+ * Finché non è stata applicata, il campo viene semplicemente ignorato in
+ * scrittura: non blocca nulla.
+ */
+export const APPOINTMENT_OUTCOMES = [
+  { value: 'scheduled', label: 'In programma', tone: 'primary' as const, icon: 'clock' as IconName },
+  { value: 'done', label: 'Fatto', tone: 'success' as const, icon: 'checkCircle' as IconName },
+  { value: 'noshow', label: 'Non presentato', tone: 'warning' as const, icon: 'alert' as IconName },
+  { value: 'canceled', label: 'Annullato', tone: 'neutral' as const, icon: 'xCircle' as IconName },
+] as const
+export type AppointmentOutcome = (typeof APPOINTMENT_OUTCOMES)[number]['value']
+
+/**
+ * Esito della proposta. È il salto dell'imbuto dove si perdono i soldi ed era
+ * l'unico di cui non si poteva sapere il perché.
+ * Richiede la colonna `proposals.outcome`.
+ */
+export const PROPOSAL_OUTCOMES = [
+  { value: 'pending', label: 'In attesa', tone: 'primary' as const, icon: 'clock' as IconName },
+  { value: 'accepted', label: 'Accettata', tone: 'success' as const, icon: 'checkCircle' as IconName },
+  { value: 'rejected', label: 'Rifiutata', tone: 'danger' as const, icon: 'xCircle' as IconName },
+] as const
+export type ProposalOutcome = (typeof PROPOSAL_OUTCOMES)[number]['value']
+
+/* ========================================================================== */
+/* Avanzamento del lead                                                        */
+/* ========================================================================== */
+
+/**
+ * Il vecchio filtro si chiamava "Stadio" ma non era uno stadio: le voci erano
+ * presenze cumulative ("ha almeno un appuntamento, in qualunque momento"), così
+ * un cliente acquisito compariva anche sotto "Contattati". Un percorso si
+ * attraversa, non si accumula: qui ogni lead sta in UNO stato solo, deciso a
+ * cascata dal più avanzato al meno avanzato.
+ */
+export type Progress = 'never' | 'contacted' | 'appointment' | 'proposal' | 'client'
+
+export const PROGRESS_STEPS: { value: Progress; label: string; short: string; tone: BadgeToneName; help: string }[] = [
+  { value: 'never', label: 'Mai contattati', short: 'Mai contattato', tone: 'warning', help: 'Nessun contatto registrato' },
+  { value: 'contacted', label: 'Contattati, senza appuntamento', short: 'Da riagganciare', tone: 'neutral', help: 'Contattato, ma senza appuntamenti in programma' },
+  { value: 'appointment', label: 'Con appuntamento in programma', short: 'In agenda', tone: 'primary', help: 'Ha un appuntamento in una data futura' },
+  { value: 'proposal', label: 'Con proposta aperta', short: 'Proposta', tone: 'accent', help: 'Ha ricevuto una proposta, non ancora firmata' },
+  { value: 'client', label: 'Cliente acquisito', short: 'Cliente', tone: 'success', help: 'Ha almeno un contratto firmato' },
+]
+
+/** Tono del badge, tenuto come stringa per non importare la UI nel dominio. */
+type BadgeToneName = 'neutral' | 'primary' | 'accent' | 'success' | 'warning' | 'danger'
+
+export const PROGRESS_BY_VALUE = new Map(PROGRESS_STEPS.map(s => [s.value, s]))
+
+/** Conteggi minimi per decidere a che punto è un lead. */
+export type ProgressInput = {
+  contacts: number
+  appointments: number
+  nextAppointment?: string | null
+  proposals: number
+  contracts: number
+}
+
+export function progressOf(a: ProgressInput | undefined): Progress {
+  if (!a) return 'never'
+  if (a.contracts > 0) return 'client'
+  if (a.proposals > 0) return 'proposal'
+  if (a.nextAppointment) return 'appointment'
+  if (a.contacts > 0 || a.appointments > 0) return 'contacted'
+  return 'never'
+}
+
+/* ========================================================================== */
+/* Vocabolario dei filtri                                                      */
+/* ========================================================================== */
+
+export const WORKING_OPTIONS = [
+  { value: 'attivi', label: 'In lavorazione' },
+  // Mancava: si potevano vedere i sospesi solo mescolati agli altri, mai da
+  // soli. È proprio la lista che si rivede ogni tanto per recuperare qualcosa.
+  { value: 'sospesi', label: 'Solo sospesi' },
+  { value: 'tutti', label: 'Tutti' },
+] as const
+export type WorkingFilter = (typeof WORKING_OPTIONS)[number]['value']
+
+/**
+ * "Da quanto non lo sento": il filtro che serve ogni giorno e che non esisteva.
+ * Non c'è la voce "Mai" perché sarebbe la stessa cosa di Avanzamento → Mai
+ * contattati, e due comandi che fanno la stessa cosa confondono e basta.
+ */
+export const CONTACT_AGE_OPTIONS = [
+  { value: 'sempre', label: 'Indifferente', days: 0 },
+  { value: '30', label: 'Da oltre 30 giorni', days: 30 },
+  { value: '60', label: 'Da oltre 60 giorni', days: 60 },
+  { value: '90', label: 'Da oltre 90 giorni', days: 90 },
+] as const
+export type ContactAgeFilter = (typeof CONTACT_AGE_OPTIONS)[number]['value']
+
+export const SOURCE_OPTIONS = [
+  { value: 'tutte', label: 'Tutte' },
+  { value: 'Provided', label: SOURCE_LABEL.Provided },
+  { value: 'Self', label: SOURCE_LABEL.Self },
+] as const
+
+export const CLIENT_OPTIONS = [
+  { value: 'tutti', label: 'Indifferente' },
+  { value: 'si', label: 'Già cliente di agenzia' },
+  { value: 'no', label: 'Non ancora cliente' },
+] as const
+
+/**
+ * L'ordinamento non è un filtro e non sta più nella stessa barra.
+ * "Da ricontattare" è l'ordine che mancava: il motivo per cui si ordina per
+ * ultimo contatto è trovare i trascurati, non i freschi.
+ */
+export const SORT_OPTIONS = [
+  { value: 'cognome', label: 'Cognome (A → Z)', needsAggregates: false },
+  { value: 'recenti', label: 'Caricati di recente', needsAggregates: false },
+  { value: 'trascurati', label: 'Da ricontattare (più fermi prima)', needsAggregates: true },
+  { value: 'contatto', label: 'Contattati di recente', needsAggregates: true },
+] as const
+export type SortKey = (typeof SORT_OPTIONS)[number]['value']
 
 export function labelOf<T extends { value: string; label: string }>(
   list: readonly T[],

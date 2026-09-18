@@ -54,7 +54,8 @@ src/
 ├── ui/             Libreria componenti React (Button, Card, Modal, Toast…)
 ├── app/            AppShell (sidebar, topbar) e controlli condivisi
 ├── auth/           AuthProvider: sessione + profilo advisor
-├── lib/            datetime, format, domain, db, router, useAdvisors
+├── lib/            datetime, format, domain, db, router, filters, search,
+│                   leadAggregates, useAdvisors
 └── pages/          Una cartella/file per sezione dell'applicazione
 api/                Funzione serverless Vercel
 supabase/functions/ Edge Function Deno (invito e email appuntamenti)
@@ -87,6 +88,40 @@ Palette di marca, presa dai loghi ufficiali:
 La visibilità reale è imposta dalle policy RLS su Supabase: l'interfaccia si
 limita a non proporre azioni che il database rifiuterebbe.
 
+## Sezioni
+
+| Sezione | A cosa risponde |
+|---|---|
+| **Oggi** | promemoria scaduti e di giornata, appuntamenti di oggi, lead mai contattati e lead fermi da oltre 30 giorni |
+| **Dashboard** | volumi di attività del periodo e imbuto di conversione sulla coorte dei lead caricati nel periodo |
+| **Lead** | elenco filtrabile del portafoglio, scheda con contatti, appuntamenti, promemoria, proposte e contratti |
+| **Calendario** | appuntamenti della rete per mese o settimana, colorati per advisor |
+| **Obiettivi** | target annuale e griglia dei dodici mesi, con i consuntivi accanto |
+| **Report** | risultati contro obiettivi, per mese e per singolo advisor |
+| **Importa lead** | caricamento massivo da CSV con controllo dei duplicati |
+| **Utenti** | rete commerciale, ruoli, responsabili e inviti |
+
+Da qualunque pagina, **Ctrl/Cmd + K** apre la ricerca di un lead.
+
+## Filtri
+
+I filtri stanno nella querystring dell'hash (`#/lead?avanzamento=never&ordina=trascurati`):
+sopravvivono al refresh, il tasto Indietro li annulla uno per volta e un link
+porta il destinatario sulla stessa vista. L'ultima combinazione usata viene
+ricordata per pagina in `localStorage`; la logica sta in `src/lib/filters.ts`.
+
+Il vocabolario è uno solo in tutta l'applicazione:
+
+| Filtro | Significa |
+|---|---|
+| **Advisor** | di chi si stanno guardando i dati. Vive in `ScopeProvider` e non si azzera cambiando pagina |
+| **Periodo** | intervallo di mesi, con le scorciatoie mese / trimestre / anno / ultimi 12 |
+| **Avanzamento** | a che punto è il lead. Stati esclusivi decisi a cascata: cliente → proposta → appuntamento in programma → contattato → mai contattato |
+| **Lavorazione** | in lavorazione, solo sospesi, tutti |
+| **Ultimo contatto** | da quanto non lo si sente: oltre 30, 60 o 90 giorni |
+
+L'ordinamento non è un filtro e sta accanto al conteggio dei risultati.
+
 ## Note operative
 
 - Le date e le ore passano **sempre** da `src/lib/datetime.ts`: è l'unico punto
@@ -96,6 +131,13 @@ limita a non proporre azioni che il database rifiuterebbe.
   sono `timestamptz`: i filtri di periodo ne tengono conto.
 - Le liste lunghe sono impaginate lato server e le query con molti id vengono
   spezzate in blocchi (`src/lib/db.ts`).
+- La ricerca testuale spezza il termine in parole e pretende che **ognuna** si
+  trovi in almeno una delle colonne (`src/lib/search.ts`): serve perché cognome
+  e nome stanno in colonne diverse, e perché le virgole non possono finire
+  grezze nella sintassi `or()` di PostgREST.
+- `appointments.outcome` e `proposals.outcome` arrivano con
+  `docs/migrazioni.sql`. Finché non è applicata, i due campi restano
+  disattivati e vengono ignorati in scrittura: l'interfaccia non si rompe.
 
 ## Flusso di lavoro
 

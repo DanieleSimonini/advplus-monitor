@@ -302,6 +302,41 @@
 }
 .gu-check--disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Riquadro statistico cliccabile (pagina Utenti) */
+.gu-statfilter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gu-space-3);
+  width: 100%;
+  padding: var(--gu-space-4);
+  border: 1px solid var(--gu-border);
+  border-radius: var(--gu-radius-lg);
+  background: var(--gu-surface);
+  box-shadow: var(--gu-shadow-xs);
+  cursor: pointer;
+  transition: border-color var(--gu-duration) var(--gu-ease), background-color var(--gu-duration) var(--gu-ease);
+}
+.gu-statfilter:hover { border-color: var(--gu-primary); }
+.gu-statfilter:focus-visible { outline: none; box-shadow: var(--gu-shadow-focus); }
+.gu-statfilter[data-active='true'] { border-color: var(--gu-primary); background: var(--gu-primary-soft); }
+
+/* Griglia degli obiettivi: dodici mesi per sei metriche, input in cella */
+.gu-goals-grid__input {
+  height: 32px;
+  padding: 0 var(--gu-space-2);
+  text-align: right;
+  font-size: var(--gu-text-sm);
+  min-width: 92px;
+}
+.gu-goals-grid__actual {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--gu-text-2xs);
+  text-align: right;
+}
+.gu-goals-grid td { vertical-align: top; }
+
 /* Interruttore filtro on/off — sostituisce i "bottoni che sembrano bottoni ma sono toggle" */
 .gu-filter-chip {
   display: inline-flex;
