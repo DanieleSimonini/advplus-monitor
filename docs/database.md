@@ -52,6 +52,42 @@ Qualsiasi utente autenticato legge, modifica e cancella i log di importazione di
 tutti. Andrebbe ristretta: lettura all'Admin, scrittura al solo autore
 (`actor_user_id = auth.uid()`), nessuna cancellazione.
 
+## 3-bis. `can_access_lead()` e `is_admin()` non fanno quello che sembra — GRAVE
+
+Letto il corpo delle funzioni (Fase 0 di `rls-fix.sql`), emergono due problemi
+che spiegano perché le policy troppo larghe del punto 1 non sono mai state
+notate: **sono quelle che tengono in piedi il lavoro quotidiano**.
+
+`can_access_lead()` — il ramo del Team Lead è morto, per due motivi insieme:
+
+```sql
+JOIN public.advisors j ON j.id = l.owner_id   -- owner_id contiene lo user_id
+WHERE j.team_lead_id = auth.uid()             -- colonna che l'app non scrive
+```
+
+Un Team Lead quindi **non** passa questo controllo sui lead dei propri Junior:
+può modificare contatti, appuntamenti, proposte e contratti solo attraverso le
+`p_*_owner`. Toglierle senza riparare prima la funzione gli fa perdere l'uso
+normale dell'applicazione.
+
+`is_admin()` legge da `public.users`, non da `public.advisors`:
+
+```sql
+select 1 from public.users u where u.id = auth.uid() and lower(u.role) = 'admin'
+```
+
+GuideUp gestisce i ruoli in `advisors` e non scrive mai in `users`. Un Admin
+senza riga corrispondente in `users` risulta non-admin per tutte le policy che
+passano da questa funzione.
+
+Ne segue che esistono **tre definizioni diverse di amministratore**:
+`is_admin()` su `users.role`, `current_user_role()` su `advisors.role` cercato
+per email, e le `*_select_admin_all` su `advisors.role` cercato per `user_id`.
+
+Infine `current_user_role()` confronta le email senza normalizzarle
+(`where email = auth.jwt() ->> 'email'`): una maiuscola di differenza e la
+funzione restituisce NULL, cioè utente senza ruolo.
+
 ## 4. Due convenzioni incompatibili per la gerarchia
 
 La tabella `advisors` ha **tre** colonne per la stessa relazione:
