@@ -1,4 +1,33 @@
 -- ============================================================================
+-- GIÀ APPLICATO IN PRODUZIONE — 18/09/2026
+-- migrazione: chiude_accesso_anonimo_reminders_e_viste
+--
+-- Verificato con la chiave anon (quella pubblica dentro il bundle JavaScript),
+-- senza alcun login: uscivano 16 promemoria e tutte le viste v_* con
+-- appuntamenti, contratti e produzione per advisor. Su `reminders` il ruolo
+-- anon aveva anche INSERT, UPDATE, DELETE e TRUNCATE: chiunque poteva
+-- svuotare la tabella.
+--
+-- Fatto:
+--   ALTER TABLE public.reminders ENABLE ROW LEVEL SECURITY  (non era mai stata accesa)
+--   + 4 policy scritte per esteso, senza dipendere da can_access_lead()/is_admin()
+--   REVOKE ALL ON public.reminders FROM anon
+--   REVOKE SELECT su tutte e 10 le viste v_* FROM anon
+--
+-- Dopo: ogni chiamata anonima risponde 401. Controllato che nessun dato sia
+-- diventato irraggiungibile: Admin e Team Lead vedono tutti i 16 promemoria,
+-- ogni Junior vede quelli dei propri lead.
+--
+-- RESTA APERTO: le viste girano ancora come `postgres` senza security_invoker,
+-- quindi un utente autenticato qualsiasi che le interroghi direttamente vede i
+-- numeri di tutta la rete, non solo i propri. Si chiude con
+--   ALTER VIEW public.v_progress_monthly SET (security_invoker = on);
+-- ma solo DOPO la Fase 1: con is_admin() rotta, un Admin smetterebbe di vedere
+-- i dati altrui nei report.
+-- ============================================================================
+
+
+-- ============================================================================
 -- GuideUp — correzione delle funzioni e delle policy RLS
 --
 -- Versione 2. La prima stesura di questo file era incompleta: presupponeva che
@@ -17,10 +46,12 @@
 
 
 -- ============================================================================
--- COSA È EMERSO DALL'ISPEZIONE (Fase 0, già eseguita)
+-- COSA È EMERSO DALL'ISPEZIONE (Fase 0, eseguita e verificata sui dati)
 --
 -- 1. can_access_lead() — il ramo del Team Lead non funziona, per due motivi
---    indipendenti:
+--    indipendenti. VERIFICATO sui dati: team_lead_id e reports_to sono
+--    valorizzate su 0 righe su 7, team_lead_user_id su 5; e 457 lead su 457
+--    hanno owner_id = advisors.user_id, 0 con advisors.id.
 --       JOIN public.advisors j ON j.id = l.owner_id   -- owner_id contiene lo
 --                                                     -- user_id, non advisors.id
 --       WHERE j.team_lead_id = auth.uid()             -- colonna che l'app non
@@ -32,10 +63,11 @@
 --
 -- 2. is_admin() legge da public.users, non da public.advisors:
 --       select 1 from public.users u where u.id = auth.uid() and lower(u.role) = 'admin'
---    Ma GuideUp gestisce i ruoli in `advisors` e non scrive mai in `users`.
---    Se un Admin non ha una riga corrispondente in `users`, is_admin() è false
---    per lui: perde i permessi che passano da quella funzione (leads_*, goals_*,
---    can_access_lead). Anche qui il buco veniva tappato dalle p_*_owner.
+--    VERIFICATO: public.users ha ZERO righe (e anche team_presences). Quindi
+--    is_admin() restituisce SEMPRE false, per chiunque.
+--    Conseguenza concreta: goals_insert e goals_update richiedono is_admin()
+--    oppure essere Team Lead di quel Junior. Un Admin oggi NON riesce a
+--    salvare gli obiettivi di nessuno.
 --
 -- 3. Esistono tre definizioni diverse di "amministratore":
 --       is_admin()            -> public.users.role
@@ -271,32 +303,41 @@ WHERE schemaname = 'public' AND tablename = 'import_logs';
 
 
 -- ============================================================================
--- FASE 3 — VINCOLI DI UNICITÀ PER GLI OBIETTIVI
+-- FASE 3 — NON SERVE PIÙ (verificato)
 --
--- Il salvataggio degli obiettivi usa ON CONFLICT su queste colonne. Se gli
--- indici non esistono, l'applicazione ripiega su un aggiorna-oppure-inserisci:
--- funziona, ma niente impedisce due righe di obiettivi per lo stesso mese.
+-- Gli indici univoci esistono già e sono sulle colonne giuste:
+--   idx_goals_unique         su goals (advisor_user_id, year)
+--   idx_goals_monthly_unique su goals_monthly (advisor_user_id, year, month)
+-- Nessun duplicato presente. Il ripiego previsto nel codice applicativo non
+-- entra mai in funzione: resta come rete di sicurezza.
+--
+-- goals_monthly.ym è character(7) e contiene valori come '202601 ' (sei cifre
+-- più uno spazio di riempimento). Il formato scritto dall'applicazione è
+-- compatibile con lo storico.
 -- ============================================================================
-
--- 3.1 Ci sono già duplicati? Se queste due query restituiscono righe, vanno
---     ripuliti prima: l'indice non si crea.
-SELECT advisor_user_id, year, count(*)
-FROM public.goals
-GROUP BY advisor_user_id, year HAVING count(*) > 1;
-
-SELECT advisor_user_id, year, month, count(*)
-FROM public.goals_monthly
-GROUP BY advisor_user_id, year, month HAVING count(*) > 1;
-
--- 3.2 Se non ne escono, crea gli indici.
-CREATE UNIQUE INDEX IF NOT EXISTS goals_advisor_year_uidx
-  ON public.goals (advisor_user_id, year);
-
-CREATE UNIQUE INDEX IF NOT EXISTS goals_monthly_advisor_year_month_uidx
-  ON public.goals_monthly (advisor_user_id, year, month);
 
 
 -- ============================================================================
+-- FASE 3-bis — ALLINEARE contracts.premium_annual  (facoltativa, consigliata)
+--
+-- Tutti i 27 contratti storici hanno premium_annual = 0: la colonna ha un
+-- default a zero e non è mai stata usata. Il valore vero sta in `amount`, ed è
+-- `amount` che legge la vista v_progress_monthly, quindi i report sono
+-- corretti.
+--
+-- Da settembre 2026 l'applicazione scrive entrambe le colonne. Senza questo
+-- allineamento la colonna resta con due significati: zero per lo storico,
+-- valore reale per i contratti nuovi.
+--
+--   UPDATE public.contracts
+--      SET premium_annual = amount
+--    WHERE COALESCE(premium_annual, 0) = 0
+--      AND amount IS NOT NULL;
+--
+-- Per tornare indietro: UPDATE public.contracts SET premium_annual = 0;
+-- ============================================================================
+
+
 -- FASE 4 — CON CALMA, QUANDO LE PRIME TRE SONO ASSESTATE
 --
 -- Nessuna urgenza e nessun impatto sulla sicurezza: serve a non lasciare in

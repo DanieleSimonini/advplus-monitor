@@ -1,11 +1,55 @@
 # Note sul database — criticità rilevate
 
-Analisi dello schema e delle policy RLS di produzione. L'applicazione è stata
-adattata a ciò che il database fa **oggi**; questo documento elenca i problemi
-che vanno risolti lato database, perché nessuna modifica al frontend può
-risolverli.
+Analisi dello schema e delle policy RLS di produzione (progetto
+`advplus-monitor-prod`). L'applicazione è stata adattata a ciò che il database
+fa **oggi**; questo documento elenca i problemi che vanno risolti lato
+database, perché nessuna modifica al frontend può risolverli.
+
+Dal 18/09/2026 i dati sono stati verificati direttamente sul database, non più
+solo dedotti dall'export delle policy. Le voci marcate **VERIFICATO** poggiano
+su numeri reali.
 
 Ordine di priorità: dalla più grave alla meno urgente.
+
+---
+
+## 0. Dati leggibili senza autenticarsi — RISOLTO il 18/09/2026
+
+Interrogando le API con la chiave `anon` — quella che sta dentro il bundle
+JavaScript del sito, pubblica per definizione — **senza alcun login** uscivano:
+
+```
+reminders                  HTTP 206  righe: 16
+v_progress_monthly         HTTP 206  righe: 17
+v_goals_monthly            HTTP 206  righe: 7
+```
+
+Due cause distinte.
+
+**`reminders` aveva le RLS disattivate** (`relrowsecurity = false`) e zero
+policy: la protezione non era mai stata accesa. Il ruolo `anon` aveva inoltre
+`INSERT`, `UPDATE`, `DELETE` e `TRUNCATE`: chiunque poteva svuotare la tabella.
+
+**Le dieci viste `v_*` appartengono a `postgres` e non hanno
+`security_invoker`**, quindi girano con i privilegi del proprietario e
+scavalcano le RLS delle tabelle sottostanti. Avevano `SELECT` concesso ad
+`anon`.
+
+Le tabelle vere (`leads`, `advisors`, `contracts`) reggevano: rispondevano 500,
+nessun dato usciva.
+
+Applicata la migrazione `chiude_accesso_anonimo_reminders_e_viste`: RLS accese
+su `reminders` con quattro policy scritte per esteso (non dipendono da
+`can_access_lead()` né da `is_admin()`, che oggi non funzionano), `REVOKE ALL`
+per `anon` su `reminders` e `REVOKE SELECT` per `anon` sulle dieci viste.
+Riverificato: ogni chiamata anonima risponde 401, cancellazione compresa.
+Nessun dato è diventato irraggiungibile.
+
+**Resta aperto:** le viste girano ancora come `postgres`. Un utente autenticato
+qualsiasi che le interroghi direttamente vede i numeri di tutta la rete. Si
+chiude con `ALTER VIEW … SET (security_invoker = on)`, ma solo dopo aver
+riparato `is_admin()`: altrimenti gli Admin smetterebbero di vedere i dati
+altrui nei report.
 
 ---
 
@@ -52,7 +96,7 @@ Qualsiasi utente autenticato legge, modifica e cancella i log di importazione di
 tutti. Andrebbe ristretta: lettura all'Admin, scrittura al solo autore
 (`actor_user_id = auth.uid()`), nessuna cancellazione.
 
-## 3-bis. `can_access_lead()` e `is_admin()` non fanno quello che sembra — GRAVE
+## 3-bis. `can_access_lead()` e `is_admin()` non fanno quello che sembra — GRAVE, VERIFICATO
 
 Letto il corpo delle funzioni (Fase 0 di `rls-fix.sql`), emergono due problemi
 che spiegano perché le policy troppo larghe del punto 1 non sono mai state
@@ -76,9 +120,12 @@ normale dell'applicazione.
 select 1 from public.users u where u.id = auth.uid() and lower(u.role) = 'admin'
 ```
 
-GuideUp gestisce i ruoli in `advisors` e non scrive mai in `users`. Un Admin
-senza riga corrispondente in `users` risulta non-admin per tutte le policy che
-passano da questa funzione.
+**VERIFICATO: `public.users` ha zero righe** (e così `team_presences`).
+`is_admin()` restituisce quindi **sempre false, per chiunque**.
+
+Conseguenza concreta e verificabile: `goals_insert` e `goals_update` richiedono
+`is_admin()` oppure essere Team Lead di quel Junior. **Un Admin oggi non riesce
+a salvare gli obiettivi di nessuno.**
 
 Ne segue che esistono **tre definizioni diverse di amministratore**:
 `is_admin()` su `users.role`, `current_user_role()` su `advisors.role` cercato
@@ -99,9 +146,11 @@ diverse, con significati diversi:
 | `leads_select`, `leads_insert`, `leads_update`, `leads_delete` | `j.id = leads.owner_id AND j.team_lead_id = auth.uid()` | `advisors.id` |
 | `leads_select_scope`, `tl can INSERT/UPDATE…` | `a.user_id` … `a.team_lead_user_id = auth.uid()` | `auth.uid()` |
 
-L'applicazione scrive in `leads.owner_id` lo `user_id` (cioè `auth.uid()`),
-quindi tutta la prima famiglia di policy non corrisponde **mai** a nulla: è
-codice morto che dà l'illusione di un controllo. Stesso errore in
+**VERIFICATO:** 457 lead su 457 hanno `owner_id` corrispondente ad
+`advisors.user_id`, **zero** ad `advisors.id`. E su 7 advisor, `team_lead_id` e
+`reports_to` sono valorizzate su **zero** righe, `team_lead_user_id` su cinque.
+Tutta la prima famiglia di policy non corrisponde **mai** a nulla: è codice
+morto che dà l'illusione di un controllo. Stesso errore in
 `team_presences_update_own` (`a.id = team_presences.user_id`).
 
 **Da fare:** scegliere una convenzione — `team_lead_user_id` +
@@ -137,7 +186,7 @@ debba esistere o no.
 | Tabella | Duplicati | Conseguenza |
 |---|---|---|
 | `activities`, `appointments`, `proposals`, `contracts` | `note` **e** `notes` | l'app scrive `notes`; `note` resta vuota e confonde ogni query fatta a mano |
-| `contracts` | `amount`, `premium_annual`, `line`, `contract_type`, `kind` | `premium_annual` è NOT NULL ma il vecchio frontend non la valorizzava: i contratti inseriti dall'app potevano avere il premio solo in `amount` |
+| `contracts` | `amount`, `premium_annual`, `line`, `contract_type`, `kind` | **VERIFICATO:** tutti i 27 contratti hanno `premium_annual = 0` (default mai usato); il valore vero è in `amount`, che è ciò che legge `v_progress_monthly`. Da settembre 2026 l'app scrive entrambe: serve un allineamento dello storico (Fase 3-bis) |
 | `goals` | `target_consulenze` … **e** `consulenze` … | due serie di colonne per lo stesso dato |
 | `goals_monthly` | idem, più `appuntamenti` e `ym` | idem |
 | `leads` | `is_working` **e** `stop_working`, più `status` mai usata | tre modi di dire la stessa cosa |
@@ -147,27 +196,39 @@ L'applicazione ora scrive **entrambe** le colonne dove sono duplicate, per non
 lasciare dati incoerenti. È una toppa: la soluzione è una migrazione che
 elimini le colonne vecchie.
 
+**Canali di contatto, VERIFICATO:** il vincolo su `activities.channel` ammette
+esattamente `phone | email | inperson | video`. Nei dati: 297 `phone` e 45
+`email`, nessun `inperson` né `video`. Le vecchie opzioni WhatsApp, SMS e
+"Altro" finivano tutte in `phone` e sono ormai indistinguibili. Per tracciarle
+davvero serve estendere il vincolo:
+
+```sql
+ALTER TABLE public.activities DROP CONSTRAINT activities_channel_check;
+ALTER TABLE public.activities ADD CONSTRAINT activities_channel_check
+  CHECK (channel = ANY (ARRAY['phone','email','inperson','video','whatsapp','sms']));
+```
+
+e poi aggiungere le voci in `src/lib/domain.ts`.
+
 ## 9. `goals_monthly.ym` è `bpchar`
 
 Il frontend storico scriveva un intero `YYYYMM`, che Postgres converte in
 stringa. Il formato attuale viene mantenuto per compatibilità, ma la colonna è
 ridondante (`year` e `month` esistono già) e andrebbe rimossa o resa generata.
 
-## 10. Da verificare: vincoli di unicità per gli upsert
+## 10. Vincoli di unicità per gli upsert — NON È UN PROBLEMA, VERIFICATO
 
-Il salvataggio degli obiettivi usa:
+Gli indici esistono già e sono sulle colonne giuste: `idx_goals_unique` su
+`(advisor_user_id, year)` e `idx_goals_monthly_unique` su
+`(advisor_user_id, year, month)`. Nessun duplicato presente. Il ripiego
+previsto nel codice applicativo non entra mai in funzione: resta come rete di
+sicurezza.
 
-```sql
-ON CONFLICT (advisor_user_id, year)          -- goals
-ON CONFLICT (advisor_user_id, year, month)   -- goals_monthly
-```
+## 11. Tabelle di un altro prodotto — entrambe vuote, VERIFICATO
 
-Se questi indici univoci non esistono, Postgres risponde `42P10`. Il codice ora
-intercetta l'errore e ripiega su un aggiorna-oppure-inserisci, ma è una rete di
-sicurezza: gli indici vanno creati, altrimenti nulla impedisce righe duplicate
-di obiettivi per lo stesso mese.
-
-## 11. Tabelle di un altro prodotto
+`users` e `team_presences` hanno **zero righe**: l'applicativo delle presenze
+in questo database non esiste. Questo rende innocuo il ramo su `users` che
+`is_admin()` conserva, e toglie ogni preoccupazione di privacy sul punto.
 
 `users` (con `office`, `job_role`, `law_104`) e `team_presences` non hanno
 alcun rapporto con GuideUp. Se il database è condiviso con la gestione
