@@ -24,6 +24,7 @@ type NavEntry = {
  * usare non deve comparire.
  */
 const NAV: NavEntry[] = [
+  { id: 'today', label: 'Oggi', icon: 'sparkle' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'leads', label: 'Lead', icon: 'leads' },
   { id: 'calendar', label: 'Calendario', icon: 'calendar' },
@@ -47,12 +48,15 @@ export function AppShell({
   onNavigate,
   title,
   subtitle,
+  search,
   children,
 }: {
   route: Route
   onNavigate: (id: RouteId) => void
   title: string
   subtitle?: string
+  /** Ricerca globale, montata nella topbar. */
+  search?: React.ReactNode
   children: React.ReactNode
 }) {
   const { me, role, signOut } = useAuth()
@@ -149,6 +153,8 @@ export function AppShell({
           </div>
 
           <div className="gu-spacer" />
+
+          {search}
 
           <div ref={menuRef} style={{ position: 'relative' }}>
             <button

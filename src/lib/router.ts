@@ -9,16 +9,24 @@ import { useCallback, useEffect, useState } from 'react'
  *
  * L'hash è la scelta giusta qui perché vercel.json riscrive ogni percorso su
  * "/": con le rotte in path ogni link diretto tornerebbe comunque alla radice.
+ *
+ * Oltre alla sezione l'hash porta anche i filtri, come querystring:
+ *
+ *   #/lead/<id-selezionato>?avanzamento=mai&contatto=60&ordina=trascurati
+ *
+ * Senza questo, ogni filtro impostato spariva al primo refresh, il tasto
+ * Indietro non lo annullava e non si poteva condividere una vista.
  */
 
-export type RouteId = 'dashboard' | 'leads' | 'import' | 'goals' | 'report' | 'calendar' | 'admin'
+export type RouteId = 'today' | 'dashboard' | 'leads' | 'import' | 'goals' | 'report' | 'calendar' | 'admin'
 
-export const DEFAULT_ROUTE: RouteId = 'dashboard'
+export const DEFAULT_ROUTE: RouteId = 'today'
 
 /** Percorso pubblico -> identificativo interno. */
 const PATHS: Record<RouteId, string> = {
+  today: 'oggi',
   dashboard: 'dashboard',
-  leads: 'leads',
+  leads: 'lead',
   import: 'importa',
   goals: 'obiettivi',
   report: 'report',
@@ -31,44 +39,85 @@ const BY_PATH = Object.entries(PATHS).reduce<Record<string, RouteId>>((acc, [id,
   return acc
 }, {})
 
+// I vecchi indirizzi restano validi: chi ha un segnalibro su #/leads non deve
+// trovarsi sulla pagina sbagliata.
+const ALIASES: Record<string, RouteId> = { leads: 'leads' }
+
+export type Query = Record<string, string>
+
 export type Route = {
   id: RouteId
-  /** Secondo segmento: su #/leads/<id> è l'id del lead selezionato. */
+  /** Secondo segmento: su #/lead/<id> è l'id del lead selezionato. */
   param: string | null
+  /** Parametri dopo il "?": i filtri della pagina. */
+  query: Query
 }
 
 function parse(hash: string): Route {
-  const clean = hash.replace(/^#\/?/, '')
-  const [head, param] = clean.split('/')
-  const id = BY_PATH[head] || DEFAULT_ROUTE
-  return { id, param: param ? decodeURIComponent(param) : null }
+  const raw = hash.replace(/^#\/?/, '')
+  const qIndex = raw.indexOf('?')
+  const path = qIndex === -1 ? raw : raw.slice(0, qIndex)
+  const search = qIndex === -1 ? '' : raw.slice(qIndex + 1)
+
+  const [head, param] = path.split('/')
+  const id = BY_PATH[head] || ALIASES[head] || DEFAULT_ROUTE
+
+  const query: Query = {}
+  if (search) {
+    for (const [k, v] of new URLSearchParams(search)) {
+      if (v !== '') query[k] = v
+    }
+  }
+
+  return { id, param: param ? decodeURIComponent(param) : null, query }
 }
 
-export function hrefFor(id: RouteId, param?: string | null) {
-  return `#/${PATHS[id]}${param ? `/${encodeURIComponent(param)}` : ''}`
+function serializeQuery(query?: Query | null): string {
+  if (!query) return ''
+  const params = new URLSearchParams()
+  // Ordine stabile: due viste identiche devono produrre lo stesso indirizzo,
+  // altrimenti il confronto con l'hash corrente fallisce e si accumula
+  // cronologia inutile.
+  for (const key of Object.keys(query).sort()) {
+    const value = query[key]
+    if (value !== '' && value !== undefined && value !== null) params.set(key, value)
+  }
+  const s = params.toString()
+  return s ? `?${s}` : ''
 }
 
-export function navigate(id: RouteId, param?: string | null, replace = false) {
-  const href = hrefFor(id, param)
+export function hrefFor(id: RouteId, param?: string | null, query?: Query | null) {
+  return `#/${PATHS[id]}${param ? `/${encodeURIComponent(param)}` : ''}${serializeQuery(query)}`
+}
+
+export type NavOptions = { param?: string | null; query?: Query | null; replace?: boolean }
+
+export function navigate(id: RouteId, options: NavOptions = {}) {
+  const href = hrefFor(id, options.param, options.query)
   if (window.location.hash === href) return
-  if (replace) window.history.replaceState(null, '', href)
-  else window.location.hash = href
-  if (replace) window.dispatchEvent(new HashChangeEvent('hashchange'))
+  if (options.replace) {
+    window.history.replaceState(null, '', href)
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+  } else {
+    window.location.hash = href
+  }
 }
 
-export function useRoute(): [Route, (id: RouteId, param?: string | null, replace?: boolean) => void] {
+export type NavigateFn = (id: RouteId, options?: NavOptions) => void
+
+export function useRoute(): [Route, NavigateFn] {
   const [route, setRoute] = useState<Route>(() => parse(window.location.hash))
 
   useEffect(() => {
     const onChange = () => setRoute(parse(window.location.hash))
     window.addEventListener('hashchange', onChange)
-    // Primo accesso senza hash: normalizza l'URL sulla dashboard.
+    // Primo accesso senza hash: normalizza l'URL sulla pagina iniziale.
     if (!window.location.hash) window.history.replaceState(null, '', hrefFor(DEFAULT_ROUTE))
     return () => window.removeEventListener('hashchange', onChange)
   }, [])
 
-  const go = useCallback((id: RouteId, param?: string | null, replace?: boolean) => {
-    navigate(id, param, replace)
+  const go = useCallback<NavigateFn>((id, options) => {
+    navigate(id, options)
   }, [])
 
   return [route, go]

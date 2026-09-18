@@ -2,9 +2,12 @@ import { useEffect } from 'react'
 import { AuthProvider, useAuth } from './auth/AuthProvider'
 import { ConfirmProvider, EmptyState, Spinner, ToastProvider } from './ui'
 import { AppShell, isRouteAllowed, navFor } from './app/AppShell'
-import { useRoute, type RouteId } from './lib/router'
+import { ScopeProvider } from './app/ScopeProvider'
+import { GlobalSearch } from './app/GlobalSearch'
+import { useRoute, type NavigateFn, type Route, type RouteId } from './lib/router'
 import LoginPage, { NoProfilePage } from './pages/Login'
 import ResetPasswordPage from './pages/ResetPassword'
+import TodayPage from './pages/Today'
 import DashboardPage from './pages/Dashboard'
 import LeadsPage from './pages/Leads'
 import CalendarPage from './pages/Calendar'
@@ -14,6 +17,7 @@ import ImportLeadsPage from './pages/ImportLeads'
 import AdminUsersPage from './pages/AdminUsers'
 
 const PAGE_META: Record<RouteId, { title: string; subtitle?: string }> = {
+  today: { title: 'Oggi', subtitle: 'Promemoria, appuntamenti e lead da riprendere' },
   dashboard: { title: 'Dashboard', subtitle: 'Andamento della pipeline' },
   leads: { title: 'Lead', subtitle: 'Anagrafiche e attività commerciali' },
   calendar: { title: 'Calendario', subtitle: 'Appuntamenti della rete' },
@@ -38,7 +42,9 @@ export default function RootApp() {
     <AuthProvider>
       <ToastProvider>
         <ConfirmProvider>
-          <AuthenticatedApp />
+          <ScopeProvider>
+            <AuthenticatedApp />
+          </ScopeProvider>
         </ConfirmProvider>
       </ToastProvider>
     </AuthProvider>
@@ -55,7 +61,7 @@ function AuthenticatedApp() {
     if (status.state !== 'ready') return
     if (!isRouteAllowed(route.id, role)) {
       const first = navFor(role)[0]
-      if (first) go(first.id, null, true)
+      if (first) go(first.id, { replace: true })
     }
   }, [status.state, route.id, role, go])
 
@@ -78,44 +84,54 @@ function AuthenticatedApp() {
 
   const meta = PAGE_META[route.id]
   const allowed = isRouteAllowed(route.id, role)
+  const openLead = (id: string) => go('leads', { param: id })
 
   return (
-    <AppShell route={route} onNavigate={go} title={meta.title} subtitle={meta.subtitle}>
+    <AppShell
+      route={route}
+      onNavigate={id => go(id)}
+      title={meta.title}
+      subtitle={meta.subtitle}
+      search={<GlobalSearch onOpenLead={openLead} />}
+    >
       {!allowed ? (
         <EmptyState
           icon="shield"
           title="Sezione non disponibile"
-          text="Il tuo ruolo non ha accesso a questa sezione. Ti stiamo riportando alla dashboard."
+          text="Il tuo ruolo non ha accesso a questa sezione. Ti stiamo riportando alla pagina iniziale."
         />
       ) : (
-        <PageBody route={route.id} param={route.param} onNavigate={go} />
+        <PageBody route={route} go={go} />
       )}
     </AppShell>
   )
 }
 
-function PageBody({
-  route,
-  param,
-  onNavigate,
-}: {
-  route: RouteId
-  param: string | null
-  onNavigate: (id: RouteId, param?: string | null, replace?: boolean) => void
-}) {
-  switch (route) {
+function PageBody({ route, go }: { route: Route; go: NavigateFn }) {
+  const openLead = (id: string) => go('leads', { param: id })
+
+  switch (route.id) {
+    case 'today':
+      return <TodayPage route={route} go={go} onOpenLead={openLead} />
     case 'dashboard':
-      return <DashboardPage onOpenLeads={() => onNavigate('leads')} />
+      return <DashboardPage route={route} go={go} />
     case 'leads':
-      return <LeadsPage selectedId={param} onSelect={id => onNavigate('leads', id, true)} />
+      return (
+        <LeadsPage
+          route={route}
+          go={go}
+          selectedId={route.param}
+          onSelect={id => go('leads', { param: id, query: route.query, replace: true })}
+        />
+      )
     case 'calendar':
-      return <CalendarPage onOpenLead={id => onNavigate('leads', id)} />
+      return <CalendarPage route={route} go={go} onOpenLead={openLead} />
     case 'goals':
-      return <GoalsPage />
+      return <GoalsPage route={route} go={go} />
     case 'report':
-      return <ReportPage />
+      return <ReportPage route={route} go={go} />
     case 'import':
-      return <ImportLeadsPage onDone={() => onNavigate('leads')} />
+      return <ImportLeadsPage onDone={() => go('leads')} />
     case 'admin':
       return <AdminUsersPage />
     default:

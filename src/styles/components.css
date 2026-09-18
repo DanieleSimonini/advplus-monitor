@@ -302,6 +302,22 @@
 }
 .gu-check--disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* Griglia degli obiettivi: dodici mesi per sei metriche, input in cella */
+.gu-goals-grid__input {
+  height: 32px;
+  padding: 0 var(--gu-space-2);
+  text-align: right;
+  font-size: var(--gu-text-sm);
+  min-width: 92px;
+}
+.gu-goals-grid__actual {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--gu-text-2xs);
+  text-align: right;
+}
+.gu-goals-grid td { vertical-align: top; }
+
 /* Interruttore filtro on/off — sostituisce i "bottoni che sembrano bottoni ma sono toggle" */
 .gu-filter-chip {
   display: inline-flex;

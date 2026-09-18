@@ -18,6 +18,7 @@ export {
   type BadgeTone,
   type ButtonProps,
 } from './primitives'
+export { ActiveFilter, FilterBar, ResultCount } from './FilterBar'
 export { Card, CardBody, CardFooter, CardHeader, Stat } from './Card'
 export {
   Checkbox,
